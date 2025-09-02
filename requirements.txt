@@ -1,0 +1,11 @@
+# Runtime dependencies
+pandas>=2.1
+openpyxl>=3.1
+requests>=2.31
+Flask>=3.0
+Werkzeug>=3.0
+urllib3>=2.0
+python-dotenv>=1.0
+
+# Testing (optional for contributors)
+pytest>=8.0
