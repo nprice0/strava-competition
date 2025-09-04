@@ -15,6 +15,8 @@ class Runner:
     refresh_token: str
     team: str
     access_token: str = None
+    # Set to True after first 402 Payment Required so we can skip further API calls
+    payment_required: bool = False
 
 @dataclass
 class SegmentResult:

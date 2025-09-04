@@ -255,6 +255,11 @@ def get_segment_efforts(
                 f"Skipping runner {runner.name}: Unauthorized (invalid/expired token after retry){suffix}"
             )
         elif status == 402:
+            # Mark runner so future segment processing can skip further calls
+            try:
+                runner.payment_required = True  # type: ignore[attr-defined]
+            except Exception:
+                pass
             logging.warning(
                 f"Runner {runner.name}: 402 Payment Required (likely subscription needed or access restricted){suffix}. Skipping."
             )
