@@ -1,7 +1,21 @@
+"""Strava API client helpers (HTTP session, rate limiting, effort fetching).
+
+Public surface used elsewhere:
+    - get_segment_efforts(runner, segment_id, start_date, end_date)
+    - set_rate_limiter(max_concurrent=None)
+
+The module keeps a shared requests.Session for connection pooling and a
+RateLimiter instance to smooth traffic and honor limits.
+"""
+
+from __future__ import annotations
+
 import logging
 import random
 import threading
 import time
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -18,6 +32,7 @@ from .config import (
     RATE_LIMIT_NEAR_LIMIT_BUFFER,
     RATE_LIMIT_THROTTLE_SECONDS,
 )
+from .models import Runner
 
 # Reusable HTTP session with retries and backoff for reliability and performance
 _session = requests.Session()
@@ -35,27 +50,34 @@ _adapter = HTTPAdapter(
 )
 _session.mount("https://", _adapter)
 _session.mount("http://", _adapter)
-_session.headers.update({"Accept-Encoding": "gzip, deflate"})
+_session.headers.update({
+    "Accept-Encoding": "gzip, deflate",
+    "Accept": "application/json",
+})
 
-DEFAULT_TIMEOUT = REQUEST_TIMEOUT
+DEFAULT_TIMEOUT: int = REQUEST_TIMEOUT
 
 
 class RateLimiter:
-    """A simple, shared, rate-limit-aware gate for concurrent HTTP calls.
+    """Shared gate for HTTP requests.
 
-    - Limits concurrent in-flight requests (semaphore).
-    - Adds small jitter to avoid bursts.
-    - When near the short-window limit (from Strava headers) or on 429, throttles for a period.
+    Controls maximum concurrent in-flight calls (semaphore), injects small
+    random jitter to avoid burst alignment, and applies a throttle window
+    when a 429 occurs or usage nears the short-window Strava limit.
     """
 
-    def __init__(self, max_concurrent: int = RATE_LIMIT_MAX_CONCURRENT, jitter_range: tuple[float, float] = RATE_LIMIT_JITTER_RANGE):
+    def __init__(
+        self,
+        max_concurrent: int = RATE_LIMIT_MAX_CONCURRENT,
+        jitter_range: tuple[float, float] = RATE_LIMIT_JITTER_RANGE,
+    ) -> None:
         self._sem = threading.Semaphore(max_concurrent)
         self._lock = threading.Lock()
-        self._throttle_until = 0.0
+        self._throttle_until: float = 0.0
         self._jitter_range = jitter_range
         self._near_limit_buffer = RATE_LIMIT_NEAR_LIMIT_BUFFER
 
-    def before_request(self):
+    def before_request(self) -> None:
         self._sem.acquire()
         # Respect any global throttle window
         with self._lock:
@@ -67,7 +89,7 @@ class RateLimiter:
         if hi > 0:
             time.sleep(random.uniform(lo, hi))
 
-    def after_response(self, headers: dict | None, status_code: int | None):
+    def after_response(self, headers: Optional[Dict[str, Any]], status_code: Optional[int]) -> None:
         try:
             # Throttle if we hit 429
             if status_code == 429:
@@ -99,7 +121,7 @@ class RateLimiter:
         finally:
             self._sem.release()
 
-    def _set_throttle(self, seconds: float):
+    def _set_throttle(self, seconds: float) -> None:
         with self._lock:
             self._throttle_until = max(self._throttle_until, time.time() + seconds)
 
@@ -108,29 +130,33 @@ class RateLimiter:
 _limiter = RateLimiter()
 
 
-def set_rate_limiter(max_concurrent: int | None = None):
-    """Optionally reconfigure the global rate limiter at runtime.
-
-    If max_concurrent is provided, replaces the limiter with a new instance.
-    """
+def set_rate_limiter(max_concurrent: Optional[int] = None) -> None:
+    """Optionally replace the global rate limiter with a new concurrency value."""
     global _limiter
     if max_concurrent is not None:
         _limiter = RateLimiter(max_concurrent=max_concurrent)
 
 
-def get_segment_efforts(runner, segment_id, start_date, end_date):
-    """Fetch all efforts for a segment within dates for a runner, with pagination and retry.
+def get_segment_efforts(
+    runner: Runner,
+    segment_id: int,
+    start_date: datetime,
+    end_date: datetime,
+) -> Optional[List[Dict[str, Any]]]:
+    """Fetch all efforts for a segment window for one runner.
 
-    - Reuses cached access_token on the runner.
-    - Refreshes token once on 401 and retries.
-    - Paginates through all results (per_page=200).
-    - Applies retry/backoff and timeouts.
+    Behavior:
+      * Uses cached runner.access_token (fetches via refresh token if absent)
+      * One retry on first 401 (refresh + reattempt same page)
+      * Paginates (per_page=200) until fewer than 200 returned
+      * Applies timeout / retries from the configured Session
+    Returns a list (possibly empty) or None on unrecoverable error.
     """
 
-    def auth_headers():
+    def auth_headers() -> Dict[str, str]:
         return {"Authorization": f"Bearer {runner.access_token}"}
 
-    def ensure_token():
+    def ensure_token() -> None:
         if not runner.access_token:
             access_token, new_refresh_token = get_access_token(
                 runner.refresh_token, runner_name=runner.name
@@ -139,7 +165,7 @@ def get_segment_efforts(runner, segment_id, start_date, end_date):
             if new_refresh_token and new_refresh_token != runner.refresh_token:
                 runner.refresh_token = new_refresh_token
 
-    def fetch_page(page: int):
+    def fetch_page(page: int) -> List[Dict[str, Any]]:
         url = f"{STRAVA_BASE_URL}/segment_efforts"
         params = {
             "segment_id": segment_id,
@@ -148,11 +174,11 @@ def get_segment_efforts(runner, segment_id, start_date, end_date):
             "per_page": 200,
             "page": page,
         }
-        # Enter limiter, make request, then update limiter based on response
         _limiter.before_request()
-        resp = _session.get(url, headers=auth_headers(), params=params, timeout=DEFAULT_TIMEOUT)
+        resp = _session.get(
+            url, headers=auth_headers(), params=params, timeout=DEFAULT_TIMEOUT
+        )
         _limiter.after_response(resp.headers, resp.status_code)
-        # If still 429 after limiter, raise to upstream for handling
         if resp.status_code == 429:
             resp.raise_for_status()
         resp.raise_for_status()
@@ -160,13 +186,12 @@ def get_segment_efforts(runner, segment_id, start_date, end_date):
 
     try:
         ensure_token()
-        all_efforts = []
+        all_efforts: List[Dict[str, Any]] = []
         page = 1
         while True:
             try:
                 data = fetch_page(page)
             except requests.exceptions.HTTPError as e:
-                # One-time 401 retry by refreshing token
                 if e.response is not None and e.response.status_code == 401:
                     logging.info(
                         f"401 for runner {runner.name}. Refreshing token and retrying page {page}."
@@ -184,17 +209,98 @@ def get_segment_efforts(runner, segment_id, start_date, end_date):
                 break
             page += 1
         return all_efforts
-    except requests.exceptions.HTTPError as e:
-        if e.response is not None and e.response.status_code == 401:
-            logging.warning(
-                f"Skipping runner {runner.name}: Unauthorized (invalid/expired token after retry)"
+    except requests.exceptions.HTTPError as e:  # pragma: no cover
+        resp = e.response
+        if resp is None:
+            logging.error(
+                f"HTTPError with no response object (network/transport issue) for runner {runner.name}: {e}"
             )
             return None
-        elif e.response is not None and e.response.status_code == 402:
-            logging.warning(
-                f"Runner {runner.name}: Payment required for segment efforts. Skipping."
+        try:
+            content_len = len(resp.content)
+        except Exception:
+            content_len = -1
+        logging.info(
+            "HTTPError summary | runner=%s | status=%s | content_type=%s | length=%s",
+            runner.name,
+            resp.status_code,
+            resp.headers.get("Content-Type"),
+            content_len,
+        )
+        try:
+            logging.debug(
+                "HTTPError body sample (first 500 chars): %r", resp.text[:500]
             )
-            return None
+        except Exception:
+            pass
+        detail = _extract_error(resp)
+        status = resp.status_code
+        raw_snippet = None
+        if not detail:
+            try:
+                txt = (resp.text or "").strip()
+                if txt:
+                    raw_snippet = (txt[:297] + "...") if len(txt) > 300 else txt
+            except Exception:
+                pass
+        suffix = ""
+        if detail and raw_snippet:
+            suffix = f" | {detail} | raw: {raw_snippet}"
+        elif detail:
+            suffix = f" | {detail}"
+        elif raw_snippet:
+            suffix = f" | raw: {raw_snippet}"
+        if status == 401:
+            logging.warning(
+                f"Skipping runner {runner.name}: Unauthorized (invalid/expired token after retry){suffix}"
+            )
+        elif status == 402:
+            logging.warning(
+                f"Runner {runner.name}: 402 Payment Required (likely subscription needed or access restricted){suffix}. Skipping."
+            )
         else:
-            logging.error(f"Error for runner {runner.name}: {e}")
-            return None
+            logging.error(
+                f"Error for runner {runner.name}: HTTP {status}{suffix}"
+            )
+        return None
+
+
+def _extract_error(resp: Optional[requests.Response]) -> Optional[str]:
+    """Return compact string with Strava error info (message + codes) if present.
+
+    Expected JSON form:
+      {"message": "...", "errors": [{"resource": .., "field": .., "code": ..}, ...]}
+    Falls back to a trimmed plain-text body if JSON parse fails.
+    """
+    if not resp:
+        return None
+    try:
+        data = resp.json()
+    except Exception:
+        try:
+            txt = resp.text.strip()
+            if txt:
+                return (txt[:297] + "...") if len(txt) > 300 else txt
+        except Exception:
+            pass
+        return None
+    if not isinstance(data, dict):  # Unexpected shape
+        return None
+    parts: List[str] = []
+    msg = data.get("message")
+    if msg:
+        parts.append(str(msg))
+    errs = data.get("errors")
+    if isinstance(errs, list):
+        for err in errs:
+            if not isinstance(err, dict):
+                continue
+            resource = err.get("resource")
+            field = err.get("field")
+            code = err.get("code")
+            spec = "/".join([p for p in [resource, field] if p])
+            if code and spec:
+                parts.append(f"{spec}:{code}")
+            elif code:
+                parts.append(str(code))
+    return " | ".join(parts) if parts else None
