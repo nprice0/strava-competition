@@ -34,6 +34,7 @@ def process_segments(segments, runners, max_workers: int | None = None):
                     get_segment_efforts, runner, segment.id, segment.start_date, segment.end_date
                 ): runner
                 for runner in runners
+                if not getattr(runner, "payment_required", False)
             }
             for fut in as_completed(future_to_runner):
                 runner = future_to_runner[fut]
