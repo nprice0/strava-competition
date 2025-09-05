@@ -1,54 +1,151 @@
+"""OAuth / token refresh utilities for Strava API.
+
+This module focuses on securely exchanging a refresh token for an access token
+using Strava's OAuth endpoint. It adds resiliency (HTTP retries), safe logging
+that avoids leaking secrets, and defensive JSON parsing.
+"""
+
+from __future__ import annotations
+
+import json
 import logging
+from typing import Tuple
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
-from .config import CLIENT_ID, CLIENT_SECRET, STRAVA_OAUTH_URL
+from .config import (
+    CLIENT_ID,
+    CLIENT_SECRET,
+    STRAVA_OAUTH_URL,
+    REQUEST_TIMEOUT,
+)
+
+# Reusable session with limited retry for transient network/server issues.
+_token_retry = Retry(
+    total=3,
+    backoff_factor=1.0,
+    status_forcelist=[429, 500, 502, 503, 504],
+    allowed_methods=["POST"],
+)
+_session = requests.Session()
+_session.mount("https://", HTTPAdapter(max_retries=_token_retry))
+_session.mount("http://", HTTPAdapter(max_retries=_token_retry))
 
 
-def get_access_token(refresh_token: str, runner_name: str | None = None):
-    url = STRAVA_OAUTH_URL
+class TokenError(Exception):
+    """Raised when token refresh fails (after retries)."""
+
+
+def _mask_tail(value: str | None, visible: int = 4) -> str:
+    if not value:
+        return ""
+    tail = value[-visible:]
+    return f"****{tail}" if len(value) > visible else "****" + tail
+
+
+def get_access_token(refresh_token: str, runner_name: str | None = None) -> Tuple[str | None, str | None]:
+    """Exchange a refresh token for a new access (and possibly new refresh) token.
+
+    Args:
+        refresh_token: The existing Strava refresh token.
+        runner_name: Optional runner identifier for contextual logging.
+
+    Returns:
+        (access_token, refresh_token) tuple. Either element may be None on unexpected response.
+
+    Raises:
+        TokenError: If the HTTP request fails or JSON is invalid / lacks tokens.
+    """
+    if not CLIENT_ID or not CLIENT_SECRET:
+        raise TokenError("Client credentials not configured (CLIENT_ID / CLIENT_SECRET missing)")
+    if not refresh_token:
+        raise TokenError("Missing refresh token")
+
     payload = {
         "client_id": CLIENT_ID,
         "client_secret": CLIENT_SECRET,
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
     }
-    # Mask sensitive values in logs
-    masked_refresh = refresh_token[-4:] if refresh_token else ""
+    logger = logging.getLogger(__name__)
+    masked_refresh = _mask_tail(refresh_token)
     if runner_name:
-        logging.info(
-            "Requesting access token for runner '%s' with refresh token ending: ****%s",
-            runner_name,
-            masked_refresh,
-        )
+        logger.info("Refreshing Strava token for runner=%s refresh_token=%s", runner_name, masked_refresh)
     else:
-        logging.info(
-            "Requesting access token with refresh token ending: ****%s",
-            masked_refresh,
-        )
-    logging.debug(f"Token URL: {url}")
-    # Do not log full payload with secrets; log safe subset
-    logging.debug(
-        {
-            "client_id": CLIENT_ID,
-            "grant_type": payload["grant_type"],
-        }
-    )
-    response = requests.post(url, data=payload, timeout=15)
-    logging.info(f"Response status: {response.status_code}")
+        logger.info("Refreshing Strava token refresh_token=%s", masked_refresh)
+    logger.debug("Token endpoint: %s", STRAVA_OAUTH_URL)
+    logger.debug({"client_id": CLIENT_ID, "grant_type": payload["grant_type"]})
+
     try:
-        response.raise_for_status()
-    except requests.exceptions.HTTPError as e:
-        logging.error(f"HTTPError: {e}")
-        logging.error(f"Response body: {response.text}")
-        raise
-    data = response.json()
-    # Do not log full tokens; only lengths and endings for traceability
-    at = data.get("access_token")
-    rt = data.get("refresh_token")
-    logging.info(
-        "Token response received: access_token_len=%s refresh_token_len=%s",
-        len(at) if at else 0,
-        len(rt) if rt else 0,
+        resp = _session.post(STRAVA_OAUTH_URL, data=payload, timeout=REQUEST_TIMEOUT)
+    except requests.exceptions.RequestException as e:  # Network / connection / timeout
+        logger.error("Token request transport error: %s", e)
+        raise TokenError("Transport failure during token refresh") from e
+
+    status = resp.status_code
+    logger.debug("Token endpoint status=%s", status)
+    if status >= 400:
+        # Attempt to parse error JSON for context
+        detail = None
+        try:
+            data_err = resp.json()
+            if isinstance(data_err, dict):
+                msg = data_err.get("message")
+                errors = data_err.get("errors")
+                if msg:
+                    detail = msg
+                if isinstance(errors, list):
+                    joined = []
+                    for err in errors:
+                        if isinstance(err, dict):
+                            code = err.get("code")
+                            field = err.get("field")
+                            if code and field:
+                                joined.append(f"{field}:{code}")
+                            elif code:
+                                joined.append(str(code))
+                    if joined:
+                        detail = f"{detail} | {' '.join(joined)}" if detail else " ".join(joined)
+        except Exception:
+            detail = None
+        snippet = None
+        if not detail:
+            try:
+                text = resp.text.strip()
+                if text:
+                    snippet = (text[:197] + "...") if len(text) > 200 else text
+            except Exception:
+                pass
+        logger.error(
+            "Token refresh failed status=%s%s%s",
+            status,
+            f" detail={detail}" if detail else "",
+            f" snippet={snippet}" if snippet else "",
+        )
+        raise TokenError(f"Token refresh failed with status {status}")
+
+    # Parse JSON success
+    try:
+        data = resp.json()
+    except (ValueError, json.JSONDecodeError) as e:
+        logger.error("Invalid JSON in token response: %s", e)
+        raise TokenError("Invalid JSON in token response") from e
+
+    if not isinstance(data, dict):
+        logger.error("Unexpected token response shape: %s", type(data).__name__)
+        raise TokenError("Unexpected token response shape")
+
+    access_token = data.get("access_token")
+    new_refresh_token = data.get("refresh_token")
+    logger.info(
+        "Token refresh success access_token_len=%s refresh_token_changed=%s",
+        len(access_token) if access_token else 0,
+        bool(new_refresh_token and new_refresh_token != refresh_token),
     )
-    return data.get("access_token"), data.get("refresh_token")
+    if not access_token:
+        # Treat missing access token as error for downstream certainty
+        logger.error("No access_token in token response")
+        raise TokenError("No access_token in response")
+    return access_token, new_refresh_token
