@@ -1,11 +1,18 @@
 """Strava API client helpers (HTTP session, rate limiting, effort fetching).
 
 Public surface used elsewhere:
-    - get_segment_efforts(runner, segment_id, start_date, end_date)
-    - set_rate_limiter(max_concurrent=None)
+        - get_segment_efforts(runner, segment_id, start_date, end_date)
+        - set_rate_limiter(max_concurrent=None)  # adjusts concurrency at runtime
 
-The module keeps a shared requests.Session for connection pooling and a
-RateLimiter instance to smooth traffic and honor limits.
+Design notes (concise):
+        * A single shared ``requests.Session`` provides connection pooling + retries.
+        * ``RateLimiter`` enforces a soft cap on concurrent in-flight calls and can
+            be resized safely without recreating global objects (important for threads
+            already waiting). Resizing is immediate for increases; decreases take
+            effect as in‑flight requests complete.
+        * Light jitter is applied to reduce synchronized burst patterns.
+        * Short-window Strava usage headers are inspected: if approaching the
+            limit, a brief throttle window is set to smooth traffic.
 """
 
 from __future__ import annotations
@@ -15,7 +22,7 @@ import random
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypeAlias
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -33,6 +40,10 @@ from .config import (
     RATE_LIMIT_THROTTLE_SECONDS,
 )
 from .models import Runner
+
+# Type aliases for clarity
+JSONObj: TypeAlias = Dict[str, Any]
+JSONList: TypeAlias = List[JSONObj]
 
 # Reusable HTTP session with retries and backoff for reliability and performance
 _session = requests.Session()
@@ -59,11 +70,17 @@ DEFAULT_TIMEOUT: int = REQUEST_TIMEOUT
 
 
 class RateLimiter:
-    """Shared gate for HTTP requests.
+    """Concurrency + adaptive pacing primitive for API calls.
 
-    Controls maximum concurrent in-flight calls (semaphore), injects small
-    random jitter to avoid burst alignment, and applies a throttle window
-    when a 429 occurs or usage nears the short-window Strava limit.
+    Core behaviors:
+      * Soft concurrency limit (``_max_allowed``) enforced with a condition
+        variable; threads wait while ``_in_flight`` >= limit.
+      * ``resize(new_max)`` changes the soft limit in-place (no swapping), so
+        waiting threads continue seamlessly. Upsizing wakes all waiters; downsizing
+        is naturally honored as active requests finish.
+      * Optional throttle window: triggered by HTTP 429 or nearing the reported
+        short-window usage limit; new requests sleep until the window expires.
+      * Small random jitter further staggers request timing to avoid clumping.
     """
 
     def __init__(
@@ -71,35 +88,49 @@ class RateLimiter:
         max_concurrent: int = RATE_LIMIT_MAX_CONCURRENT,
         jitter_range: tuple[float, float] = RATE_LIMIT_JITTER_RANGE,
     ) -> None:
-        self._sem = threading.Semaphore(max_concurrent)
+        if max_concurrent < 1:
+            raise ValueError("max_concurrent must be >= 1")
         self._lock = threading.Lock()
+        self._cond = threading.Condition(self._lock)
+        self._max_allowed = max_concurrent
+        self._in_flight = 0
         self._throttle_until: float = 0.0
         self._jitter_range = jitter_range
         self._near_limit_buffer = RATE_LIMIT_NEAR_LIMIT_BUFFER
 
+    # --- Public control -------------------------------------------------
+    def resize(self, new_max: int) -> None:
+        """Adjust maximum concurrent requests (soft limit) at runtime."""
+        if new_max < 1:
+            raise ValueError("new_max must be >= 1")
+        with self._cond:
+            old = self._max_allowed
+            self._max_allowed = new_max
+            self._cond.notify_all()  # Wake waiters if limit grew
+        logging.info("RateLimiter resized from %s to %s", old, new_max)
+
+    # --- Request lifecycle ---------------------------------------------
     def before_request(self) -> None:
-        self._sem.acquire()
-        # Respect any global throttle window
-        with self._lock:
+        with self._cond:
+            while self._in_flight >= self._max_allowed:
+                self._cond.wait()
+            self._in_flight += 1
             wait_for = max(0.0, self._throttle_until - time.time())
         if wait_for > 0:
             time.sleep(wait_for)
-        # Add tiny jitter to smooth spikes
         lo, hi = self._jitter_range
         if hi > 0:
             time.sleep(random.uniform(lo, hi))
 
     def after_response(self, headers: Optional[Dict[str, Any]], status_code: Optional[int]) -> None:
-        try:
-            # Throttle if we hit 429
-            if status_code == 429:
-                logging.warning(
-                    "Rate limit: 429. Throttling %ss.",
-                    RATE_LIMIT_THROTTLE_SECONDS,
-                )
-                self._set_throttle(RATE_LIMIT_THROTTLE_SECONDS)
-            # Inspect rate-limit headers and pre-emptively slow if close
-            short_used, short_limit = None, None
+        throttle = False
+        if status_code == 429:
+            throttle = True
+            logging.warning(
+                "Rate limit: 429. Throttling %ss.", RATE_LIMIT_THROTTLE_SECONDS
+            )
+        else:
+            short_used = short_limit = None
             if headers:
                 usage = headers.get("X-RateLimit-Usage")
                 limit = headers.get("X-RateLimit-Limit")
@@ -108,22 +139,38 @@ class RateLimiter:
                         short_used = int(str(usage).split(",")[0])
                         short_limit = int(str(limit).split(",")[0])
                     except Exception:
-                        short_used, short_limit = None, None
-            if short_used is not None and short_limit is not None:
-                if short_used >= max(short_limit - self._near_limit_buffer, 0):
-                    logging.info(
-                        "Approaching short-window limit (%s/%s). Throttling %ss.",
-                        short_used,
-                        short_limit,
-                        RATE_LIMIT_THROTTLE_SECONDS,
-                    )
-                    self._set_throttle(RATE_LIMIT_THROTTLE_SECONDS)
-        finally:
-            self._sem.release()
+                        short_used = short_limit = None
+            if (
+                short_used is not None
+                and short_limit is not None
+                and short_used >= max(short_limit - self._near_limit_buffer, 0)
+            ):
+                throttle = True
+                logging.info(
+                    "Approaching short-window limit (%s/%s). Throttling %ss.",
+                    short_used,
+                    short_limit,
+                    RATE_LIMIT_THROTTLE_SECONDS,
+                )
+        if throttle:
+            self._set_throttle(RATE_LIMIT_THROTTLE_SECONDS)
+        with self._cond:  # Release slot
+            self._in_flight -= 1
+            self._cond.notify()
 
+    # --- Internals ------------------------------------------------------
     def _set_throttle(self, seconds: float) -> None:
         with self._lock:
             self._throttle_until = max(self._throttle_until, time.time() + seconds)
+
+    # --- Introspection --------------------------------------------------
+    def snapshot(self) -> Dict[str, Any]:  # pragma: no cover (not yet used)
+        with self._lock:
+            return {
+                "max_allowed": self._max_allowed,
+                "in_flight": self._in_flight,
+                "throttle_until": self._throttle_until,
+            }
 
 
 # Shared limiter instance
@@ -131,10 +178,16 @@ _limiter = RateLimiter()
 
 
 def set_rate_limiter(max_concurrent: Optional[int] = None) -> None:
-    """Optionally replace the global rate limiter with a new concurrency value."""
-    global _limiter
+    """Adjust concurrency limit at runtime.
+
+    Passing ``max_concurrent`` calls ``RateLimiter.resize``; omitted / None
+    leaves the current limit unchanged.
+    """
     if max_concurrent is not None:
-        _limiter = RateLimiter(max_concurrent=max_concurrent)
+        try:
+            _limiter.resize(max_concurrent)
+        except Exception as e:
+            logging.error("Failed to resize rate limiter: %s", e)
 
 
 def get_segment_efforts(
@@ -165,7 +218,7 @@ def get_segment_efforts(
             if new_refresh_token and new_refresh_token != runner.refresh_token:
                 runner.refresh_token = new_refresh_token
 
-    def fetch_page(page: int) -> List[Dict[str, Any]]:
+    def fetch_page(page: int) -> JSONList:
         url = f"{STRAVA_BASE_URL}/segment_efforts"
         params = {
             "segment_id": segment_id,
@@ -182,22 +235,47 @@ def get_segment_efforts(
         if resp.status_code == 429:
             resp.raise_for_status()
         resp.raise_for_status()
-        return resp.json()
+        try:
+            data = resp.json()
+        except ValueError:
+            logging.error(
+                "Non-JSON response for segment efforts runner=%s segment=%s page=%s",
+                runner.name,
+                segment_id,
+                page,
+            )
+            return []
+        if not isinstance(data, list):  # Defensive: Strava expected list
+            logging.warning(
+                "Unexpected JSON shape (not list) for efforts runner=%s segment=%s page=%s type=%s",
+                runner.name,
+                segment_id,
+                page,
+                type(data).__name__,
+            )
+            return []
+        return data  # type: ignore[return-value]
 
     try:
         ensure_token()
         all_efforts: List[Dict[str, Any]] = []
         page = 1
+        attempted_refresh = False  # Guard against infinite 401 refresh loops
         while True:
             try:
                 data = fetch_page(page)
             except requests.exceptions.HTTPError as e:
-                if e.response is not None and e.response.status_code == 401:
+                if (
+                    e.response is not None
+                    and e.response.status_code == 401
+                    and not attempted_refresh
+                ):
                     logging.info(
                         f"401 for runner {runner.name}. Refreshing token and retrying page {page}."
                     )
                     runner.access_token = None
                     ensure_token()
+                    attempted_refresh = True
                     data = fetch_page(page)
                 else:
                     raise
@@ -216,6 +294,7 @@ def get_segment_efforts(
                 f"HTTPError with no response object (network/transport issue) for runner {runner.name}: {e}"
             )
             return None
+        # Diagnostic summary (INFO) + optional DEBUG body sample
         try:
             content_len = len(resp.content)
         except Exception:
@@ -227,12 +306,13 @@ def get_segment_efforts(
             resp.headers.get("Content-Type"),
             content_len,
         )
-        try:
-            logging.debug(
-                "HTTPError body sample (first 500 chars): %r", resp.text[:500]
-            )
-        except Exception:
-            pass
+        if logging.getLogger().isEnabledFor(logging.DEBUG):  # Avoid building string unless needed
+            try:
+                logging.debug(
+                    "HTTPError body sample (first 500 chars): %r", resp.text[:500]
+                )
+            except Exception:
+                pass
         detail = _extract_error(resp)
         status = resp.status_code
         raw_snippet = None
