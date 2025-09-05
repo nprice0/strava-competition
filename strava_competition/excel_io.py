@@ -241,8 +241,8 @@ def write_results(filepath, results: ResultsMapping, include_summary: bool = Tru
             if summary_rows:
                 summary_df = pd.DataFrame(summary_rows)
                 # Sort by total cumulative fastest time (lower cumulative time = better), then Team
-                if "Sum Fastest Times (sec)" in summary_df.columns:
-                    summary_df.sort_values(by=["Sum Fastest Times (sec)", "Team"], inplace=True)
+                if "Total Fastest Times (sec)" in summary_df.columns:
+                    summary_df.sort_values(by=["Total Fastest Times (sec)", "Team"], inplace=True)
                 else:
                     summary_df.sort_values(by=["Average Fastest Time (sec)", "Team"], inplace=True)
                 sheet_name = _unique_sheet_name("Summary", used_sheet_names)
