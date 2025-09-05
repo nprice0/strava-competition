@@ -11,6 +11,9 @@ A small Python app that reads competition inputs from an Excel file, fetches Str
 - Output results to an Excel file (timestamp optional)
 - Update runner refresh tokens back into your input workbook
 - OAuth helper (`oauth.py`) to obtain initial refresh tokens securely
+ - Optional summary sheet aggregating per-team metrics (attempt totals, participants, sum of fastest times, average fastest time)
+ - Dynamic, runtime-adjustable global concurrency via `set_rate_limiter(max_concurrent=...)`
+ - Resilient token refresh with retries and structured error detail (no secrets logged)
 
 ---
 
@@ -69,9 +72,9 @@ Notes:
   - `config.py` — configuration constants (paths, timestamp toggle, Strava API settings)
     - Performance knobs: concurrency, HTTP pool sizes, timeouts, and rate-limiter thresholds
   - `excel_io.py` — Excel read/write utilities
-  - `processor.py` — transforms Strava efforts into reportable results
-  - `strava_api.py` — Strava API client (pagination, retries, token caching per runner)
-  - `auth.py` — token refresh flow (refresh_token -> access_token + possibly new refresh_token)
+  - `processor.py` — transforms Strava efforts into reportable results (supports cancellation & progress callback)
+  - `strava_api.py` — Strava API client (pagination, retries, adaptive rate limiting, token caching per runner)
+  - `auth.py` — robust token refresh (retries + error decoding) returning `(access_token, maybe_new_refresh_token)`
   - `oauth.py` — local OAuth helper to obtain a refresh token via browser
   - `models.py` — simple data models
 
@@ -181,13 +184,16 @@ Logs:
 - Pagination
   - Efforts are retrieved with `per_page=200` and page through until no more results.
 - Rate limits
-  - If 429, the client throttles for `RATE_LIMIT_THROTTLE_SECONDS` and retries. It also inspects headers and slows down if close to the short-window limit (within `RATE_LIMIT_NEAR_LIMIT_BUFFER`). Concurrency is capped both per-segment (`MAX_WORKERS`) and globally (`RATE_LIMIT_MAX_CONCURRENT`).
+  - A global `RateLimiter` enforces a soft cap on in-flight HTTP calls (initially `RATE_LIMIT_MAX_CONCURRENT`).
+  - Runtime resizing: call `from strava_competition.strava_api import set_rate_limiter; set_rate_limiter(4)` to lower or raise concurrency without restarting.
+  - If 429 or nearing the short-window limit (within `RATE_LIMIT_NEAR_LIMIT_BUFFER`), a brief throttle window (`RATE_LIMIT_THROTTLE_SECONDS`) is applied; small jitter further smooths bursts.
 - Timezones
   - Strava dates are converted to timezone-naive datetimes before writing because Excel doesn’t support TZ-aware datetimes.
 - Excel writing
   - Segment sheets use unique names within Excel’s 31-char limit.
   - If a segment has no data, a small message sheet is written instead.
   - Each segment sheet includes overall `Rank` (fastest=1) and per-team `Team Rank` based on `Fastest Time (sec)`; ties share the same rank.
+  - Summary sheet (if enabled) shows per-team: attempts, participating runner count, sum of each runner's fastest time, average fastest time
 
 ---
 
@@ -215,8 +221,7 @@ From the project root (with your virtual environment active):
 pip install -r requirements.txt
 pip install pytest
 
-# run all tests
-pytest -q
+pytest -q  # run all tests
 
 # or a single file
 pytest -q tests/test_excel_smoke.py
@@ -226,6 +231,13 @@ Notes:
 - Run from the repo root so `tests/conftest.py` is picked up and `strava_competition` imports resolve.
 - In VS Code, open the Testing sidebar and enable pytest to run via the UI.
 - If `pytest` is not found, ensure your virtual environment is active or install pytest into it.
+- Key test files:
+  - `test_excel_summary.py` – summary sheet aggregation
+  - `test_processor_and_excel.py` – end-to-end processing + Excel output
+  - `test_rate_limiter.py` – dynamic concurrency resize semantics
+  - `test_auth.py` – token refresh success & error cases
+  - `test_integration_api_auth.py` – integration of token refresh with effort fetching
+  - `test_strava_api_mocked.py` – API pagination & 401/402 handling
 
 ---
 
@@ -240,3 +252,8 @@ Notes:
 - Get refresh token: `python -m strava_competition.oauth`
 - Run app: `python -m strava_competition`
 - Output: `<OUTPUT_FILE>[_YYYYMMDD_HHMMSS].xlsx` in the configured path
+- Resize concurrency at runtime (optional):
+  ```python
+  from strava_competition.strava_api import set_rate_limiter
+  set_rate_limiter(4)  # reduce global in-flight request cap to 4
+  ```
