@@ -159,22 +159,27 @@ def _unique_sheet_name(base: str, used: set[str]) -> str:
     return name
 
 
-def write_results(filepath, results: ResultsMapping) -> None:
+def write_results(filepath, results: ResultsMapping, include_summary: bool = True) -> None:
     """Write per-segment results to an Excel workbook.
 
-    results structure:
-      { segment_name: { team_name: [SegmentResult, ...] } }
+    results structure: { segment_name: { team_name: [SegmentResult, ...] } }
+
+    Parameters
+    ----------
+    filepath : str | Path
+        Destination workbook path (overwritten).
+    results : mapping
+        Nested mapping of segment -> team -> list[SegmentResult].
+    include_summary : bool, default True
+        When True, adds a 'Summary' sheet with per-team aggregates.
     """
     filepath = _coerce_path(filepath)
-    with pd.ExcelWriter(
-        filepath, engine="openpyxl", datetime_format=EXCEL_DATETIME_FORMAT
-    ) as writer:
+    with pd.ExcelWriter(filepath, engine="openpyxl", datetime_format=EXCEL_DATETIME_FORMAT) as writer:
         if not results:
-            pd.DataFrame({"Message": ["No results to display."]}).to_excel(
-                writer, sheet_name="Summary", index=False
-            )
+            pd.DataFrame({"Message": ["No results to display."]}).to_excel(writer, sheet_name="Summary", index=False)
             return
         used_sheet_names: set[str] = set()
+        # Per-segment sheets
         for segment_name, team_data in results.items():
             rows: list[dict] = []
             for team, seg_results in team_data.items():
@@ -196,11 +201,56 @@ def write_results(filepath, results: ResultsMapping) -> None:
                 msg_df = pd.DataFrame({"Message": ["No results for this segment."]})
                 sheet_name = _unique_sheet_name(segment_name + "_msg", used_sheet_names)
                 msg_df.to_excel(writer, sheet_name=sheet_name[:MAX_SHEET_NAME_LEN], index=False)
-        # Safety: ensure at least one sheet exists
+
+        # Summary sheet
+        if include_summary and used_sheet_names:
+            from collections import defaultdict
+
+            team_runners: dict[str, set[str]] = defaultdict(set)
+            team_segments: dict[str, set[str]] = defaultdict(set)
+            team_attempts: dict[str, int] = defaultdict(int)
+            team_fastest_times: dict[str, list[float]] = defaultdict(list)
+
+            for segment_name, team_data in results.items():
+                for team, seg_results in team_data.items():
+                    if not seg_results:
+                        continue
+                    team_segments[team].add(segment_name)
+                    for r in seg_results:
+                        team_runners[team].add(r.runner)
+                        team_attempts[team] += r.attempts
+                        if r.fastest_time is not None:
+                            team_fastest_times[team].append(r.fastest_time)
+
+            summary_rows: list[dict] = []
+            for team, times in team_fastest_times.items():
+                if not times:
+                    continue
+                total_time = sum(times)
+                avg_time = total_time / len(times)
+                summary_rows.append(
+                    {
+                        "Team": team,
+                        "Runners Participating": len(team_runners[team]),
+                        "Segments With Participation": len(team_segments[team]),
+                        "Total Attempts": team_attempts[team],
+                        "Average Fastest Time (sec)": round(avg_time, 2),
+                        "Total Fastest Times (sec)": round(total_time, 2),
+                    }
+                )
+            if summary_rows:
+                summary_df = pd.DataFrame(summary_rows)
+                # Sort by total cumulative fastest time (lower cumulative time = better), then Team
+                if "Sum Fastest Times (sec)" in summary_df.columns:
+                    summary_df.sort_values(by=["Sum Fastest Times (sec)", "Team"], inplace=True)
+                else:
+                    summary_df.sort_values(by=["Average Fastest Time (sec)", "Team"], inplace=True)
+                sheet_name = _unique_sheet_name("Summary", used_sheet_names)
+                summary_df.to_excel(writer, sheet_name=sheet_name, index=False)
+
+        # Fallback to guarantee at least one sheet
         if not used_sheet_names:
-            pd.DataFrame({"Message": ["No data generated."]}).to_excel(
-                writer, sheet_name="Summary", index=False
-            )
+            pd.DataFrame({"Message": ["No data generated."]}).to_excel(writer, sheet_name="Summary", index=False)
 
 
 def update_runner_refresh_tokens(filepath, runners: Sequence[Runner]) -> None:
