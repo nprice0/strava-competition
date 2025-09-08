@@ -4,7 +4,7 @@ A Python application that reads competition inputs from an Excel workbook, fetch
 * Per‑segment leaderboards (attempts, fastest time & date, global + intra‑team ranks)
 * Optional distance/elevation competition window sheets (runs, total distance/elev, threshold run counts)
 * Summary sheets (segments aggregate; distance aggregate) if data present
-It also refreshes and persists runner refresh tokens back into the input workbook.
+* It also refreshes and persists runner refresh tokens back into the input workbook.
 
 ## Features
 Core
@@ -18,16 +18,12 @@ Core
 * Single activity fetch per runner across union of distance windows (no double counting overlaps) powering all window sheets + summary
 * Token refresh persistence back into input workbook
 
-Enterprise quality additions
+Additions
 * Optional team summary sheet (participation counts, attempts, aggregate & average fastest times)
 * Distance summary sheet (total runs, distance, elevation, average distance per run) for distance participants only
-* Dynamic, runtime‑adjustable global concurrency via `set_rate_limiter(max_concurrent=...)`
-* Graceful 401 retry and masking of sensitive tokens in logs
-* Autosizing of Excel columns (guarded for large sheets) & stable column ordering
-* Defensive schema validation with explicit error messaging
 
 Competition participation flexibility
-* A runner may appear in only one competition; blank team cells exclude them from that competition automatically
+* A runner may only be in none, one, or both competitions; blank team cells exclude them from that competition automatically.
 * Threshold column lets you track how many qualifying (≥ threshold km) runs each athlete logs per distance window
 
 ---
@@ -205,6 +201,7 @@ Logs:
 ---
 
 ## Behavior details
+These subsections describe current, implemented behavior.
 
 ### Architecture & services
 
@@ -228,31 +225,44 @@ Benefits of this structure:
 * Easier unit testing with dependency injection (e.g., custom fetcher for `DistanceService`)
 * Scalable path for additional competition types or persistence layers
 
-Planned next steps:
-* Remove deprecated shim module in next major bump
-* Activity caching abstraction
-* Optional CLI progress UI / metrics emission
-* Enhanced workbook schema versioning & validation
-- Token handling
+### Token handling (implemented)
+Immediate per-runner persistence on rotation, plus a final defensive snapshot at shutdown.
   - `auth.get_access_token` returns `(access_token, refresh_token)` using your runner’s `refresh_token`.
   - `strava_api.get_segment_efforts` caches `access_token` in-memory per runner to avoid redundant refresh calls.
   - If Strava returns 401 once, the app clears the cached token and retries once with a fresh token.
-- Pagination
   - Efforts are retrieved with `per_page=200` and page through until no more results.
-- Rate limits
   - A global `RateLimiter` enforces a soft cap on in-flight HTTP calls (initially `RATE_LIMIT_MAX_CONCURRENT`).
   - Runtime resizing: call `from strava_competition.strava_api import set_rate_limiter; set_rate_limiter(4)` to lower or raise concurrency without restarting.
   - If 429 or nearing the short-window limit (within `RATE_LIMIT_NEAR_LIMIT_BUFFER`), a brief throttle window (`RATE_LIMIT_THROTTLE_SECONDS`) is applied; small jitter further smooths bursts.
-- Timezones
   - Strava dates are converted to timezone-naive datetimes before writing because Excel doesn’t support TZ-aware datetimes.
-- Excel writing
   - Segment sheets use unique names within Excel’s 31-char limit.
   - If a segment has no data, a small message sheet is written instead.
   - Each segment sheet includes overall `Rank` (fastest=1) and per-team `Team Rank` based on `Fastest Time (sec)`; ties share the same rank.
   - Segment summary sheet (if enabled) shows per-team: attempts, participating runner count, sum/average fastest times
   - Distance summary sheet shows: total runs, total distance (km), total elevation gain (m), average distance per run (km)
 
+### Pagination
+Efforts are retrieved with `per_page=200` and page through until no more results.
+
+### Rate limits
+- A global `RateLimiter` enforces a soft cap on in-flight HTTP calls (initially `RATE_LIMIT_MAX_CONCURRENT`).
+- Runtime resizing: call `from strava_competition.strava_api import set_rate_limiter; set_rate_limiter(4)` to lower or raise concurrency without restarting.
+- If 429 or nearing the short-window limit (within `RATE_LIMIT_NEAR_LIMIT_BUFFER`), a brief throttle window (`RATE_LIMIT_THROTTLE_SECONDS`) is applied; small jitter further smooths bursts.
+
+### Timezones
+Strava dates are converted to timezone-naive datetimes before writing because Excel doesn’t support TZ-aware datetimes.
+
+### Excel writing
+- Segment sheets use unique names within Excel’s 31-char limit.
+- If a segment has no data, a small message sheet is written instead.
+- Each segment sheet includes overall `Rank` (fastest=1) and per-team `Team Rank` based on `Fastest Time (sec)`; ties share the same rank.
+- Segment summary sheet (if enabled) shows per-team: attempts, participating runner count, sum/average fastest times
+- Distance summary sheet shows: total runs, total distance (km), total elevation gain (m), average distance per run (km)
+
 ---
+## Roadmap (future)
+- Activity caching abstraction
+- Enhanced workbook schema versioning & validation
 
 ## Common issues and fixes
 - 401 Unauthorized when refreshing token
