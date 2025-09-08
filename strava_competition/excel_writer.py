@@ -1,8 +1,4 @@
-"""Excel writer utilities (segment + distance competition outputs).
-
-Reads are handled by excel_reader.py. This module focuses solely on
-transforming in-memory competition results into an Excel workbook.
-"""
+"""Excel writer for segment and distance outputs (reads live in excel_reader)."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -37,9 +33,7 @@ _REQUIRED_RUNNER_COLS = {"Name", "Strava ID", "Refresh Token", "Segment Series T
 def _coerce_path(pathlike) -> str:
     return str(Path(pathlike))
 
-# NOTE: Reading responsibility migrated to excel_reader module.
-
-## Segment aggregation now lives in segment_aggregation.build_segment_outputs
+## Segment aggregation lives in segment_aggregation.build_segment_outputs
 
 def _unique_sheet_name(base: str, used: set[str]) -> str:
     base = base[:MAX_SHEET_NAME_LEN]
@@ -90,9 +84,7 @@ def _write_segment_sheets(writer, results: ResultsMapping, used_sheet_names: set
         df.to_excel(writer, sheet_name=sheet_name, index=False)
         _autosize(writer.sheets[sheet_name])
 
-## Summary building now delegated to segment_aggregation
-
-## Summary writing handled via unified outputs list
+## Summary building handled via segment_aggregation
 
 def _write_distance_sheets(
     writer,

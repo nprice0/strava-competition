@@ -21,8 +21,6 @@ from .services import SegmentService, DistanceService
 from .strava_api import get_activities
 from .excel_writer import update_runner_refresh_tokens
 from .strava_api import _ensure_runner_token as _internal_ensure_token  # type: ignore
-# (Legacy direct import retained only if needed elsewhere) Distance logic now lives in distance_aggregation.
-# Direct use here removed; DistanceService handles aggregation.
 
 
 def main():

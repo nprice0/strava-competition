@@ -1,18 +1,8 @@
-"""Strava API client helpers (HTTP session, rate limiting, effort fetching).
+"""Strava API helpers: HTTP session, rate limiting, pagination, and effort/activity fetch.
 
-Public surface used elsewhere:
-        - get_segment_efforts(runner, segment_id, start_date, end_date)
-        - set_rate_limiter(max_concurrent=None)  # adjusts concurrency at runtime
-
-Design notes (concise):
-        * A single shared ``requests.Session`` provides connection pooling + retries.
-        * ``RateLimiter`` enforces a soft cap on concurrent in-flight calls and can
-            be resized safely without recreating global objects (important for threads
-            already waiting). Resizing is immediate for increases; decreases take
-            effect as in‑flight requests complete.
-        * Light jitter is applied to reduce synchronized burst patterns.
-        * Short-window Strava usage headers are inspected: if approaching the
-            limit, a brief throttle window is set to smooth traffic.
+Public surface:
+- get_segment_efforts(runner, segment_id, start_date, end_date)
+- set_rate_limiter(max_concurrent=None)
 """
 
 from __future__ import annotations
@@ -72,18 +62,7 @@ DEFAULT_TIMEOUT: int = REQUEST_TIMEOUT
 
 
 class RateLimiter:
-    """Concurrency + adaptive pacing primitive for API calls.
-
-    Core behaviors:
-      * Soft concurrency limit (``_max_allowed``) enforced with a condition
-        variable; threads wait while ``_in_flight`` >= limit.
-      * ``resize(new_max)`` changes the soft limit in-place (no swapping), so
-        waiting threads continue seamlessly. Upsizing wakes all waiters; downsizing
-        is naturally honored as active requests finish.
-      * Optional throttle window: triggered by HTTP 429 or nearing the reported
-        short-window usage limit; new requests sleep until the window expires.
-      * Small random jitter further staggers request timing to avoid clumping.
-    """
+    """Soft concurrency cap with optional throttle and small jitter to smooth bursts."""
 
     def __init__(
         self,
