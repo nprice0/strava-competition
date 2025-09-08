@@ -50,7 +50,7 @@ CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
 # Performance tuning
 # ---------------------------------------------------------------------------
 # Concurrency for per-segment parallel effort fetching
-MAX_WORKERS = 8  # threads per segment when fetching runner efforts
+MAX_WORKERS = 4  # threads per segment when fetching runner efforts
 
 # HTTP session connection pools (for parallel requests)
 HTTP_POOL_CONNECTIONS = 20
@@ -64,6 +64,10 @@ RATE_LIMIT_MAX_CONCURRENT = 8  # cap in-flight HTTP requests globally
 RATE_LIMIT_JITTER_RANGE = (0.05, 0.2)  # seconds; random jitter to smooth bursts
 RATE_LIMIT_NEAR_LIMIT_BUFFER = 3  # start throttling when within this many calls of the short-window limit
 RATE_LIMIT_THROTTLE_SECONDS = 15  # throttle window applied on 429 or when near limit
+
+# Retry/backoff settings for Strava API (used by fetch loops)
+STRAVA_MAX_RETRIES = 3          # attempts per page (network/5xx/HTML/non-JSON)
+STRAVA_BACKOFF_MAX_SECONDS = 4.0  # cap for exponential backoff per attempt
 
 
 # ---------------------------------------------------------------------------

@@ -71,7 +71,14 @@ def main():
             "Processing %s segments for %s segment runners ...", len(segments), len(segment_runners)
         )
         segment_service = SegmentService(max_workers=MAX_WORKERS)
-        results = segment_service.process(segments, segment_runners)
+
+        def _progress(seg_name: str, done: int, total: int) -> None:
+            # Log first, every 5th, and completion for visibility at INFO level
+            if done == 1 or done == total or done % 5 == 0:
+                logging.info("Segment %s progress: %d/%d runners fetched", seg_name, done, total)
+
+        results = segment_service.process(segments, segment_runners, progress=_progress)
+        logging.info("Finished segment aggregation for %d segments", len(results))
 
         # Distance/elevation competition processing via service (deduplicated summary)
         distance_windows_results: List[Tuple[str, list[dict]]] = []
