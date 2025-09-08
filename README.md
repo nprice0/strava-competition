@@ -85,14 +85,16 @@ Notes:
   * `__main__.py` — enables `python -m strava_competition`
   * `main.py` — orchestration entry point (segments + distance competitions)
   * `config.py` — configuration & tuning constants (paths, concurrency, HTTP pools, autosize flags)
-  * `excel_writer.py` — Excel result writer (reads moved to excel_reader.py)
+  * `excel_reader.py` — Excel input parser and validation
+  * `excel_writer.py` — Excel result writer
   * `segment_aggregation.py` — pure segment ranking & summary (mirrors distance_aggregation)
-  * (Removed) `processor.py` — functionality migrated to `services/segment_service.py`
   * `distance_aggregation.py` — distance window & summary builder (threshold aware)
+  * `services/` — high-level orchestration services (segment and distance)
   * `strava_api.py` — resilient Strava REST client (pagination, retries, adaptive rate limiting)
   * `auth.py` — token refresh / error decoding
   * `oauth.py` — local OAuth helper for initial refresh token acquisition
   * `models.py` — dataclasses (`Runner`, `Segment`, `SegmentResult`)
+  * (Deprecated shim) `processor.py` — kept temporarily; use services instead
 * `run.py` — lightweight convenience launcher (optional; mirrors `python -m`)
 
 ---
@@ -113,7 +115,7 @@ STRAVA_BASE_URL = 'https://www.strava.com/api/v3'
 STRAVA_OAUTH_URL = 'https://www.strava.com/oauth/token'
 
 # Performance tuning
-MAX_WORKERS = 8  # threads per segment when fetching runner efforts
+MAX_WORKERS = 4  # threads per segment when fetching runner efforts
 HTTP_POOL_CONNECTIONS = 20
 HTTP_POOL_MAXSIZE = 20
 REQUEST_TIMEOUT = 15  # seconds
@@ -121,6 +123,10 @@ RATE_LIMIT_MAX_CONCURRENT = 8
 RATE_LIMIT_JITTER_RANGE = (0.05, 0.2)
 RATE_LIMIT_NEAR_LIMIT_BUFFER = 3
 RATE_LIMIT_THROTTLE_SECONDS = 15
+
+# Retry/backoff (per page) for Strava API
+STRAVA_MAX_RETRIES = 3
+STRAVA_BACKOFF_MAX_SECONDS = 4.0
 ```
 
 Notes:
@@ -200,9 +206,9 @@ Logs:
 
 ## Behavior details
 
-### Architecture & Services (Refactor In Progress)
+### Architecture & services
 
-The project is refactoring towards a layered architecture:
+The project follows a layered architecture:
 
 ```
 Domain: models.py, errors.py
@@ -212,11 +218,10 @@ Services: services/segment_service.py, services/distance_service.py
 Orchestration: main.py, run.py
 ```
 
-Deprecated shims:
-* `processor.process_segments` now delegates to `SegmentService` (will be removed in a future major version)
-* `distance_aggregation.build_distance_outputs` and `segment_aggregation.build_segment_outputs` remain low-level; orchestration should prefer the corresponding services / writer.
+Deprecated shim:
+* `processor.process_segments` delegates to `SegmentService` (will be removed in a future major version). Prefer the services and `excel_writer`.
 
-Central errors live in `errors.py` (e.g., `ExcelFormatError`). Logging configuration is centralized via `logging_setup.configure_logging()` to avoid multiple modules invoking `basicConfig`.
+Central errors live in `errors.py` (e.g., `ExcelFormatError`). Logging is configured once in `main.py`/`run.py`.
 
 Benefits of this structure:
 * Clear separation of pure domain logic vs side effects (HTTP/Excel)
@@ -286,11 +291,12 @@ Notes:
 - If `pytest` is not found, ensure your virtual environment is active or install pytest into it.
 - Key test files:
   - `test_excel_summary.py` – segment summary sheet aggregation
-  - `test_processor_and_excel.py` – end-to-end processing + Excel output
   - `test_rate_limiter.py` – dynamic concurrency resize semantics
   - `test_auth.py` – token refresh success & error cases
   - `test_integration_api_auth.py` – integration of token refresh with effort fetching
   - `test_strava_api_mocked.py` – API pagination & 401/402 handling
+
+Legacy note: prefer importing from `strava_competition.*`. Any old top-level modules are deprecated and may be removed.
 
 ---
 
