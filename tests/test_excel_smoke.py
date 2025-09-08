@@ -2,7 +2,7 @@ import os
 import tempfile
 import pandas as pd
 
-from strava_competition.excel_io import write_results
+from strava_competition.excel_writer import write_results
 
 
 def test_write_results_empty_summary():

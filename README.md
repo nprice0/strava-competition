@@ -1,19 +1,34 @@
-# Strava Segment Competition Tool
+# Strava Segment & Distance Competition Tool
 
-A small Python app that reads competition inputs from an Excel file, fetches Strava segment efforts for listed runners, and writes per-segment results to an Excel report. It also refreshes and persists Strava refresh tokens back to your input workbook.
+A Python application that reads competition inputs from an Excel workbook, fetches Strava data for participating runners, and produces an Excel results workbook containing:
+* Per‑segment leaderboards (attempts, fastest time & date, global + intra‑team ranks)
+* Optional distance/elevation competition window sheets (runs, total distance/elev, threshold run counts)
+* Summary sheets (segments aggregate; distance aggregate) if data present
+It also refreshes and persists runner refresh tokens back into the input workbook.
 
 ## Features
-- Read input workbook with:
-  - Segments (name, ID, date window)
-  - Runners (name, Strava athlete ID, refresh token, team)
-- Fetch segment efforts from Strava with pagination, retry, and light rate-limit handling
-- Compute attempts, fastest time, and fastest date per runner
-- Output results to an Excel file (timestamp optional)
-- Update runner refresh tokens back into your input workbook
-- OAuth helper (`oauth.py`) to obtain initial refresh tokens securely
- - Optional summary sheet aggregating per-team metrics (attempt totals, participants, sum of fastest times, average fastest time)
- - Dynamic, runtime-adjustable global concurrency via `set_rate_limiter(max_concurrent=...)`
- - Resilient token refresh with retries and structured error detail (no secrets logged)
+Core
+* Structured input workbook with clearly separated competitions
+  * `Segment Series` sheet: segment definitions (ID, name, date window)
+  * `Runners` sheet: runner identity, credentials, and independent team membership for each competition
+  * Optional `Distance Series` sheet: distance/elevation competition windows including per‑window distance thresholds
+* Fetch segment efforts (pagination, retries, adaptive rate limiting, resilient token refresh)
+* Compute per‑runner attempts, fastest time & date, rank, and team rank for each segment
+* Distance competition: per window total runs, distance (km), elevation (m) and Runs ≥ Threshold (km) count (if threshold provided)
+* Single activity fetch per runner across union of distance windows (no double counting overlaps) powering all window sheets + summary
+* Token refresh persistence back into input workbook
+
+Enterprise quality additions
+* Optional team summary sheet (participation counts, attempts, aggregate & average fastest times)
+* Distance summary sheet (total runs, distance, elevation, average distance per run) for distance participants only
+* Dynamic, runtime‑adjustable global concurrency via `set_rate_limiter(max_concurrent=...)`
+* Graceful 401 retry and masking of sensitive tokens in logs
+* Autosizing of Excel columns (guarded for large sheets) & stable column ordering
+* Defensive schema validation with explicit error messaging
+
+Competition participation flexibility
+* A runner may appear in only one competition; blank team cells exclude them from that competition automatically
+* Threshold column lets you track how many qualifying (≥ threshold km) runs each athlete logs per distance window
 
 ---
 
@@ -66,17 +81,19 @@ Notes:
 ---
 
 ## Project structure (key files)
-- `strava_competition/` — Python package
-  - `__main__.py` — allows running via `python -m strava_competition`
-  - `main.py` — entry point; coordinates reading inputs, processing, writing results, and persisting tokens
-  - `config.py` — configuration constants (paths, timestamp toggle, Strava API settings)
-    - Performance knobs: concurrency, HTTP pool sizes, timeouts, and rate-limiter thresholds
-  - `excel_io.py` — Excel read/write utilities
-  - `processor.py` — transforms Strava efforts into reportable results (supports cancellation & progress callback)
-  - `strava_api.py` — Strava API client (pagination, retries, adaptive rate limiting, token caching per runner)
-  - `auth.py` — robust token refresh (retries + error decoding) returning `(access_token, maybe_new_refresh_token)`
-  - `oauth.py` — local OAuth helper to obtain a refresh token via browser
-  - `models.py` — simple data models
+* `strava_competition/` — Python package
+  * `__main__.py` — enables `python -m strava_competition`
+  * `main.py` — orchestration entry point (segments + distance competitions)
+  * `config.py` — configuration & tuning constants (paths, concurrency, HTTP pools, autosize flags)
+  * `excel_writer.py` — Excel result writer (reads moved to excel_reader.py)
+  * `segment_aggregation.py` — pure segment ranking & summary (mirrors distance_aggregation)
+  * (Removed) `processor.py` — functionality migrated to `services/segment_service.py`
+  * `distance_aggregation.py` — distance window & summary builder (threshold aware)
+  * `strava_api.py` — resilient Strava REST client (pagination, retries, adaptive rate limiting)
+  * `auth.py` — token refresh / error decoding
+  * `oauth.py` — local OAuth helper for initial refresh token acquisition
+  * `models.py` — dataclasses (`Runner`, `Segment`, `SegmentResult`)
+* `run.py` — lightweight convenience launcher (optional; mirrors `python -m`)
 
 ---
 
@@ -121,10 +138,16 @@ Notes:
 - No shell restart is needed; activate your venv and run the app/tests.
 
 ### Input workbook format
-- Sheet: `Segments`
-  - Columns: `Segment ID` (int), `Segment Name` (str), `Start Date` (date), `End Date` (date)
-- Sheet: `Runners`
-  - Columns: `Name` (str), `Strava ID` (int), `Refresh Token` (str), `Team` (str)
+Sheets (case sensitive):
+* `Segment Series`
+  * Columns: `Segment ID` (int), `Segment Name` (str), `Start Date` (date), `End Date` (date)
+* `Runners`
+  * Columns: `Name` (str), `Strava ID` (int), `Refresh Token` (str), `Segment Series Team` (str | blank), `Distance Series Team` (str | blank)
+    * Blank segment team => runner excluded from segment competition
+    * Blank distance team => runner excluded from distance competition
+* Optional `Distance Series`
+  * Columns: `Start Date` (date), `End Date` (date), `Distance Threshold (km)` (float|int|blank)
+  * Each row defines a distance competition window; threshold (if set) drives extra column `Runs ≥ <threshold> km`
 
 Dates can be Excel dates or ISO-like strings; they are parsed with pandas.
 
@@ -155,21 +178,20 @@ Troubleshooting:
 ---
 
 ## Running the app
-From the project root (with your venv active):
+From the project root (venv active):
 
 ```bash
-# easiest
-python run.py
-
-# or via the package entry point
-python -m strava_competition
+python -m strava_competition   # preferred
+# or
+python run.py                  # convenience wrapper
 ```
 
 What it does:
-- Reads segments and runners from `INPUT_FILE`
-- Fetches segment efforts for each runner and time window (with pagination and retries)
+- Reads segments, runners, and optional distance windows from `INPUT_FILE`
+- Fetches segment efforts for each runner and time window (pagination, retries, adaptive rate limiting)
+- If a `Distance Series` sheet exists, fetches run activities once per distance runner over the union of all windows, then derives per-window sheets + distance summary (no double counting overlaps)
 - Writes a results workbook to `<OUTPUT_FILE>.xlsx` (with optional timestamp)
-- Persists any updated refresh tokens back to the `Runners` sheet in your input workbook
+- Persists any updated refresh tokens back to the `Runners` sheet
 
 Logs:
 - Logs print to stdout. Authentication logs mask secrets; refresh token endings are logged per runner.
@@ -177,6 +199,35 @@ Logs:
 ---
 
 ## Behavior details
+
+### Architecture & Services (Refactor In Progress)
+
+The project is refactoring towards a layered architecture:
+
+```
+Domain: models.py, errors.py
+Infrastructure: auth.py, oauth.py, strava_api.py, utils.py
+I/O: excel_reader.py (pure reads), excel_writer.py (writes)
+Services: services/segment_service.py, services/distance_service.py
+Orchestration: main.py, run.py
+```
+
+Deprecated shims:
+* `processor.process_segments` now delegates to `SegmentService` (will be removed in a future major version)
+* `distance_aggregation.build_distance_outputs` and `segment_aggregation.build_segment_outputs` remain low-level; orchestration should prefer the corresponding services / writer.
+
+Central errors live in `errors.py` (e.g., `ExcelFormatError`). Logging configuration is centralized via `logging_setup.configure_logging()` to avoid multiple modules invoking `basicConfig`.
+
+Benefits of this structure:
+* Clear separation of pure domain logic vs side effects (HTTP/Excel)
+* Easier unit testing with dependency injection (e.g., custom fetcher for `DistanceService`)
+* Scalable path for additional competition types or persistence layers
+
+Planned next steps:
+* Remove deprecated shim module in next major bump
+* Activity caching abstraction
+* Optional CLI progress UI / metrics emission
+* Enhanced workbook schema versioning & validation
 - Token handling
   - `auth.get_access_token` returns `(access_token, refresh_token)` using your runner’s `refresh_token`.
   - `strava_api.get_segment_efforts` caches `access_token` in-memory per runner to avoid redundant refresh calls.
@@ -193,7 +244,8 @@ Logs:
   - Segment sheets use unique names within Excel’s 31-char limit.
   - If a segment has no data, a small message sheet is written instead.
   - Each segment sheet includes overall `Rank` (fastest=1) and per-team `Team Rank` based on `Fastest Time (sec)`; ties share the same rank.
-  - Summary sheet (if enabled) shows per-team: attempts, participating runner count, sum of each runner's fastest time, average fastest time
+  - Segment summary sheet (if enabled) shows per-team: attempts, participating runner count, sum/average fastest times
+  - Distance summary sheet shows: total runs, total distance (km), total elevation gain (m), average distance per run (km)
 
 ---
 
@@ -208,6 +260,7 @@ Logs:
   - Fixed in code: times are normalized to timezone-naive before writing.
 - “No visible sheet” on save
   - The app writes a default summary sheet or per-segment messages if there are no results.
+  - Distance sheets are still written (if defined) even when no segment efforts are available.
 - Port 5000 already in use
   - Change `OAUTH_PORT` in `oauth.py` or stop the process using the port.
 
@@ -232,7 +285,7 @@ Notes:
 - In VS Code, open the Testing sidebar and enable pytest to run via the UI.
 - If `pytest` is not found, ensure your virtual environment is active or install pytest into it.
 - Key test files:
-  - `test_excel_summary.py` – summary sheet aggregation
+  - `test_excel_summary.py` – segment summary sheet aggregation
   - `test_processor_and_excel.py` – end-to-end processing + Excel output
   - `test_rate_limiter.py` – dynamic concurrency resize semantics
   - `test_auth.py` – token refresh success & error cases

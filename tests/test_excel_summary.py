@@ -1,37 +1,13 @@
 import pandas as pd
 from pathlib import Path
 
-from strava_competition.excel_io import write_results
-from strava_competition.models import SegmentResult
+from strava_competition.excel_writer import write_results
 
 # Helper to build results mapping structure expected by write_results
 # { segment_name: { team_name: [SegmentResult, ...] } }
 
-def _build_results():
-    return {
-        "Segment One": {
-            "Team A": [
-                SegmentResult(runner="Runner1", team="Team A", segment="Segment One", attempts=2, fastest_time=100, fastest_date="2025-01-01T10:00:00"),
-                SegmentResult(runner="Runner2", team="Team A", segment="Segment One", attempts=1, fastest_time=120, fastest_date="2025-01-01T10:05:00"),
-            ],
-            "Team B": [
-                SegmentResult(runner="Runner3", team="Team B", segment="Segment One", attempts=3, fastest_time=90, fastest_date="2025-01-01T09:50:00"),
-            ],
-        },
-        "Segment Two": {
-            "Team A": [
-                SegmentResult(runner="Runner1", team="Team A", segment="Segment Two", attempts=1, fastest_time=110, fastest_date="2025-01-02T11:00:00"),
-            ],
-            # Team B has no participation on this segment (omitted entirely)
-            "Team C": [
-                SegmentResult(runner="Runner4", team="Team C", segment="Segment Two", attempts=2, fastest_time=80, fastest_date="2025-01-02T11:15:00"),
-            ],
-        },
-    }
-
-
-def test_summary_sheet_aggregates(tmp_path: Path):
-    results = _build_results()
+def test_summary_sheet_aggregates(tmp_path: Path, segment_results, assert_summary_columns):
+    results = segment_results
     out = tmp_path / "output.xlsx"
     write_results(out, results, include_summary=True)
 
@@ -76,8 +52,8 @@ def test_summary_sheet_aggregates(tmp_path: Path):
     assert summary.loc["Team C", "Total Fastest Times (sec)"] == 80.0
 
 
-def test_no_summary_when_disabled(tmp_path: Path):
-    results = _build_results()
+def test_no_summary_when_disabled(tmp_path: Path, segment_results):
+    results = segment_results
     out = tmp_path / "output_no_summary.xlsx"
     write_results(out, results, include_summary=False)
     book = pd.read_excel(out, sheet_name=None)

@@ -65,3 +65,46 @@ RATE_LIMIT_JITTER_RANGE = (0.05, 0.2)  # seconds; random jitter to smooth bursts
 RATE_LIMIT_NEAR_LIMIT_BUFFER = 3  # start throttling when within this many calls of the short-window limit
 RATE_LIMIT_THROTTLE_SECONDS = 15  # throttle window applied on 429 or when near limit
 
+
+# ---------------------------------------------------------------------------
+# Distance competition options
+# ---------------------------------------------------------------------------
+# When True, create a distance window sheet even if a specific window produced zero rows.
+DISTANCE_CREATE_EMPTY_WINDOW_SHEETS = False
+
+# Enforce canonical column ordering for distance sheets.
+DISTANCE_ENFORCE_COLUMN_ORDER = True
+
+# Column order applied if enforcement enabled (missing columns ignored gracefully)
+DISTANCE_COLUMN_ORDER = [
+	"Runner",
+	"Team",
+	"Runs",
+	"Total Distance (km)",
+	"Total Elev Gain (m)",
+	"Avg Distance per Run (km)",  # only present in summary sheet
+]
+
+
+# ---------------------------------------------------------------------------
+# Excel formatting
+# ---------------------------------------------------------------------------
+# Enforce canonical column ordering for segment sheets.
+SEGMENT_ENFORCE_COLUMN_ORDER = True
+SEGMENT_COLUMN_ORDER = [
+	"Team",
+	"Runner",
+	"Rank",
+	"Team Rank",
+	"Attempts",
+	"Fastest Time (sec)",
+	"Fastest Date",
+]
+
+# Automatically size column widths after writing each sheet (openpyxl only)
+EXCEL_AUTOSIZE_COLUMNS = True
+EXCEL_AUTOSIZE_MAX_WIDTH = 50   # characters
+EXCEL_AUTOSIZE_MIN_WIDTH = 6    # characters
+EXCEL_AUTOSIZE_PADDING = 2      # extra chars added to detected max
+EXCEL_AUTOSIZE_MAX_ROWS = 5000  # skip autosize for very large sheets (perf guard)
+

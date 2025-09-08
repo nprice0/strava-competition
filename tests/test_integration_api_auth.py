@@ -66,7 +66,7 @@ def test_integration_token_refresh_and_segment_fetch(monkeypatch):
 
     monkeypatch.setattr(strava_api._session, "get", fake_get)
 
-    runner = Runner(name="Alice", strava_id=1, refresh_token="origRT", team="Red")
+    runner = Runner(name="Alice", strava_id=1, refresh_token="origRT", segment_team="Red")
 
     efforts = strava_api.get_segment_efforts(
         runner,

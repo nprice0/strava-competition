@@ -66,7 +66,7 @@ def test_get_segment_efforts_pagination(monkeypatch):
     monkeypatch.setattr(strava_api._session, "get", fake_get)
     monkeypatch.setattr(strava_api, "get_access_token", lambda rt, runner_name=None: ("at1", rt))
 
-    runner = Runner(name="Alice", strava_id=1, refresh_token="rt1", team="Red")
+    runner = Runner(name="Alice", strava_id=1, refresh_token="rt1", segment_team="Red")
     efforts = strava_api.get_segment_efforts(
         runner,
         segment_id=123,
@@ -91,7 +91,7 @@ def test_get_segment_efforts_refresh_on_401(monkeypatch):
     monkeypatch.setattr(strava_api._session, "get", fake_get)
     monkeypatch.setattr(strava_api, "get_access_token", lambda rt, runner_name=None: ("new_access", rt))
 
-    runner = Runner(name="Bob", strava_id=2, refresh_token="rt2", team="Blue")
+    runner = Runner(name="Ben", strava_id=2, refresh_token="rt2", segment_team="Blue")
     efforts = strava_api.get_segment_efforts(
         runner,
         segment_id=456,
@@ -116,7 +116,7 @@ def test_get_segment_efforts_402_json_error(monkeypatch, caplog):
     monkeypatch.setattr(strava_api._session, "get", fake_get)
     monkeypatch.setattr(strava_api, "get_access_token", lambda rt, runner_name=None: ("tok", rt))
 
-    runner = Runner(name="Cara", strava_id=3, refresh_token="rt3", team="Green")
+    runner = Runner(name="Cara", strava_id=3, refresh_token="rt3", segment_team="Green")
     caplog.set_level("INFO")
     efforts = strava_api.get_segment_efforts(
         runner,

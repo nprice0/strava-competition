@@ -190,6 +190,33 @@ def set_rate_limiter(max_concurrent: Optional[int] = None) -> None:
             logging.error("Failed to resize rate limiter: %s", e)
 
 
+# --- Shared auth helpers -------------------------------------
+def _ensure_runner_token(runner: "Runner") -> None:
+    """Ensure the runner has a current access token.
+
+    Performs a refresh using the runner's stored refresh_token if no access token
+    is cached. If Strava rotates the refresh token, update the runner instance.
+    """
+    if not getattr(runner, "access_token", None):
+        access_token, new_refresh_token = get_access_token(
+            runner.refresh_token, runner_name=runner.name
+        )
+        runner.access_token = access_token
+        if new_refresh_token and new_refresh_token != runner.refresh_token:
+            runner.refresh_token = new_refresh_token
+            # Attempt immediate persistence (best-effort, silent on failure)
+            try:
+                from .excel_writer import update_single_runner_refresh_token  # local import to avoid cycle
+                from .config import INPUT_FILE
+                update_single_runner_refresh_token(INPUT_FILE, runner)
+            except Exception:
+                pass
+
+
+def _auth_headers(runner: "Runner") -> Dict[str, str]:
+    return {"Authorization": f"Bearer {runner.access_token}"}
+
+
 def get_segment_efforts(
     runner: Runner,
     segment_id: int,
@@ -206,17 +233,11 @@ def get_segment_efforts(
     Returns a list (possibly empty) or None on unrecoverable error.
     """
 
-    def auth_headers() -> Dict[str, str]:
-        return {"Authorization": f"Bearer {runner.access_token}"}
+    def auth_headers() -> Dict[str, str]:  # local alias for brevity
+        return _auth_headers(runner)
 
     def ensure_token() -> None:
-        if not runner.access_token:
-            access_token, new_refresh_token = get_access_token(
-                runner.refresh_token, runner_name=runner.name
-            )
-            runner.access_token = access_token
-            if new_refresh_token and new_refresh_token != runner.refresh_token:
-                runner.refresh_token = new_refresh_token
+        _ensure_runner_token(runner)
 
     def fetch_page(page: int) -> JSONList:
         url = f"{STRAVA_BASE_URL}/segment_efforts"
@@ -227,24 +248,77 @@ def get_segment_efforts(
             "per_page": 200,
             "page": page,
         }
-        _limiter.before_request()
-        resp = _session.get(
-            url, headers=auth_headers(), params=params, timeout=DEFAULT_TIMEOUT
-        )
-        _limiter.after_response(resp.headers, resp.status_code)
-        if resp.status_code == 429:
-            resp.raise_for_status()
-        resp.raise_for_status()
-        try:
-            data = resp.json()
-        except ValueError:
-            logging.error(
-                "Non-JSON response for segment efforts runner=%s segment=%s page=%s",
-                runner.name,
-                segment_id,
-                page,
+        attempts = 0
+        backoff = 1.0
+        while True:
+            attempts += 1
+            _limiter.before_request()
+            resp = _session.get(
+                url, headers=auth_headers(), params=params, timeout=DEFAULT_TIMEOUT
             )
-            return []
+            _limiter.after_response(resp.headers, resp.status_code)
+            ct = resp.headers.get("Content-Type", "")
+            if resp.status_code == 429:
+                resp.raise_for_status()
+            # Treat HTML (downtime page) as transient up to 5 tries
+            is_html = "text/html" in ct.lower()
+            try:
+                resp.raise_for_status()
+            except requests.HTTPError:
+                if attempts < 5 and (500 <= resp.status_code < 600 or is_html):
+                    logging.warning(
+                        "Transient error (status=%s html=%s) for segment efforts runner=%s page=%s attempt=%s; backing off %.1fs",
+                        resp.status_code,
+                        is_html,
+                        runner.name,
+                        page,
+                        attempts,
+                        backoff,
+                    )
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 8.0)
+                    continue
+                raise
+            if is_html:
+                if attempts < 5:
+                    logging.warning(
+                        "HTML downtime page for segment efforts runner=%s page=%s attempt=%s; retrying in %.1fs",
+                        runner.name,
+                        page,
+                        attempts,
+                        backoff,
+                    )
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 8.0)
+                    continue
+                logging.error(
+                    "Giving up on HTML downtime page (segment efforts) runner=%s page=%s after %s attempts",
+                    runner.name,
+                    page,
+                    attempts,
+                )
+                return []
+            try:
+                data = resp.json()
+            except ValueError:
+                if attempts < 5:
+                    logging.warning(
+                        "Non-JSON response (segment efforts) runner=%s page=%s attempt=%s; retrying in %.1fs",
+                        runner.name,
+                        page,
+                        attempts,
+                        backoff,
+                    )
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 8.0)
+                    continue
+                logging.error(
+                    "Non-JSON response (segment efforts) runner=%s page=%s after %s attempts; abandoning page",
+                    runner.name,
+                    page,
+                    attempts,
+                )
+                return []
         if not isinstance(data, list):  # Defensive: Strava expected list
             logging.warning(
                 "Unexpected JSON shape (not list) for efforts runner=%s segment=%s page=%s type=%s",
@@ -347,6 +421,173 @@ def get_segment_efforts(
             logging.error(
                 f"Error for runner {runner.name}: HTTP {status}{suffix}"
             )
+        return None
+
+
+def get_activities(
+    runner: Runner,
+    start_date: datetime,
+    end_date: datetime,
+) -> Optional[List[Dict[str, Any]]]:
+    """Fetch all activities for a runner in [start_date, end_date].
+
+    Uses /athlete/activities with pagination (per_page=200). Filters locally to
+    activity 'type' == 'Run'. Returns list (possibly empty) or None on error.
+    Inclusive range based on activity start_date_local.
+    """
+
+    def auth_headers() -> Dict[str, str]:  # local alias
+        return _auth_headers(runner)
+
+    def ensure_token() -> None:
+        _ensure_runner_token(runner)
+
+    after_ts = int(start_date.timestamp())
+    before_ts = int(end_date.timestamp())
+
+    def fetch_page(page: int) -> JSONList:
+        url = f"{STRAVA_BASE_URL}/athlete/activities"
+        params = {
+            "after": after_ts,
+            "before": before_ts,
+            "per_page": 200,
+            "page": page,
+        }
+        attempts = 0
+        backoff = 1.0
+        while True:
+            attempts += 1
+            _limiter.before_request()
+            resp = _session.get(
+                url, headers=auth_headers(), params=params, timeout=DEFAULT_TIMEOUT
+            )
+            _limiter.after_response(resp.headers, resp.status_code)
+            ct = resp.headers.get("Content-Type", "")
+            if resp.status_code == 429:
+                resp.raise_for_status()
+            is_html = "text/html" in ct.lower()
+            try:
+                resp.raise_for_status()
+            except requests.HTTPError:
+                if attempts < 5 and (500 <= resp.status_code < 600 or is_html):
+                    logging.warning(
+                        "Transient error (status=%s html=%s) for activities runner=%s page=%s attempt=%s; backing off %.1fs",
+                        resp.status_code,
+                        is_html,
+                        runner.name,
+                        page,
+                        attempts,
+                        backoff,
+                    )
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 8.0)
+                    continue
+                raise
+            if is_html:
+                if attempts < 5:
+                    logging.warning(
+                        "HTML downtime page for activities runner=%s page=%s attempt=%s; retrying in %.1fs",
+                        runner.name,
+                        page,
+                        attempts,
+                        backoff,
+                    )
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 8.0)
+                    continue
+                logging.error(
+                    "Giving up on HTML downtime page (activities) runner=%s page=%s after %s attempts",
+                    runner.name,
+                    page,
+                    attempts,
+                )
+                return []
+            try:
+                data = resp.json()
+            except ValueError:
+                if attempts < 5:
+                    logging.warning(
+                        "Non-JSON response (activities) runner=%s page=%s attempt=%s; retrying in %.1fs",
+                        runner.name,
+                        page,
+                        attempts,
+                        backoff,
+                    )
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 8.0)
+                    continue
+                logging.error(
+                    "Non-JSON response (activities) runner=%s page=%s after %s attempts; abandoning page",
+                    runner.name,
+                    page,
+                    attempts,
+                )
+                return []
+        if not isinstance(data, list):
+            logging.warning(
+                "Unexpected JSON shape (not list) for activities runner=%s page=%s type=%s",
+                runner.name,
+                page,
+                type(data).__name__,
+            )
+            return []
+        return data  # type: ignore[return-value]
+
+    try:
+        ensure_token()
+        all_acts: List[Dict[str, Any]] = []
+        page = 1
+        attempted_refresh = False
+        while True:
+            try:
+                data = fetch_page(page)
+            except requests.exceptions.HTTPError as e:
+                if (
+                    e.response is not None
+                    and e.response.status_code == 401
+                    and not attempted_refresh
+                ):
+                    logging.info(
+                        f"401 for runner {runner.name} (activities). Refreshing token and retrying page {page}."
+                    )
+                    runner.access_token = None
+                    ensure_token()
+                    attempted_refresh = True
+                    data = fetch_page(page)
+                else:
+                    raise
+            if not data:
+                break
+            all_acts.extend(data)
+            if len(data) < 200:
+                break
+            page += 1
+        # Local filter by time & type
+        filtered: List[Dict[str, Any]] = []
+        for act in all_acts:
+            if act.get("type") != "Run":
+                continue
+            start_local = act.get("start_date_local")
+            if not start_local:
+                continue
+            try:
+                dt = datetime.fromisoformat(start_local.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            if start_date <= dt <= end_date:
+                filtered.append(act)
+        return filtered
+    except requests.exceptions.HTTPError as e:  # pragma: no cover
+        resp = e.response
+        if resp is None:
+            logging.error(
+                f"HTTPError (activities) no response object for runner {runner.name}: {e}"
+            )
+            return None
+        detail = _extract_error(resp)
+        logging.error(
+            "Activities fetch error runner=%s status=%s detail=%s", runner.name, resp.status_code, detail
+        )
         return None
 
 
