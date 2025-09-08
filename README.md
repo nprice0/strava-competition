@@ -90,7 +90,7 @@ Notes:
   * `auth.py` — token refresh / error decoding
   * `oauth.py` — local OAuth helper for initial refresh token acquisition
   * `models.py` — dataclasses (`Runner`, `Segment`, `SegmentResult`)
-  * (Deprecated shim) `processor.py` — kept temporarily; use services instead
+  * (Removed) `processor.py` — functionality lives in `services/segment_service.py`
 * `run.py` — lightweight convenience launcher (optional; mirrors `python -m`)
 
 ---
@@ -215,31 +215,11 @@ Services: services/segment_service.py, services/distance_service.py
 Orchestration: main.py, run.py
 ```
 
-Deprecated shim:
-* `processor.process_segments` delegates to `SegmentService` (will be removed in a future major version). Prefer the services and `excel_writer`.
-
-Central errors live in `errors.py` (e.g., `ExcelFormatError`). Logging is configured once in `main.py`/`run.py`.
-
-Benefits of this structure:
-* Clear separation of pure domain logic vs side effects (HTTP/Excel)
-* Easier unit testing with dependency injection (e.g., custom fetcher for `DistanceService`)
-* Scalable path for additional competition types or persistence layers
-
 ### Token handling
 Immediate per-runner persistence on rotation, plus a final defensive snapshot at shutdown.
   - `auth.get_access_token` returns `(access_token, refresh_token)` using your runner’s `refresh_token`.
   - `strava_api.get_segment_efforts` caches `access_token` in-memory per runner to avoid redundant refresh calls.
   - If Strava returns 401 once, the app clears the cached token and retries once with a fresh token.
-  - Efforts are retrieved with `per_page=200` and page through until no more results.
-  - A global `RateLimiter` enforces a soft cap on in-flight HTTP calls (initially `RATE_LIMIT_MAX_CONCURRENT`).
-  - Runtime resizing: call `from strava_competition.strava_api import set_rate_limiter; set_rate_limiter(4)` to lower or raise concurrency without restarting.
-  - If 429 or nearing the short-window limit (within `RATE_LIMIT_NEAR_LIMIT_BUFFER`), a brief throttle window (`RATE_LIMIT_THROTTLE_SECONDS`) is applied; small jitter further smooths bursts.
-  - Strava dates are converted to timezone-naive datetimes before writing because Excel doesn’t support TZ-aware datetimes.
-  - Segment sheets use unique names within Excel’s 31-char limit.
-  - If a segment has no data, a small message sheet is written instead.
-  - Each segment sheet includes overall `Rank` (fastest=1) and per-team `Team Rank` based on `Fastest Time (sec)`; ties share the same rank.
-  - Segment summary sheet (if enabled) shows per-team: attempts, participating runner count, sum/average fastest times
-  - Distance summary sheet shows: total runs, total distance (km), total elevation gain (m), average distance per run (km)
 
 ### Pagination
 Efforts are retrieved with `per_page=200` and page through until no more results.
