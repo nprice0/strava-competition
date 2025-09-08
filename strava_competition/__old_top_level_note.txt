@@ -1,1 +1,0 @@
-The project was converted to a package. If any old top-level modules still exist, prefer the versions under strava_competition/ and update imports accordingly.
