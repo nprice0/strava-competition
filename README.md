@@ -225,7 +225,7 @@ Benefits of this structure:
 * Easier unit testing with dependency injection (e.g., custom fetcher for `DistanceService`)
 * Scalable path for additional competition types or persistence layers
 
-### Token handling (implemented)
+### Token handling
 Immediate per-runner persistence on rotation, plus a final defensive snapshot at shutdown.
   - `auth.get_access_token` returns `(access_token, refresh_token)` using your runner’s `refresh_token`.
   - `strava_api.get_segment_efforts` caches `access_token` in-memory per runner to avoid redundant refresh calls.
