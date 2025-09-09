@@ -90,7 +90,6 @@ Notes:
   * `auth.py` — token refresh / error decoding
   * `oauth.py` — local OAuth helper for initial refresh token acquisition
   * `models.py` — dataclasses (`Runner`, `Segment`, `SegmentResult`)
-  * (Removed) `processor.py` — functionality lives in `services/segment_service.py`
 * `run.py` — lightweight convenience launcher (optional; mirrors `python -m`)
 
 ---
