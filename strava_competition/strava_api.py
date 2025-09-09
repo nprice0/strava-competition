@@ -198,6 +198,182 @@ def _auth_headers(runner: "Runner") -> Dict[str, str]:
     return {"Authorization": f"Bearer {runner.access_token}"}
 
 
+def _fetch_page_with_retries(
+    runner: "Runner",
+    url: str,
+    params: Dict[str, Any],
+    context_label: str,
+    page: int,
+    *,
+    segment_id: Optional[int] = None,
+) -> JSONList:
+    """GET a single page with resilient retries/backoff and HTML/non-JSON handling.
+
+    Returns a list (possibly empty). On final give-up for transient issues, returns [].
+    Raises HTTPError for non-retriable errors (e.g., 429 beyond limiter, 4xx not handled).
+    """
+    attempts = 0
+    backoff = 1.0
+    while True:
+        attempts += 1
+        _limiter.before_request()
+        resp = None
+        try:
+            resp = _session.get(
+                url, headers=_auth_headers(runner), params=params, timeout=DEFAULT_TIMEOUT
+            )
+        except requests.RequestException as e:
+            _limiter.after_response(None, None)
+            if attempts < STRAVA_MAX_RETRIES:
+                if segment_id is not None:
+                    logging.warning(
+                        "%s network error runner=%s segment=%s page=%s attempt=%s err=%s; backoff %.1fs",
+                        context_label.capitalize(),
+                        runner.name,
+                        segment_id,
+                        page,
+                        attempts,
+                        e.__class__.__name__,
+                        backoff,
+                    )
+                else:
+                    logging.warning(
+                        "%s network error runner=%s page=%s attempt=%s err=%s; backoff %.1fs",
+                        context_label.capitalize(),
+                        runner.name,
+                        page,
+                        attempts,
+                        e.__class__.__name__,
+                        backoff,
+                    )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+                continue
+            if segment_id is not None:
+                logging.error(
+                    "%s network error (giving up) runner=%s segment=%s page=%s attempts=%s err=%s",
+                    context_label.capitalize(),
+                    runner.name,
+                    segment_id,
+                    page,
+                    attempts,
+                    e,
+                )
+            else:
+                logging.error(
+                    "%s network error (giving up) runner=%s page=%s attempts=%s err=%s",
+                    context_label.capitalize(),
+                    runner.name,
+                    page,
+                    attempts,
+                    e,
+                )
+            return []
+        else:
+            _limiter.after_response(resp.headers, resp.status_code)
+
+        ct = resp.headers.get("Content-Type", "")
+        if resp.status_code == 429:
+            resp.raise_for_status()
+        is_html = "text/html" in ct.lower()
+        try:
+            resp.raise_for_status()
+        except requests.HTTPError:
+            if attempts < STRAVA_MAX_RETRIES and (500 <= resp.status_code < 600 or is_html):
+                if segment_id is not None:
+                    logging.warning(
+                        "Transient error (status=%s html=%s) for %s runner=%s page=%s attempt=%s; backing off %.1fs",
+                        resp.status_code,
+                        is_html,
+                        context_label,
+                        runner.name,
+                        page,
+                        attempts,
+                        backoff,
+                    )
+                else:
+                    logging.warning(
+                        "Transient error (status=%s html=%s) for %s runner=%s page=%s attempt=%s; backing off %.1fs",
+                        resp.status_code,
+                        is_html,
+                        context_label,
+                        runner.name,
+                        page,
+                        attempts,
+                        backoff,
+                    )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+                continue
+            raise
+
+        if is_html:
+            if attempts < STRAVA_MAX_RETRIES:
+                logging.warning(
+                    "HTML downtime page for %s runner=%s page=%s attempt=%s; retrying in %.1fs",
+                    context_label,
+                    runner.name,
+                    page,
+                    attempts,
+                    backoff,
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+                continue
+            logging.error(
+                "Giving up on HTML downtime page (%s) runner=%s page=%s after %s attempts",
+                context_label,
+                runner.name,
+                page,
+                attempts,
+            )
+            return []
+
+        try:
+            data = resp.json()
+        except ValueError:
+            if attempts < STRAVA_MAX_RETRIES:
+                logging.warning(
+                    "Non-JSON response (%s) runner=%s page=%s attempt=%s; retrying in %.1fs",
+                    context_label,
+                    runner.name,
+                    page,
+                    attempts,
+                    backoff,
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+                continue
+            logging.error(
+                "Non-JSON response (%s) runner=%s page=%s after %s attempts; abandoning page",
+                context_label,
+                runner.name,
+                page,
+                attempts,
+            )
+            return []
+
+        if not isinstance(data, list):
+            if segment_id is not None:
+                logging.warning(
+                    "Unexpected JSON shape (not list) for efforts runner=%s segment=%s page=%s type=%s",
+                    runner.name,
+                    segment_id,
+                    page,
+                    type(data).__name__,
+                )
+            else:
+                logging.warning(
+                    "Unexpected JSON shape (not list) for activities runner=%s page=%s type=%s",
+                    runner.name,
+                    page,
+                    type(data).__name__,
+                )
+            return []
+
+        return data  # type: ignore[return-value]
+
+
 def get_segment_efforts(
     runner: Runner,
     segment_id: int,
@@ -229,113 +405,14 @@ def get_segment_efforts(
             "per_page": 200,
             "page": page,
         }
-        attempts = 0
-        backoff = 1.0
-        while True:
-            attempts += 1
-            _limiter.before_request()
-            resp = None
-            try:
-                resp = _session.get(
-                    url, headers=auth_headers(), params=params, timeout=DEFAULT_TIMEOUT
-                )
-            except requests.RequestException as e:
-                _limiter.after_response(None, None)
-                if attempts < STRAVA_MAX_RETRIES:
-                    logging.warning(
-                        "Segment efforts network error runner=%s segment=%s page=%s attempt=%s err=%s; backoff %.1fs",
-                        runner.name,
-                        segment_id,
-                        page,
-                        attempts,
-                        e.__class__.__name__,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                    continue
-                logging.error(
-                    "Segment efforts network error (giving up) runner=%s segment=%s page=%s attempts=%s err=%s",
-                    runner.name,
-                    segment_id,
-                    page,
-                    attempts,
-                    e,
-                )
-                return []
-            else:
-                _limiter.after_response(resp.headers, resp.status_code)
-            ct = resp.headers.get("Content-Type", "")
-            if resp.status_code == 429:
-                resp.raise_for_status()
-            is_html = "text/html" in ct.lower()
-            try:
-                resp.raise_for_status()
-            except requests.HTTPError:
-                if attempts < STRAVA_MAX_RETRIES and (500 <= resp.status_code < 600 or is_html):
-                    logging.warning(
-                        "Transient error (status=%s html=%s) for segment efforts runner=%s page=%s attempt=%s; backing off %.1fs",
-                        resp.status_code,
-                        is_html,
-                        runner.name,
-                        page,
-                        attempts,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                    continue
-                raise
-            if is_html:
-                if attempts < STRAVA_MAX_RETRIES:
-                    logging.warning(
-                        "HTML downtime page for segment efforts runner=%s page=%s attempt=%s; retrying in %.1fs",
-                        runner.name,
-                        page,
-                        attempts,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                    continue
-                logging.error(
-                    "Giving up on HTML downtime page (segment efforts) runner=%s page=%s after %s attempts",
-                    runner.name,
-                    page,
-                    attempts,
-                )
-                return []
-            try:
-                data = resp.json()
-            except ValueError:
-                if attempts < STRAVA_MAX_RETRIES:
-                    logging.warning(
-                        "Non-JSON response (segment efforts) runner=%s page=%s attempt=%s; retrying in %.1fs",
-                        runner.name,
-                        page,
-                        attempts,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                    continue
-                logging.error(
-                    "Non-JSON response (segment efforts) runner=%s page=%s after %s attempts; abandoning page",
-                    runner.name,
-                    page,
-                    attempts,
-                )
-                return []
-            if not isinstance(data, list):
-                logging.warning(
-                    "Unexpected JSON shape (not list) for efforts runner=%s segment=%s page=%s type=%s",
-                    runner.name,
-                    segment_id,
-                    page,
-                    type(data).__name__,
-                )
-                return []
-            return data  # type: ignore[return-value]
+        return _fetch_page_with_retries(
+            runner,
+            url,
+            params,
+            context_label="segment efforts",
+            page=page,
+            segment_id=segment_id,
+        )
 
     try:
         ensure_token()
@@ -460,110 +537,13 @@ def get_activities(
             "per_page": 200,
             "page": page,
         }
-        attempts = 0
-        backoff = 1.0
-        while True:
-            attempts += 1
-            _limiter.before_request()
-            resp = None
-            try:
-                resp = _session.get(
-                    url, headers=auth_headers(), params=params, timeout=DEFAULT_TIMEOUT
-                )
-            except requests.RequestException as e:
-                _limiter.after_response(None, None)
-                if attempts < STRAVA_MAX_RETRIES:
-                    logging.warning(
-                        "Activities network error runner=%s page=%s attempt=%s err=%s; backoff %.1fs",
-                        runner.name,
-                        page,
-                        attempts,
-                        e.__class__.__name__,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                    continue
-                logging.error(
-                    "Activities network error (giving up) runner=%s page=%s attempts=%s err=%s",
-                    runner.name,
-                    page,
-                    attempts,
-                    e,
-                )
-                return []
-            else:
-                _limiter.after_response(resp.headers, resp.status_code)
-            ct = resp.headers.get("Content-Type", "")
-            if resp.status_code == 429:
-                resp.raise_for_status()
-            is_html = "text/html" in ct.lower()
-            try:
-                resp.raise_for_status()
-            except requests.HTTPError:
-                if attempts < STRAVA_MAX_RETRIES and (500 <= resp.status_code < 600 or is_html):
-                    logging.warning(
-                        "Transient error (status=%s html=%s) for activities runner=%s page=%s attempt=%s; backing off %.1fs",
-                        resp.status_code,
-                        is_html,
-                        runner.name,
-                        page,
-                        attempts,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                    continue
-                raise
-            if is_html:
-                if attempts < STRAVA_MAX_RETRIES:
-                    logging.warning(
-                        "HTML downtime page for activities runner=%s page=%s attempt=%s; retrying in %.1fs",
-                        runner.name,
-                        page,
-                        attempts,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                    continue
-                logging.error(
-                    "Giving up on HTML downtime page (activities) runner=%s page=%s after %s attempts",
-                    runner.name,
-                    page,
-                    attempts,
-                )
-                return []
-            try:
-                data = resp.json()
-            except ValueError:
-                if attempts < STRAVA_MAX_RETRIES:
-                    logging.warning(
-                        "Non-JSON response (activities) runner=%s page=%s attempt=%s; retrying in %.1fs",
-                        runner.name,
-                        page,
-                        attempts,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                    continue
-                logging.error(
-                    "Non-JSON response (activities) runner=%s page=%s after %s attempts; abandoning page",
-                    runner.name,
-                    page,
-                    attempts,
-                )
-                return []
-            if not isinstance(data, list):
-                logging.warning(
-                    "Unexpected JSON shape (not list) for activities runner=%s page=%s type=%s",
-                    runner.name,
-                    page,
-                    type(data).__name__,
-                )
-                return []
-            return data  # type: ignore[return-value]
+        return _fetch_page_with_retries(
+            runner,
+            url,
+            params,
+            context_label="activities",
+            page=page,
+        )
 
     try:
         ensure_token()
