@@ -37,10 +37,10 @@ def callback():
         logging.error("Invalid OAuth state received; possible CSRF. Aborting.")
         abort(400, description="Invalid state")
     auth_code = request.args.get("code")
-    logging.info("Authorization code received via callback.")
+    logging.info("Authorisation code received via callback.")
     # Signal that the code is received
     auth_event.set()
-    return "Authorization received! You can close this window now."
+    return "Authorisation received! You can close this window now."
 
 
 def run_flask():
@@ -49,7 +49,7 @@ def run_flask():
     _server.serve_forever()
 
 
-# Build the Strava authorization URL
+# Build the Strava authorisation URL
 params = {
     "client_id": CLIENT_ID,
     "response_type": "code",
@@ -77,7 +77,7 @@ def wait_for_port(port, host="localhost", timeout=10):
 auth_event.clear()
 auth_code = None
 
-# Start the local server and open the authorization URL
+# Start the local server and open the authorisation URL
 flask_thread = threading.Thread(target=run_flask, daemon=True)
 flask_thread.start()
 
@@ -86,12 +86,12 @@ if not wait_for_port(OAUTH_PORT):
     logging.error(f"Flask server did not start on port {OAUTH_PORT}")
     exit(1)
 
-logging.info("Opening browser for authorization...")
+logging.info("Opening browser for authorisation...")
 webbrowser.open(auth_url)
 
-# Wait for the authorization code (with timeout)
+# Wait for the authorisation code (with timeout)
 if not auth_event.wait(timeout=60):
-    logging.error("Timeout waiting for authorization code.")
+    logging.error("Timeout waiting for authorisation code.")
     if _server:
         _server.shutdown()
     flask_thread.join(timeout=5)
@@ -99,18 +99,18 @@ if not auth_event.wait(timeout=60):
 
 # Ensure auth_code is set before proceeding
 if not auth_code:
-    logging.error("Authorization code was not received. Exiting.")
+    logging.error("Authorisation code was not received. Exiting.")
     if _server:
         _server.shutdown()
     flask_thread.join(timeout=5)
     exit(1)
 
-logging.info("Authorization code received.")
+logging.info("Authorisation code received.")
 
 # Exchange code for tokens
 token_url = "https://www.strava.com/oauth/token"
 try:
-    logging.info("Exchanging authorization code for tokens...")
+    logging.info("Exchanging authorisation code for tokens...")
     response = requests.post(
         token_url,
         data={

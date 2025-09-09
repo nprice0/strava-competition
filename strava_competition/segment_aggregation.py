@@ -114,7 +114,7 @@ def build_segment_outputs(
     for segment_name, team_data in results.items():
         rows = _rows_for_segment(team_data)
         if not rows:
-            # empty segment -> message sheet handled by writer (kept consistent with previous behavior)
+            # empty segment -> message sheet handled by writer (kept consistent with previous behaviour)
             df = pd.DataFrame({"Message": ["No results for this segment."]})
             outputs.append((segment_name + "_msg", df))
             continue

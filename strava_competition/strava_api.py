@@ -382,7 +382,7 @@ def get_segment_efforts(
 ) -> Optional[List[Dict[str, Any]]]:
     """Fetch all efforts for a segment window for one runner.
 
-    Behavior:
+    Behaviour:
       * Uses cached runner.access_token (fetches via refresh token if absent)
       * One retry on first 401 (refresh + reattempt same page)
       * Paginates (per_page=200) until fewer than 200 returned
@@ -490,7 +490,7 @@ def get_segment_efforts(
             suffix = f" | raw: {raw_snippet}"
         if status == 401:
             logging.warning(
-                f"Skipping runner {runner.name}: Unauthorized (invalid/expired token after retry){suffix}"
+                f"Skipping runner {runner.name}: Unauthorised (invalid/expired token after retry){suffix}"
             )
         elif status == 402:
             # Mark runner so future segment processing can skip further calls
