@@ -155,10 +155,10 @@ Dates can be Excel dates or ISO-like strings; they are parsed with pandas.
 ---
 
 ## Getting refresh tokens (first-time setup)
-Use `strava_competition/oauth.py` (run as a module) to obtain refresh tokens for runners. This script starts a local web server and opens your browser to authorize.
+Use `strava_competition/oauth.py` (run as a module) to obtain refresh tokens for runners. This script starts a local web server and opens your browser to authorise.
 
 1. Ensure `CLIENT_ID` and `CLIENT_SECRET` are set in `config.py`.
-2. In `oauth.py`, you can customize:
+2. In `oauth.py`, you can customise:
    - `OAUTH_PORT` (default 5000)
    - `PRINT_TOKENS` (True to print full tokens after exchange)
 3. Make sure your Strava app’s callback URL matches: `http://localhost:<OAUTH_PORT>/callback`
@@ -199,19 +199,20 @@ Logs:
 
 ---
 
-## Behavior details
-These subsections describe current, implemented behavior.
+## Behaviour details
+These subsections describe current, implemented behaviour.
 
 ### Architecture & services
 
-The project follows a layered architecture:
+The project structure (key modules):
 
 ```
 Domain: models.py, errors.py
-Infrastructure: auth.py, oauth.py, strava_api.py, utils.py
-I/O: excel_reader.py (pure reads), excel_writer.py (writes)
+Infrastructure: auth.py, oauth.py, strava_api.py, utils.py, config.py
+I/O: excel_reader.py (reads), excel_writer.py (writes)
+Aggregation: segment_aggregation.py, distance_aggregation.py
 Services: services/segment_service.py, services/distance_service.py
-Orchestration: main.py, run.py
+Orchestration: __main__.py (module entry), main.py, run.py
 ```
 
 ### Token handling
@@ -228,8 +229,8 @@ Efforts are retrieved with `per_page=200` and page through until no more results
 - Runtime resizing: call `from strava_competition.strava_api import set_rate_limiter; set_rate_limiter(4)` to lower or raise concurrency without restarting.
 - If 429 or nearing the short-window limit (within `RATE_LIMIT_NEAR_LIMIT_BUFFER`), a brief throttle window (`RATE_LIMIT_THROTTLE_SECONDS`) is applied; small jitter further smooths bursts.
 
-### Timezones
-Strava dates are converted to timezone-naive datetimes before writing because Excel doesn’t support TZ-aware datetimes.
+### Time zones
+Strava dates are converted to time zone‑naive datetimes before writing because Excel doesn’t support TZ‑aware datetimes.
 
 ### Excel writing
 - Segment sheets use unique names within Excel’s 31-char limit.
@@ -244,14 +245,14 @@ Strava dates are converted to timezone-naive datetimes before writing because Ex
 - Enhanced workbook schema versioning & validation
 
 ## Common issues and fixes
-- 401 Unauthorized when refreshing token
-  - The refresh token is invalid or expired, or client credentials are wrong. Re-authorize with `oauth.py` and update the workbook.
+- 401 Unauthorised when refreshing token
+  - The refresh token is invalid or expired, or client credentials are wrong. Re‑authorise with `oauth.py` and update the workbook.
 - 402 Payment Required when calling `segment_efforts`
   - Strava requires a paid subscription to access segment efforts. Use a subscribed account.
 - 429 Rate limit reached
   - The client will back off and retry. You may still need to wait if you hit daily limits.
-- Excel timezone error
-  - Fixed in code: times are normalized to timezone-naive before writing.
+- Excel time zone error
+  - Fixed in code: times are normalised to time zone‑naive before writing.
 - “No visible sheet” on save
   - The app writes a default summary sheet or per-segment messages if there are no results.
   - Distance sheets are still written (if defined) even when no segment efforts are available.
