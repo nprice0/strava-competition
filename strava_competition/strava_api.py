@@ -42,7 +42,9 @@ _session = requests.Session()
 _retry = Retry(
     total=3,
     backoff_factor=1.0,
-    status_forcelist=[429, 500, 502, 503, 504],
+    # Handle 5xx at the HTTP adapter level; 429 is handled explicitly below to
+    # coordinate with our RateLimiter and avoid double retries/backoff.
+    status_forcelist=[500, 502, 503, 504],
     allowed_methods=["GET", "POST"],
 )
 # Increase connection pool for parallel requests
@@ -274,6 +276,19 @@ def _fetch_page_with_retries(
 
         ct = resp.headers.get("Content-Type", "")
         if resp.status_code == 429:
+            # 429 Too Many Requests: slow down and retry with increasing waits.
+            if attempts < STRAVA_MAX_RETRIES:
+                logging.warning(
+                    "429 Too Many Requests for %s runner=%s page=%s attempt=%s; backing off %.1fs",
+                    context_label,
+                    runner.name,
+                    page,
+                    attempts,
+                    backoff,
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+                continue
             resp.raise_for_status()
         is_html = "text/html" in ct.lower()
         try:

@@ -12,8 +12,9 @@ from werkzeug.serving import make_server
 
 from .config import CLIENT_ID, CLIENT_SECRET
 
-# Configure logging for this script
-logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
+# Configure logging for this script if not already configured by the host app
+if not logging.getLogger().hasHandlers():
+    logging.basicConfig(level=logging.INFO, format="[%(asctime)s] %(levelname)s: %(message)s")
 
 # Configuration
 OAUTH_PORT = 5000
