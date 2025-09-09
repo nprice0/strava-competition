@@ -94,8 +94,9 @@ def _build_summary_df(results: ResultsMapping) -> pd.DataFrame:
     if not summary_rows:
         return pd.DataFrame()
     df = pd.DataFrame(summary_rows)
-    if "Sum Fastest Times (sec)" in df.columns:
-        df.sort_values(by=["Sum Fastest Times (sec)", "Team"], inplace=True)
+    # Prefer sorting by total if available, else by average
+    if "Total Fastest Times (sec)" in df.columns:
+        df.sort_values(by=["Total Fastest Times (sec)", "Team"], inplace=True)
     else:
         df.sort_values(by=["Average Fastest Time (sec)", "Team"], inplace=True)
     return df
