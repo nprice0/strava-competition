@@ -5,15 +5,17 @@ building per-window + summary distance outputs. Uses the pure
 `build_distance_outputs` function (now in `distance_aggregation` module)
 to keep aggregation logic testable and decoupled from I/O.
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Callable, Dict, Iterable, List, Sequence, Tuple
+from typing import Callable, Dict, List, Sequence, Tuple
 import logging
 
 from ..models import Runner
 from ..strava_api import get_activities
+from ..auth import TokenError
 from ..distance_aggregation import build_distance_outputs
 
 DistanceWindow = Tuple[datetime, datetime, float | None]
@@ -46,17 +48,31 @@ class DistanceService:
         earliest = min(w[0] for w in windows)
         latest = max(w[1] for w in windows)
         self._log.info(
-            "Fetching activities for %d runners over union window %s -> %s", len(distance_runners), earliest, latest
+            "Fetching activities for %d runners over union window %s -> %s",
+            len(distance_runners),
+            earliest,
+            latest,
         )
-        cache: Dict[int, List[dict]] = {}
+        cache: Dict[str, List[dict]] = {}
         for r in distance_runners:
-            acts = self.config.fetcher(r, earliest, latest) or []
+            try:
+                acts = self.config.fetcher(r, earliest, latest) or []
+            except TokenError as exc:
+                # Skip runners whose refresh tokens are invalid so the batch can continue.
+                self._log.warning(
+                    "Skipping runner=%s distance processing: %s", r.name, exc
+                )
+                acts = []
             cache[r.strava_id] = acts
             self._log.debug(
-                "Cached %d activities for runner=%s team=%s", len(acts), r.name, r.distance_team
+                "Cached %d activities for runner=%s team=%s",
+                len(acts),
+                r.name,
+                r.distance_team,
             )
         outputs = build_distance_outputs(distance_runners, list(windows), cache)
         self._log.info("Prepared %d distance sheets (including summary)", len(outputs))
         return outputs
+
 
 __all__ = ["DistanceService", "DistanceServiceConfig"]

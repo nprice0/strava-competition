@@ -1,17 +1,25 @@
 """Excel writer for segment and distance outputs (reads live in excel_reader)."""
+
 from __future__ import annotations
 
 from pathlib import Path
 from typing import List, Sequence, Iterable, Tuple
 import pandas as pd
 
-from .models import Runner, SegmentResult
+from .models import Runner
 from .errors import ExcelFormatError
-from .segment_aggregation import build_segment_outputs, ResultsMapping as SegResultsMapping
+from .segment_aggregation import (
+    build_segment_outputs,
+    ResultsMapping as SegResultsMapping,
+)
 
 SEGMENTS_SHEET = "Segment Series"
 RUNNERS_SHEET = "Runners"
 DISTANCE_SHEET = "Distance Series"
+STRAVA_ID_COLUMN = "Strava ID"
+REFRESH_TOKEN_COLUMN = "Refresh Token"
+SEGMENT_TEAM_COLUMN = "Segment Series Team"
+DISTANCE_TEAM_COLUMN = "Distance Series Team"
 MAX_SHEET_NAME_LEN = 31
 EXCEL_DATETIME_FORMAT = "yyyy-mm-dd hh:mm:ss"
 
@@ -24,16 +32,27 @@ __all__ = [
 
 ResultsMapping = SegResultsMapping
 
+
 def _assert_file_exists(path: str) -> None:
     if not Path(path).is_file():
         raise FileNotFoundError(f"Workbook not found: {path}")
 
-_REQUIRED_RUNNER_COLS = {"Name", "Strava ID", "Refresh Token", "Segment Series Team", "Distance Series Team"}
+
+_REQUIRED_RUNNER_COLS = {
+    "Name",
+    STRAVA_ID_COLUMN,
+    REFRESH_TOKEN_COLUMN,
+    SEGMENT_TEAM_COLUMN,
+    DISTANCE_TEAM_COLUMN,
+}
+
 
 def _coerce_path(pathlike) -> str:
     return str(Path(pathlike))
 
+
 ## Segment aggregation lives in segment_aggregation.build_segment_outputs
+
 
 def _unique_sheet_name(base: str, used: set[str]) -> str:
     base = base[:MAX_SHEET_NAME_LEN]
@@ -46,6 +65,7 @@ def _unique_sheet_name(base: str, used: set[str]) -> str:
     used.add(name)
     return name
 
+
 def _autosize(ws) -> None:
     from .config import (
         EXCEL_AUTOSIZE_COLUMNS,
@@ -54,6 +74,7 @@ def _autosize(ws) -> None:
         EXCEL_AUTOSIZE_PADDING,
         EXCEL_AUTOSIZE_MAX_ROWS,
     )
+
     if not EXCEL_AUTOSIZE_COLUMNS:
         return
     try:
@@ -66,25 +87,34 @@ def _autosize(ws) -> None:
                 val = cell.value
                 if val is None:
                     continue
-                l = len(str(val))
-                if l > max_len:
-                    max_len = l
-            width = min(EXCEL_AUTOSIZE_MAX_WIDTH, max(EXCEL_AUTOSIZE_MIN_WIDTH, max_len + EXCEL_AUTOSIZE_PADDING))
+                length = len(str(val))
+                if length > max_len:
+                    max_len = length
+            width = min(
+                EXCEL_AUTOSIZE_MAX_WIDTH,
+                max(EXCEL_AUTOSIZE_MIN_WIDTH, max_len + EXCEL_AUTOSIZE_PADDING),
+            )
             if col_letter:
                 ws.column_dimensions[col_letter].width = width
     except Exception:
         pass
 
+
 ## Row construction handled in segment_aggregation
 
-def _write_segment_sheets(writer, results: ResultsMapping, used_sheet_names: set[str], include_summary: bool) -> None:
+
+def _write_segment_sheets(
+    writer, results: ResultsMapping, used_sheet_names: set[str], include_summary: bool
+) -> None:
     outputs = build_segment_outputs(results, include_summary=include_summary)
     for base_name, df in outputs:
         sheet_name = _unique_sheet_name(base_name, used_sheet_names)
         df.to_excel(writer, sheet_name=sheet_name, index=False)
         _autosize(writer.sheets[sheet_name])
 
+
 ## Summary building handled via segment_aggregation
+
 
 def _write_distance_sheets(
     writer,
@@ -98,6 +128,7 @@ def _write_distance_sheets(
         DISTANCE_ENFORCE_COLUMN_ORDER,
         DISTANCE_COLUMN_ORDER,
     )
+
     for sheet_base, rows in distance_windows_results:
         if not rows and not DISTANCE_CREATE_EMPTY_WINDOW_SHEETS:
             continue
@@ -109,13 +140,20 @@ def _write_distance_sheets(
                 dfw = dfw[ordered + remaining]
         sheet_name = _unique_sheet_name(sheet_base, used_sheet_names)
         dfw.to_excel(writer, sheet_name=sheet_name, index=False)
-        logging.info("%s: %s rows=%s (empty=%s)", log_prefix, sheet_name, len(rows), not bool(rows))
+        logging.info(
+            "%s: %s rows=%s (empty=%s)",
+            log_prefix,
+            sheet_name,
+            len(rows),
+            not bool(rows),
+        )
         try:
             ws = writer.book[sheet_name]
         except Exception:
             ws = writer.sheets.get(sheet_name)
         if ws is not None:
             _autosize(ws)
+
 
 def write_results(
     filepath,
@@ -124,12 +162,16 @@ def write_results(
     distance_windows_results: list[tuple[str, list[dict]]] | None = None,
 ) -> None:
     filepath = _coerce_path(filepath)
-    with pd.ExcelWriter(filepath, engine="openpyxl", datetime_format=EXCEL_DATETIME_FORMAT) as writer:
+    with pd.ExcelWriter(
+        filepath, engine="openpyxl", datetime_format=EXCEL_DATETIME_FORMAT
+    ) as writer:
         used_sheet_names: set[str] = set()
         if results:
             _write_segment_sheets(writer, results, used_sheet_names, include_summary)
         else:
-            pd.DataFrame({"Message": ["No results to display."]}).to_excel(writer, sheet_name="Summary", index=False)
+            pd.DataFrame({"Message": ["No results to display."]}).to_excel(
+                writer, sheet_name="Summary", index=False
+            )
             _autosize(writer.sheets["Summary"])
         if distance_windows_results:
             _write_distance_sheets(writer, distance_windows_results, used_sheet_names)
@@ -141,16 +183,33 @@ def write_results(
                 if ws is not None:
                     _autosize(ws)
 
+
+def _normalise_ids(series: pd.Series) -> pd.Series:
+    values = series.astype(str).str.strip()
+    return values.str.replace(r"\.0$", "", regex=True)
+
+
 def update_runner_refresh_tokens(filepath, runners: Sequence[Runner]) -> None:
     filepath = _coerce_path(filepath)
     _assert_file_exists(filepath)
     df = pd.read_excel(filepath, sheet_name=RUNNERS_SHEET)
     missing = _REQUIRED_RUNNER_COLS - set(df.columns)
     if missing:
-        raise ExcelFormatError(f"Missing columns in '{RUNNERS_SHEET}' sheet: {', '.join(sorted(missing))}")
+        raise ExcelFormatError(
+            f"Missing columns in '{RUNNERS_SHEET}' sheet: {', '.join(sorted(missing))}"
+        )
+
+    def _normalise_ids(series: pd.Series) -> pd.Series:
+        s = series.astype(str).str.strip()
+        return s.str.replace(r"\.0$", "", regex=True)
+
+    normalised_ids = _normalise_ids(df[STRAVA_ID_COLUMN])
     for runner in runners:
-        df.loc[df["Strava ID"] == runner.strava_id, "Refresh Token"] = runner.refresh_token
-    with pd.ExcelWriter(filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+        mask = normalised_ids == runner.strava_id
+    df.loc[mask, REFRESH_TOKEN_COLUMN] = runner.refresh_token
+    with pd.ExcelWriter(
+        filepath, engine="openpyxl", mode="a", if_sheet_exists="replace"
+    ) as writer:
         df.to_excel(writer, sheet_name=RUNNERS_SHEET, index=False)
 
 
@@ -166,11 +225,14 @@ def update_single_runner_refresh_token(filepath, runner: Runner) -> None:
         df = pd.read_excel(filepath, sheet_name=RUNNERS_SHEET)
     except Exception:
         return
-    if "Strava ID" not in df.columns or "Refresh Token" not in df.columns:
+    if STRAVA_ID_COLUMN not in df.columns or REFRESH_TOKEN_COLUMN not in df.columns:
         return
-    df.loc[df["Strava ID"] == runner.strava_id, "Refresh Token"] = runner.refresh_token
+    id_series = _normalise_ids(df[STRAVA_ID_COLUMN])
+    df.loc[id_series == runner.strava_id, REFRESH_TOKEN_COLUMN] = runner.refresh_token
     try:
-        with pd.ExcelWriter(filepath, engine="openpyxl", mode="a", if_sheet_exists="replace") as writer:
+        with pd.ExcelWriter(
+            filepath, engine="openpyxl", mode="a", if_sheet_exists="replace"
+        ) as writer:
             df.to_excel(writer, sheet_name=RUNNERS_SHEET, index=False)
     except Exception:
         # Silent failure acceptable; final write at shutdown still attempts full persistence.

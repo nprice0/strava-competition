@@ -1,6 +1,7 @@
 from dataclasses import dataclass
 from datetime import datetime
 
+
 @dataclass
 class Segment:
     id: int
@@ -12,7 +13,7 @@ class Segment:
 @dataclass
 class Runner:
     name: str
-    strava_id: int
+    strava_id: str
     refresh_token: str
     # Separate optional teams for segment and distance series
     segment_team: str | None = None

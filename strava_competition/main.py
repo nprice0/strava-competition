@@ -12,6 +12,7 @@ from .excel_reader import (
     read_runners,
     read_segments,
     read_distance_windows,
+    ExcelFormatError,
 )
 from .excel_writer import (
     update_runner_refresh_tokens,
@@ -58,7 +59,9 @@ def _ensure_tokens_early(runners) -> None:
             _internal_ensure_token(r)
         except Exception as e:
             logging.warning(
-                "Initial token ensure failed for runner=%s: %s", getattr(r, "name", "?"), e
+                "Initial token ensure failed for runner=%s: %s",
+                getattr(r, "name", "?"),
+                e,
             )
             continue
         after = getattr(r, "refresh_token", None)
@@ -71,13 +74,17 @@ def _ensure_tokens_early(runners) -> None:
 
 def _process_segments(segments, segment_runners):
     logging.info(
-        "Processing %s segments for %s segment runners ...", len(segments), len(segment_runners)
+        "Processing %s segments for %s segment runners ...",
+        len(segments),
+        len(segment_runners),
     )
     segment_service = SegmentService(max_workers=MAX_WORKERS)
 
     def _progress(seg_name: str, done: int, total: int) -> None:
         if done == 1 or done == total or done % 5 == 0:
-            logging.info("Segment %s progress: %d/%d runners fetched", seg_name, done, total)
+            logging.info(
+                "Segment %s progress: %d/%d runners fetched", seg_name, done, total
+            )
 
     results = segment_service.process(segments, segment_runners, progress=_progress)
     logging.info("Finished segment aggregation for %d segments", len(results))
@@ -87,7 +94,9 @@ def _process_segments(segments, segment_runners):
 def _process_distance(distance_runners, distance_windows):
     distance_windows_results: List[Tuple[str, list[dict]]] = []
     if distance_windows and distance_runners:
-        distance_windows_results = DistanceService().process(distance_runners, distance_windows)
+        distance_windows_results = DistanceService().process(
+            distance_runners, distance_windows
+        )
     return distance_windows_results
 
 
@@ -108,7 +117,17 @@ def main():
     _setup_logging()
     output_file = _resolve_output_path()
 
-    segments, runners, distance_windows, segment_runners, distance_runners = _load_inputs()
+    try:
+        (
+            segments,
+            runners,
+            distance_windows,
+            segment_runners,
+            distance_runners,
+        ) = _load_inputs()
+    except (ExcelFormatError, FileNotFoundError) as exc:
+        logging.error("Failed to load input workbook '%s': %s", INPUT_FILE, exc)
+        return
 
     # Early token refresh & persistence to avoid losing rotated refresh tokens
     _ensure_tokens_early(runners)
