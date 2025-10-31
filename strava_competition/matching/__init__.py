@@ -48,44 +48,182 @@ class _RefinedCoverage:
     exit_index: int
 
 
-def _select_timing_indices(
+def _unwrap_monotonic(mask_values: np.ndarray, total_length: float) -> np.ndarray:
+    """Return projections adjusted to follow a non-decreasing progression."""
+
+    if mask_values.size == 0:
+        return mask_values.astype(float, copy=True)
+
+    unwrapped = np.empty_like(mask_values, dtype=float)
+    unwrapped[0] = float(mask_values[0])
+    if not np.isfinite(total_length) or total_length <= 0.0:
+        for idx in range(1, mask_values.size):
+            raw = float(mask_values[idx])
+            unwrapped[idx] = max(unwrapped[idx - 1], raw)
+        return unwrapped
+
+    half_length = total_length * 0.5
+    prev = unwrapped[0]
+    for idx in range(1, mask_values.size):
+        raw = float(mask_values[idx])
+        prev_mod = prev % total_length
+        delta = raw - prev_mod
+        if delta > half_length:
+            delta -= total_length
+        elif delta < -half_length:
+            delta += total_length
+        candidate = prev + delta
+        if candidate < prev:
+            candidate += total_length
+        unwrapped[idx] = candidate
+        prev = candidate
+    return unwrapped
+
+
+def _best_chunk_slice(
     projections: np.ndarray,
     indices: np.ndarray,
-    raw_start: float,
-    raw_end: float,
-    start_tolerance_m: float,
-) -> tuple[int, int]:
-    """Return entry/exit sample indices nearest the segment boundaries."""
+    total_length: float,
+) -> tuple[np.ndarray, float]:
+    """Return a slice whose projections increase monotonically."""
 
-    if indices.size == 0:
+    if indices.size < 2:
+        empty = np.empty(0, dtype=int)
+        return empty, 0.0
+
+    mask_values = np.asarray(projections[indices], dtype=float)
+    if mask_values.size < 2:
+        empty = np.empty(0, dtype=int)
+        return empty, 0.0
+
+    unwrapped = _unwrap_monotonic(mask_values, total_length)
+    entry_offset = int(np.argmin(unwrapped))
+    exit_offset = int(np.argmax(unwrapped))
+    if exit_offset <= entry_offset:
+        empty = np.empty(0, dtype=int)
+        return empty, 0.0
+
+    start = entry_offset
+    stop = exit_offset + 1
+    trimmed_indices = indices[start:stop]
+    trimmed_unwrapped = unwrapped[start:stop]
+    if trimmed_indices.size < 2 or trimmed_unwrapped.size < 2:
+        empty = np.empty(0, dtype=int)
+        return empty, 0.0
+
+    normalised = trimmed_unwrapped - float(trimmed_unwrapped[0])
+    span_value = float(normalised[-1])
+    if span_value <= 0.0:
+        empty = np.empty(0, dtype=int)
+        return empty, 0.0
+
+    return trimmed_indices, span_value
+
+
+def _projection_bounds(
+    projections: np.ndarray,
+    indices: np.ndarray,
+) -> Optional[tuple[float, float, np.ndarray]]:
+    """Return forward projection bounds for the refined chunk."""
+
+    if indices.size < 2:
+        return None
+
+    subset = np.asarray(projections[indices], dtype=float)
+    finite = subset[np.isfinite(subset)]
+    if finite.size < 2:
+        return None
+
+    lower = float(np.min(finite))
+    upper = float(np.max(finite))
+    if upper <= lower:
+        return None
+    return lower, upper, subset
+
+
+def _max_offset_value(offsets: np.ndarray) -> float:
+    """Return the maximum finite offset within the refined chunk."""
+
+    if offsets.size == 0:
+        return 0.0
+    finite = offsets[np.isfinite(offsets)]
+    if finite.size:
+        return float(np.max(finite))
+    return float(np.max(offsets))
+
+
+def _prepare_refined_inputs(
+    coverage: "CoverageResult",
+    segment_points: np.ndarray,
+    max_offset_threshold: float,
+) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarray, float]]:
+    """Return projections, offsets, indices and length for refinement."""
+
+    projections = coverage.projections
+    offsets = getattr(coverage, "offsets", None)
+    bounds = coverage.coverage_bounds
+    if (
+        projections is None
+        or offsets is None
+        or bounds is None
+        or projections.shape[0] != offsets.shape[0]
+    ):
+        return None
+
+    finite = np.isfinite(offsets)
+    if not np.any(finite):
+        return None
+
+    mask = finite & (offsets <= max_offset_threshold)
+    if np.count_nonzero(mask) < 2:
+        relaxed = max(max_offset_threshold * 1.25, max_offset_threshold + 25.0)
+        mask = finite & (offsets <= relaxed)
+        if np.count_nonzero(mask) < 2:
+            return None
+
+    total_length = _polyline_length(segment_points)
+    if total_length <= 0.0:
+        return None
+
+    indices = np.nonzero(mask)[0]
+    if indices.size < 2:
+        return None
+
+    return projections, offsets, indices, total_length
+
+
+def _select_timing_indices(
+    chunk_indices: np.ndarray,
+    chunk_projections: np.ndarray,
+) -> tuple[int, int]:
+    """Return indices of the earliest and latest on-route samples."""
+
+    if chunk_indices.size < 2:
         return 0, 0
 
-    mask_values = projections[indices]
-    entry_idx = int(indices[0])
-    exit_idx = int(indices[-1])
+    projections = np.asarray(chunk_projections, dtype=float)
+    if projections.shape[0] != chunk_indices.shape[0]:
+        return 0, 0
 
-    start_buffer = min(25.0, max(5.0, start_tolerance_m * 0.25))
-    end_buffer = min(50.0, max(5.0, start_tolerance_m * 0.5))
-    end_threshold = max(raw_end - end_buffer, raw_start)
+    finite_mask = np.isfinite(projections)
+    if np.count_nonzero(finite_mask) < 2:
+        return 0, 0
 
-    low_positions = np.nonzero(mask_values <= start_buffer)[0]
-    if low_positions.size:
-        candidate = low_positions[-1] + 1
-        if candidate < indices.size:
-            entry_idx = int(indices[candidate])
+    finite_indices = np.nonzero(finite_mask)[0]
+    finite_values = projections[finite_mask]
+    entry_pos = int(finite_indices[np.argmin(finite_values)])
+    exit_pos = int(finite_indices[np.argmax(finite_values)])
 
-    high_positions = np.nonzero(mask_values >= end_threshold)[0]
-    if high_positions.size:
-        for pos in high_positions:
-            if np.any(mask_values[pos:] < end_threshold):
-                continue
-            exit_idx = int(indices[pos])
-            break
-        else:
-            exit_idx = int(indices[high_positions[0]])
-
-    if exit_idx < entry_idx:
-        entry_idx, exit_idx = exit_idx, entry_idx
+    entry_idx = int(chunk_indices[entry_pos])
+    exit_idx = int(chunk_indices[exit_pos])
+    if exit_idx <= entry_idx:
+        # When projections wrap around the segment start, fall back to the
+        # chronological slice to keep timing indices strictly increasing.
+        first_idx = int(chunk_indices[0])
+        last_idx = int(chunk_indices[-1])
+        if last_idx > first_idx:
+            return first_idx, last_idx
+        return 0, 0
 
     return entry_idx, exit_idx
 
@@ -505,58 +643,42 @@ def _refine_coverage_window(
 ) -> Optional[_RefinedCoverage]:
     """Derive an overlap window by filtering projections with acceptable offsets."""
 
-    projections = coverage.projections
-    offsets = getattr(coverage, "offsets", None)
-    bounds = coverage.coverage_bounds
-    if (
-        projections is None
-        or offsets is None
-        or bounds is None
-        or projections.shape[0] != offsets.shape[0]
-    ):
-        return None
-
-    finite = np.isfinite(offsets)
-    if not np.any(finite):
-        return None
-
-    strict_mask = finite & (offsets <= max_offset_threshold)
-    if np.count_nonzero(strict_mask) < 2:
-        relaxed_threshold = max(
-            max_offset_threshold * 1.25, max_offset_threshold + 25.0
-        )
-        strict_mask = finite & (offsets <= relaxed_threshold)
-        if np.count_nonzero(strict_mask) < 2:
-            return None
-
-    indices = np.nonzero(strict_mask)[0]
-
-    selected_proj = projections[strict_mask]
-    selected_offsets = offsets[strict_mask]
-    if selected_proj.size == 0:
-        return None
-
-    total_length = _polyline_length(segment_points)
-    if total_length <= 0.0:
-        return None
-
-    raw_start = float(np.min(selected_proj))
-    raw_end = float(np.max(selected_proj))
-    raw_start = max(0.0, min(raw_start, total_length))
-    raw_end = max(0.0, min(raw_end, total_length))
-    if raw_end <= raw_start:
-        return None
-
-    entry_idx, exit_idx = _select_timing_indices(
-        projections,
-        indices,
-        raw_start,
-        raw_end,
-        start_tolerance_m,
+    prepared = _prepare_refined_inputs(
+        coverage,
+        segment_points,
+        max_offset_threshold,
     )
+    if prepared is None:
+        return None
+    projections, offsets, indices, total_length = prepared
 
-    ratio = float(min(max((raw_end - raw_start) / total_length, 0.0), 1.0))
-    max_offset = float(np.max(selected_offsets))
+    chunk_indices, span_value = _best_chunk_slice(projections, indices, total_length)
+    if chunk_indices.size == 0 or span_value <= 0.0:
+        return None
+
+    bounds = _projection_bounds(projections, chunk_indices)
+    if bounds is None:
+        return None
+    raw_start, raw_end, chunk_proj = bounds
+
+    sample_count = chunk_indices.size
+    if sample_count < 3:
+        return None
+
+    guard_span = max(raw_end - raw_start, 0.0)
+    segment_stride = total_length / max(segment_points.shape[0] - 1, 1)
+    max_stride = max(segment_stride * 10.0, 25.0)
+    mean_stride = guard_span / max(sample_count - 1, 1)
+    # Reject slices that stay too sparse after removing large offsets.
+    if mean_stride > max_stride:
+        return None
+
+    entry_idx, exit_idx = _select_timing_indices(chunk_indices, chunk_proj)
+    if entry_idx == 0 and exit_idx == 0:
+        return None
+
+    ratio = float(min(max(span_value / total_length, 0.0), 1.0))
+    max_offset = _max_offset_value(offsets[chunk_indices])
 
     margin = max(start_tolerance_m, 30.0)
     expanded_lower = max(raw_start - margin, 0.0)
@@ -679,11 +801,12 @@ def _evaluate_similarity(
         if np.isfinite(dtw_distance):
             matched = dtw_distance <= similarity_threshold
 
+    override_max_offset = min(max_offset_threshold, 60.0)
     override_by_offset = (
         not matched
         and trimmed_max_offset is not None
         and np.isfinite(trimmed_max_offset)
-        and trimmed_max_offset <= max_offset_threshold
+        and trimmed_max_offset <= override_max_offset
         and coverage.coverage_ratio >= 0.98
     )
     if override_by_offset:
