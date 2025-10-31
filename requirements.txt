@@ -6,6 +6,12 @@ Flask>=3.0
 Werkzeug>=3.0
 urllib3>=2.0
 python-dotenv>=1.0
+numpy>=1.25
+scipy>=1.11
+pyproj>=3.6
+shapely>=2.0
+geopy>=2.4
+polyline>=2.0
 
 # Testing (optional for contributors)
 pytest>=8.0

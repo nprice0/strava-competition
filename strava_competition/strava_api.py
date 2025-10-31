@@ -31,6 +31,13 @@ from .config import (
     STRAVA_MAX_RETRIES,
     STRAVA_BACKOFF_MAX_SECONDS,
 )
+from .errors import (
+    StravaAPIError,
+    StravaPaymentRequiredError,
+    StravaPermissionError,
+    StravaResourceNotFoundError,
+    StravaStreamEmptyError,
+)
 from .models import Runner
 
 # Type aliases for clarity
@@ -55,10 +62,12 @@ _adapter = HTTPAdapter(
 )
 _session.mount("https://", _adapter)
 _session.mount("http://", _adapter)
-_session.headers.update({
-    "Accept-Encoding": "gzip, deflate",
-    "Accept": "application/json",
-})
+_session.headers.update(
+    {
+        "Accept-Encoding": "gzip, deflate",
+        "Accept": "application/json",
+    }
+)
 
 DEFAULT_TIMEOUT: int = REQUEST_TIMEOUT
 
@@ -105,7 +114,9 @@ class RateLimiter:
         if hi > 0:
             time.sleep(random.uniform(lo, hi))
 
-    def after_response(self, headers: Optional[Dict[str, Any]], status_code: Optional[int]) -> None:
+    def after_response(
+        self, headers: Optional[Dict[str, Any]], status_code: Optional[int]
+    ) -> None:
         throttle = False
         if status_code == 429:
             throttle = True
@@ -189,8 +200,11 @@ def _ensure_runner_token(runner: "Runner") -> None:
             runner.refresh_token = new_refresh_token
             # Attempt immediate persistence (best-effort, silent on failure)
             try:
-                from .excel_writer import update_single_runner_refresh_token  # local import to avoid cycle
+                from .excel_writer import (
+                    update_single_runner_refresh_token,
+                )  # local import to avoid cycle
                 from .config import INPUT_FILE
+
                 update_single_runner_refresh_token(INPUT_FILE, runner)
             except Exception:
                 pass
@@ -222,7 +236,10 @@ def _fetch_page_with_retries(
         resp = None
         try:
             resp = _session.get(
-                url, headers=_auth_headers(runner), params=params, timeout=DEFAULT_TIMEOUT
+                url,
+                headers=_auth_headers(runner),
+                params=params,
+                timeout=DEFAULT_TIMEOUT,
             )
         except requests.RequestException as e:
             _limiter.after_response(None, None)
@@ -294,7 +311,9 @@ def _fetch_page_with_retries(
         try:
             resp.raise_for_status()
         except requests.HTTPError:
-            if attempts < STRAVA_MAX_RETRIES and (500 <= resp.status_code < 600 or is_html):
+            if attempts < STRAVA_MAX_RETRIES and (
+                500 <= resp.status_code < 600 or is_html
+            ):
                 if segment_id is not None:
                     logging.warning(
                         "Transient error (status=%s html=%s) for %s runner=%s page=%s attempt=%s; backing off %.1fs",
@@ -479,7 +498,9 @@ def get_segment_efforts(
             resp.headers.get("Content-Type"),
             content_len,
         )
-        if logging.getLogger().isEnabledFor(logging.DEBUG):  # Avoid building string unless needed
+        if logging.getLogger().isEnabledFor(
+            logging.DEBUG
+        ):  # Avoid building string unless needed
             try:
                 logging.debug(
                     "HTTPError body sample (first 500 chars): %r", resp.text[:500]
@@ -517,9 +538,7 @@ def get_segment_efforts(
                 f"Runner {runner.name}: 402 Payment Required (likely subscription needed or access restricted){suffix}. Skipping."
             )
         else:
-            logging.error(
-                f"Error for runner {runner.name}: HTTP {status}{suffix}"
-            )
+            logging.error(f"Error for runner {runner.name}: HTTP {status}{suffix}")
         return None
 
 
@@ -613,47 +632,318 @@ def get_activities(
             return None
         detail = _extract_error(resp)
         logging.error(
-            "Activities fetch error runner=%s status=%s detail=%s", runner.name, resp.status_code, detail
+            "Activities fetch error runner=%s status=%s detail=%s",
+            runner.name,
+            resp.status_code,
+            detail,
         )
         return None
 
 
-def _extract_error(resp: Optional[requests.Response]) -> Optional[str]:
-    """Return compact string with Strava error info (message + codes) if present.
+def _get_resource_json(
+    runner: Runner,
+    url: str,
+    params: Optional[Dict[str, Any]],
+    context: str,
+) -> Any:
+    """Fetch a JSON object from Strava with retry/backoff and rich errors."""
 
-    Expected JSON form:
-      {"message": "...", "errors": [{"resource": .., "field": .., "code": ..}, ...]}
-    Falls back to a trimmed plain-text body if JSON parse fails.
-    """
-    if not resp:
-        return None
-    try:
-        data = resp.json()
-    except Exception:
+    backoff = 1.0
+    attempt = 0
+    attempted_refresh = False
+    while True:
+        attempt += 1
+        can_retry = attempt < STRAVA_MAX_RETRIES
+        _ensure_runner_token(runner)
+        _limiter.before_request()
+        response: Optional[requests.Response] = None
         try:
-            txt = resp.text.strip()
-            if txt:
-                return (txt[:297] + "...") if len(txt) > 300 else txt
+            response = _session.get(
+                url,
+                headers=_auth_headers(runner),
+                params=params,
+                timeout=DEFAULT_TIMEOUT,
+            )
+        except requests.RequestException as exc:
+            _limiter.after_response(None, None)
+            if can_retry:
+                logging.warning(
+                    "%s network error runner=%s attempt=%s err=%s; retrying in %.1fs",
+                    context,
+                    runner.name,
+                    attempt,
+                    exc.__class__.__name__,
+                    backoff,
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+                continue
+            message = f"{context} network error for runner={runner.name}: {exc.__class__.__name__}"
+            logging.error(message)
+            raise StravaAPIError(message) from exc
+        else:
+            _limiter.after_response(response.headers, response.status_code)
+
+        if response.status_code == 401 and not attempted_refresh:
+            logging.info(
+                "%s 401 for runner %s; refreshing token and retrying.",
+                context,
+                runner.name,
+            )
+            runner.access_token = None
+            attempted_refresh = True
+            continue
+
+        action, error = _classify_response_status(
+            runner,
+            response,
+            context,
+            attempt=attempt,
+            backoff=backoff,
+            can_retry=can_retry,
+        )
+        if action == "retry":
+            time.sleep(backoff)
+            backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+            continue
+        if action == "raise" and error is not None:
+            raise error
+
+        try:
+            return response.json()
+        except ValueError as exc:
+            if can_retry:
+                logging.warning(
+                    "Non-JSON response for %s runner=%s attempt=%s; retrying in %.1fs",
+                    context,
+                    runner.name,
+                    attempt,
+                    backoff,
+                )
+                time.sleep(backoff)
+                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+                continue
+            message = f"{context} returned non-JSON payload for runner {runner.name}"
+            logging.error(message)
+            raise StravaAPIError(message) from exc
+
+
+def _classify_response_status(
+    runner: Runner,
+    response: requests.Response,
+    context: str,
+    *,
+    attempt: int,
+    backoff: float,
+    can_retry: bool,
+) -> tuple[str, Optional[Exception]]:
+    """Return action for a non-success status: ok, retry, or raise."""
+
+    status = response.status_code
+    detail = _extract_error(response)
+
+    def with_detail(message: str) -> str:
+        return f"{message} | {detail}" if detail else message
+
+    if status == 429 and can_retry:
+        logging.warning(
+            "%s rate limited (429) runner=%s attempt=%s; sleeping %.1fs",
+            context,
+            runner.name,
+            attempt,
+            backoff,
+        )
+        return "retry", None
+
+    if status == 402:
+        try:
+            runner.payment_required = True  # type: ignore[attr-defined]
         except Exception:
             pass
+        message = with_detail(
+            f"{context} requires Strava subscription for runner {runner.name}"
+        )
+        logging.warning(message)
+        return "raise", StravaPaymentRequiredError(message)
+
+    if status in (401, 403):
+        message = with_detail(f"{context} forbidden for runner {runner.name}")
+        logging.warning(message)
+        return "raise", StravaPermissionError(message)
+
+    if status == 404:
+        message = with_detail(f"{context} not found for runner {runner.name}")
+        logging.info(message)
+        return "raise", StravaResourceNotFoundError(message)
+
+    if 500 <= status < 600 and can_retry:
+        message = with_detail(
+            f"{context} server error {status} for runner {runner.name}"
+        )
+        logging.warning("%s; retrying in %.1fs", message, backoff)
+        return "retry", None
+
+    if 400 <= status < 600:
+        message = with_detail(
+            f"{context} request failed (status {status}) for runner {runner.name}"
+        )
+        logging.error(message)
+        return "raise", StravaAPIError(message)
+
+    return "ok", None
+
+
+def fetch_segment_geometry(
+    runner: Runner,
+    segment_id: int,
+) -> Dict[str, Any]:
+    """Return high-resolution geometry details for a Strava segment."""
+
+    url = f"{STRAVA_BASE_URL}/segments/{segment_id}"
+    context = f"segment:{segment_id}"
+    data = _get_resource_json(runner, url, params=None, context=context)
+    if not isinstance(data, dict):
+        message = f"{context} payload had unexpected type {type(data).__name__}"
+        logging.error(message)
+        raise StravaAPIError(message)
+    map_info = data.get("map") or {}
+    polyline = map_info.get("polyline") or map_info.get("summary_polyline")
+    if not polyline:
+        message = f"{context} missing polyline data for runner {runner.name}"
+        logging.error(message)
+        raise StravaAPIError(message)
+    distance_val = data.get("distance")
+    try:
+        distance_m = float(distance_val) if distance_val is not None else 0.0
+    except (TypeError, ValueError):
+        distance_m = 0.0
+    result: Dict[str, Any] = {
+        "segment_id": int(data.get("id", segment_id)),
+        "name": data.get("name"),
+        "distance": distance_m,
+        "polyline": polyline,
+        "start_latlng": data.get("start_latlng"),
+        "end_latlng": data.get("end_latlng"),
+        "elevation_high": data.get("elevation_high"),
+        "elevation_low": data.get("elevation_low"),
+        "map": map_info,
+        "raw": data,
+    }
+    return result
+
+
+def fetch_activity_stream(
+    runner: Runner,
+    activity_id: int,
+    *,
+    stream_types: tuple[str, ...] = ("latlng", "time"),
+    resolution: str = "high",
+    series_type: str = "time",
+) -> Dict[str, Any]:
+    """Return GPS stream data for an activity (lat/lon + timestamps)."""
+
+    keys = ",".join(stream_types)
+    url = f"{STRAVA_BASE_URL}/activities/{activity_id}/streams"
+    context = f"activity_stream:{activity_id}"
+    params = {
+        "keys": keys,
+        "key_by_type": "true",
+        "resolution": resolution,
+        "series_type": series_type,
+    }
+    data = _get_resource_json(runner, url, params=params, context=context)
+    if not isinstance(data, dict):
+        message = f"{context} payload had unexpected type {type(data).__name__}"
+        logging.error(message)
+        raise StravaAPIError(message)
+    latlng_stream = data.get("latlng")
+    time_stream = data.get("time")
+    if not isinstance(latlng_stream, dict) or not isinstance(time_stream, dict):
+        message = f"{context} missing required stream metadata"
+        logging.warning(message)
+        raise StravaStreamEmptyError(message)
+    latlng_data = latlng_stream.get("data")
+    time_data = time_stream.get("data")
+    if not latlng_data or not time_data:
+        message = f"{context} missing latlng or time samples"
+        logging.warning(message)
+        raise StravaStreamEmptyError(message)
+    if len(latlng_data) != len(time_data):
+        message = (
+            f"{context} stream length mismatch latlng={len(latlng_data)}"
+            f" time={len(time_data)}"
+        )
+        logging.warning(message)
+        raise StravaStreamEmptyError(message)
+    metadata = {
+        "latlng": {k: v for k, v in latlng_stream.items() if k != "data"},
+        "time": {k: v for k, v in time_stream.items() if k != "data"},
+        "additional_streams": {
+            key: value for key, value in data.items() if key not in {"latlng", "time"}
+        },
+    }
+    result: Dict[str, Any] = {
+        "activity_id": activity_id,
+        "latlng": latlng_data,
+        "time": time_data,
+        "metadata": metadata,
+    }
+    return result
+
+
+def _extract_error(resp: Optional[requests.Response]) -> Optional[str]:
+    """Return compact string with Strava error info (message + codes) if present."""
+
+    if resp is None:
         return None
-    if not isinstance(data, dict):  # Unexpected shape
+    data = _safe_json(resp)
+    if data is None:
+        return _extract_error_text(resp)
+    if not isinstance(data, dict):
         return None
+    parts = _collect_error_parts(data)
+    return " | ".join(parts) if parts else None
+
+
+def _safe_json(resp: requests.Response) -> Optional[Any]:
+    """Safely parse JSON; return None if parsing fails."""
+
+    try:
+        return resp.json()
+    except Exception:
+        return None
+
+
+def _extract_error_text(resp: requests.Response) -> Optional[str]:
+    """Best-effort plain-text extraction when JSON parsing fails."""
+
+    text = getattr(resp, "text", "")
+    if not isinstance(text, str):
+        return None
+    trimmed = text.strip()
+    if not trimmed:
+        return None
+    return (trimmed[:297] + "...") if len(trimmed) > 300 else trimmed
+
+
+def _collect_error_parts(data: Dict[str, Any]) -> List[str]:
+    """Build error snippets from the standard Strava error response."""
+
     parts: List[str] = []
-    msg = data.get("message")
-    if msg:
-        parts.append(str(msg))
-    errs = data.get("errors")
-    if isinstance(errs, list):
-        for err in errs:
+    message = data.get("message")
+    if message:
+        parts.append(str(message))
+    errors = data.get("errors")
+    if isinstance(errors, list):
+        for err in errors:
             if not isinstance(err, dict):
                 continue
             resource = err.get("resource")
             field = err.get("field")
             code = err.get("code")
-            spec = "/".join([p for p in [resource, field] if p])
+            spec = "/".join(filter(None, (resource, field)))
             if code and spec:
                 parts.append(f"{spec}:{code}")
             elif code:
                 parts.append(str(code))
-    return " | ".join(parts) if parts else None
+    return parts

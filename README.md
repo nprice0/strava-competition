@@ -284,6 +284,14 @@ Strava dates are converted to time zone‑naive datetimes before writing because
 - Segment summary sheet (if enabled) shows per-team: attempts, participating runner count, sum/average fastest times
 - Distance summary sheet shows: total runs, total distance (km), total elevation gain (m), average distance per run (km)
 
+### Segment matcher fallback
+
+- **OAuth scopes**: ensure your Strava app requests `read_all`, `activity:read_all`, and `profile:read_all`; without these scopes the fallback cannot download the activity streams it needs.
+- **How it works**: the matcher only runs for runners that return HTTP 402 (payment required) or are pre-flagged with `payment_required=True`. It fetches candidate activities, preprocesses them, and attempts to align tracks against the configured segment using discrete Fréchet distance (with DTW fallback) and timing interpolation.
+- **Configuration**: tolerances and performance caps live in `strava_competition/config.py` (and can be overridden via environment variables). Set `MATCHING_FALLBACK_ENABLED=false` (or `0`, `no`, `off`) to disable the matcher globally without changing code.
+- **Diagnostics**: matcher runs emit structured logs containing preprocessing counts, coverage ratio, similarity scores, and elapsed time so you can investigate slow or mismatched activities. The `benchmarks/matcher_benchmark.py` utility stress-tests the pipeline with large point counts.
+- **Known limitations**: extremely noisy GPS traces, long pauses mid-segment, unsupported sports (e.g., virtual or indoor workouts), or segments with drastic elevation changes may still fail to match even with generous tolerances.
+
 ---
 
 ## Roadmap (future)

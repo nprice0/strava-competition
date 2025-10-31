@@ -4,18 +4,23 @@ Encapsulates orchestration of fetching efforts and aggregating results so
 higher-level code (main, CLI, etc.) depends on a stable service API rather
 than a free function implementation.
 """
+
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import logging
 import threading
-from typing import Callable, Dict, List, Sequence
+from datetime import datetime
+from typing import Callable, Dict, List, Sequence, Tuple, Set
 
 from ..models import Segment, Runner, SegmentResult
-from ..config import MAX_WORKERS
-from ..strava_api import get_segment_efforts
+from ..config import MATCHING_FALLBACK_ENABLED, MAX_WORKERS
+from ..matching.similarity import segment_cache_scope
+from ..strava_api import get_segment_efforts, get_activities
+from ..matching import match_activity_to_segment
 
 ResultsMapping = Dict[str, Dict[str, List[SegmentResult]]]
+
 
 class SegmentService:
     def __init__(self, max_workers: int | None = None):
@@ -33,92 +38,329 @@ class SegmentService:
     ) -> ResultsMapping:
         results: ResultsMapping = {}
         total_segments = len(segments)
-        for seg_index, segment in enumerate(segments, start=1):
-            if segment.start_date > segment.end_date:
-                self._log.warning(
-                    "Skipping segment with inverted date range: %s (start=%s end=%s)",
-                    segment.name,
-                    segment.start_date,
-                    segment.end_date,
-                )
-                continue
-            results[segment.name] = {}
-            eligible_runners = [
-                r for r in runners if not getattr(r, "payment_required", False) and r.segment_team
-            ]
-            total_runners = len(eligible_runners)
-            if total_runners == 0:
-                self._log.info("No eligible runners for segment %s", segment.name)
-                continue
-            self._log.debug(
-                "Processing segment %s (%d/%d) with %d runners (max_workers=%d)",
-                segment.name,
-                seg_index,
-                total_segments,
-                total_runners,
-                self.max_workers,
-            )
-            if cancel_event and cancel_event.is_set():
-                self._log.info("Cancellation requested before segment %s; aborting.", segment.name)
-                break
-            completed = 0
-            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-                future_to_runner: Dict[Future, Runner] = {}
-                for runner in eligible_runners:
-                    if cancel_event and cancel_event.is_set():
-                        break
-                    fut = executor.submit(
-                        get_segment_efforts,
-                        runner,
-                        segment.id,
+        with segment_cache_scope():
+            for seg_index, segment in enumerate(segments, start=1):
+                if segment.start_date > segment.end_date:
+                    self._log.warning(
+                        "Skipping segment with inverted date range: %s (start=%s end=%s)",
+                        segment.name,
                         segment.start_date,
                         segment.end_date,
                     )
-                    future_to_runner[fut] = runner
-                for fut in as_completed(future_to_runner):
-                    if cancel_event and cancel_event.is_set():
-                        self._log.info(
-                            "Cancellation requested during segment %s; stopping remaining futures.",
-                            segment.name,
-                        )
-                        break
-                    runner = future_to_runner[fut]
-                    try:
-                        efforts = fut.result()
-                    except Exception:  # noqa: BLE001
-                        efforts = None  # errors already logged by API layer
-                    if efforts:
-                        seg_result = self._result_from_efforts(runner, segment, efforts)
-                        if seg_result:
-                            team_bucket = results[segment.name].setdefault(runner.segment_team, [])
-                            team_bucket.append(seg_result)
-                    completed += 1
-                    if progress:
-                        try:
-                            progress(segment.name, completed, total_runners)
-                        except Exception:
-                            self._log.debug(
-                                "Progress callback failed for segment %s", segment.name, exc_info=True
-                            )
-            for team_results in results[segment.name].values():
-                team_results.sort(key=lambda r: r.fastest_time)
+                    continue
+                segment_results = self._process_segment(
+                    segment,
+                    runners,
+                    seg_index,
+                    total_segments,
+                    cancel_event,
+                    progress,
+                )
+                for team_results in segment_results.values():
+                    team_results.sort(key=lambda r: r.fastest_time)
+                results[segment.name] = segment_results
         return results
 
-    @staticmethod
-    def _result_from_efforts(runner: Runner, segment: Segment, efforts: List[dict] | None) -> SegmentResult | None:
+    def _process_segment(
+        self,
+        segment: Segment,
+        runners: Sequence[Runner],
+        seg_index: int,
+        total_segments: int,
+        cancel_event: threading.Event | None,
+        progress: Callable[[str, int, int], None] | None,
+    ) -> Dict[str, List[SegmentResult]]:
+        segment_results: Dict[str, List[SegmentResult]] = {}
+        eligible_runners = [r for r in runners if r.segment_team]
+        total_runners = len(eligible_runners)
+        if total_runners == 0:
+            self._log.info("No eligible runners for segment %s", segment.name)
+            return segment_results
+        self._log.debug(
+            "Processing segment %s (%d/%d) with %d runners (max_workers=%d)",
+            segment.name,
+            seg_index,
+            total_segments,
+            total_runners,
+            self.max_workers,
+        )
+        if cancel_event and cancel_event.is_set():
+            self._log.info(
+                "Cancellation requested before segment %s; aborting.", segment.name
+            )
+            return segment_results
+        completed = 0
+
+        def notify_progress(count: int) -> None:
+            if progress is None:
+                return
+            try:
+                progress(segment.name, count, total_runners)
+            except Exception:
+                self._log.debug(
+                    "Progress callback failed for segment %s",
+                    segment.name,
+                    exc_info=True,
+                )
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_runner, fallback_queue = self._submit_effort_futures(
+                executor,
+                eligible_runners,
+                segment,
+                cancel_event,
+            )
+            completed = self._consume_effort_futures(
+                future_to_runner,
+                fallback_queue,
+                segment,
+                segment_results,
+                cancel_event,
+                completed,
+                notify_progress,
+            )
+        completed = self._process_fallback_queue(
+            segment,
+            segment_results,
+            fallback_queue,
+            cancel_event,
+            completed,
+            notify_progress,
+        )
+        return segment_results
+
+    def _submit_effort_futures(
+        self,
+        executor: ThreadPoolExecutor,
+        runners: Sequence[Runner],
+        segment: Segment,
+        cancel_event: threading.Event | None,
+    ) -> Tuple[Dict[Future, Runner], List[Runner]]:
+        future_to_runner: Dict[Future, Runner] = {}
+        fallback_queue: List[Runner] = []
+        for runner in runners:
+            if cancel_event and cancel_event.is_set():
+                break
+            if getattr(runner, "payment_required", False):
+                fallback_queue.append(runner)
+                continue
+            future = executor.submit(
+                get_segment_efforts,
+                runner,
+                segment.id,
+                segment.start_date,
+                segment.end_date,
+            )
+            future_to_runner[future] = runner
+        return future_to_runner, fallback_queue
+
+    def _consume_effort_futures(
+        self,
+        future_to_runner: Dict[Future, Runner],
+        fallback_queue: List[Runner],
+        segment: Segment,
+        segment_results: Dict[str, List[SegmentResult]],
+        cancel_event: threading.Event | None,
+        completed: int,
+        notify_progress: Callable[[int], None],
+    ) -> int:
+        for fut in as_completed(future_to_runner):
+            if cancel_event and cancel_event.is_set():
+                self._log.info(
+                    "Cancellation requested during segment %s; stopping remaining futures.",
+                    segment.name,
+                )
+                break
+            runner = future_to_runner[fut]
+            try:
+                efforts = fut.result()
+            except Exception:  # noqa: BLE001
+                efforts = None
+            seg_result = self._process_runner_results(runner, segment, efforts)
+            if seg_result:
+                bucket = segment_results.setdefault(runner.segment_team, [])
+                bucket.append(seg_result)
+            if (
+                seg_result is None
+                and getattr(runner, "payment_required", False)
+                and runner not in fallback_queue
+            ):
+                fallback_queue.append(runner)
+            completed += 1
+            notify_progress(completed)
+        return completed
+
+    def _process_fallback_queue(
+        self,
+        segment: Segment,
+        segment_results: Dict[str, List[SegmentResult]],
+        fallback_queue: List[Runner],
+        cancel_event: threading.Event | None,
+        completed: int,
+        notify_progress: Callable[[int], None],
+    ) -> int:
+        if not fallback_queue:
+            return completed
+        seen: Set[int] = set()
+        for runner in fallback_queue:
+            if runner.strava_id in seen:
+                continue
+            seen.add(runner.strava_id)
+            if cancel_event and cancel_event.is_set():
+                self._log.info(
+                    "Cancellation requested during segment %s fallback processing; aborting remaining runners.",
+                    segment.name,
+                )
+                break
+            seg_result = self._process_runner_results(runner, segment, None)
+            if seg_result:
+                bucket = segment_results.setdefault(runner.segment_team, [])
+                bucket.append(seg_result)
+            completed += 1
+            notify_progress(completed)
+        return completed
+
+    def _process_runner_results(
+        self,
+        runner: Runner,
+        segment: Segment,
+        efforts: List[dict] | None,
+    ) -> SegmentResult | None:
+        seg_result = self._result_from_efforts(runner, segment, efforts)
+        if seg_result is not None:
+            return seg_result
+        if not MATCHING_FALLBACK_ENABLED:
+            self._log.debug(
+                "Matcher fallback disabled; skipping runner=%s segment=%s",
+                runner.name,
+                segment.id,
+            )
+            return None
+        if not getattr(runner, "payment_required", False):
+            self._log.debug(
+                "No segment efforts returned; invoking matcher fallback runner=%s segment=%s",
+                runner.name,
+                segment.id,
+            )
+        return self._match_runner_segment(runner, segment)
+
+    def _result_from_efforts(
+        self,
+        runner: Runner,
+        segment: Segment,
+        efforts: List[dict] | None,
+    ) -> SegmentResult | None:
+        """Convert Strava segment efforts into a SegmentResult if available."""
+
         if not efforts:
             return None
-        try:
-            fastest = min(efforts, key=lambda e: e["elapsed_time"])
-        except Exception:
+
+        valid: List[tuple[float, dict]] = []
+        for effort in efforts:
+            if not isinstance(effort, dict):
+                continue
+            elapsed = effort.get("elapsed_time")
+            try:
+                elapsed_f = float(elapsed)
+            except (TypeError, ValueError):
+                continue
+            if elapsed_f <= 0:
+                continue
+            valid.append((elapsed_f, effort))
+
+        if not valid:
             return None
+
+        valid.sort(key=lambda item: item[0])
+        fastest_elapsed, fastest_effort = valid[0]
+        fastest_date = _parse_iso_datetime(
+            fastest_effort.get("start_date_local") or fastest_effort.get("start_date")
+        )
+
+        diagnostics: Dict[str, object] = {
+            "source": "strava",
+            "effort_ids": [
+                effort.get("id")
+                for _, effort in valid
+                if isinstance(effort.get("id"), (int, str))
+            ],
+            "best_effort_id": fastest_effort.get("id"),
+            "moving_time": fastest_effort.get("moving_time"),
+        }
+
+        attempts = len(valid)
+        team = runner.segment_team or ""
+        return SegmentResult(
+            runner=runner.name,
+            team=team,
+            segment=segment.name,
+            attempts=attempts,
+            fastest_time=fastest_elapsed,
+            fastest_date=fastest_date,
+            source="strava",
+            diagnostics=diagnostics,
+        )
+
+    def _match_runner_segment(
+        self, runner: Runner, segment: Segment
+    ) -> SegmentResult | None:
+        activities = get_activities(runner, segment.start_date, segment.end_date)
+        if not activities:
+            return None
+        best_match = None
+        best_activity: dict | None = None
+        attempts = 0
+        for activity in activities:
+            activity_id = activity.get("id")
+            if activity_id is None:
+                continue
+            try:
+                result = match_activity_to_segment(runner, int(activity_id), segment.id)
+            except Exception:  # noqa: BLE001
+                self._log.debug(
+                    "Matcher failure runner=%s segment=%s activity=%s",
+                    runner.name,
+                    segment.id,
+                    activity_id,
+                    exc_info=True,
+                )
+                continue
+            if not result.matched or result.elapsed_time_s is None:
+                continue
+            attempts += 1
+            if best_match is None or result.elapsed_time_s < best_match.elapsed_time_s:  # type: ignore[union-attr]
+                best_match = result
+                best_activity = activity
+        if best_match is None or best_activity is None:
+            return None
+        fastest_date = _parse_iso_datetime(best_activity.get("start_date_local"))
+        diagnostics = {
+            "activity_id": best_activity.get("id"),
+            "activity_start": best_activity.get("start_date_local"),
+            "matcher_diagnostics": best_match.diagnostics,
+            "source": "matcher",
+        }
         return SegmentResult(
             runner=runner.name,
             team=runner.segment_team,
             segment=segment.name,
-            attempts=len(efforts),
-            fastest_time=fastest.get("elapsed_time"),
-            fastest_date=fastest.get("start_date_local"),
+            attempts=attempts if attempts > 0 else 1,
+            fastest_time=best_match.elapsed_time_s,
+            fastest_date=fastest_date,
+            source="matcher",
+            diagnostics=diagnostics,
         )
+
+
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if value.endswith("Z"):
+            value = value.replace("Z", "+00:00")
+        return datetime.fromisoformat(value)
+    except Exception:
+        return None
+
 
 __all__ = ["SegmentService"]

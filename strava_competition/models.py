@@ -1,5 +1,6 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, Dict, Optional
 
 
 @dataclass
@@ -30,4 +31,6 @@ class SegmentResult:
     segment: str
     attempts: int
     fastest_time: float
-    fastest_date: datetime
+    fastest_date: Optional[datetime]
+    source: str = "strava"
+    diagnostics: Dict[str, Any] = field(default_factory=dict)
