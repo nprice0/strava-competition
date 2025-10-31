@@ -43,7 +43,7 @@ def _env_bool(key: str, default: bool) -> bool:
     return default
 
 
-# Optionally load variables from a local .env file (if python-dotenv is installed)
+# Load .env variables when python-dotenv is available.
 _load_dotenv = None
 try:
     _dotenv_mod = importlib.import_module("dotenv")
@@ -52,29 +52,29 @@ except Exception:
     _load_dotenv = None
 
 if callable(_load_dotenv):
-    # Loads .env from current working directory or parents
+    # Load .env from the current directory or any parent folder.
     _load_dotenv()
 
 
 # ---------------------------------------------------------------------------
 # Input/Output
 # ---------------------------------------------------------------------------
-# Can be absolute or relative paths
+# Paths can be absolute or relative.
 INPUT_FILE = "competition_input.xlsx"
 OUTPUT_FILE = "competition_results"
 
-# If True, appends _YYYYMMDD_HHMMSS to the output filename
+# Append _YYYYMMDD_HHMMSS to the output name when True.
 OUTPUT_FILE_TIMESTAMP_ENABLED = True
 
 
 # ---------------------------------------------------------------------------
 # Strava settings
 # ---------------------------------------------------------------------------
-# API endpoints
+# Base Strava API URLs.
 STRAVA_BASE_URL = "https://www.strava.com/api/v3"
 STRAVA_OAUTH_URL = "https://www.strava.com/oauth/token"
 
-# Client credentials (read from environment; do not hardcode secrets)
+# Client credentials pulled from the environment. Do not hardcode secrets.
 CLIENT_ID = os.getenv("STRAVA_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
 
@@ -82,39 +82,44 @@ CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
 # ---------------------------------------------------------------------------
 # Performance tuning
 # ---------------------------------------------------------------------------
-# Concurrency for per-segment parallel effort fetching
-MAX_WORKERS = 4  # threads per segment when fetching runner efforts
+# Threads used per segment when fetching efforts in parallel.
+MAX_WORKERS = 4
 
-# HTTP session connection pools (for parallel requests)
+# HTTP session pool sizes for concurrent requests.
 HTTP_POOL_CONNECTIONS = 20
 HTTP_POOL_MAXSIZE = 20
 
-# Request timeout (seconds)
+# Request timeout in seconds.
 REQUEST_TIMEOUT = 15
 
-# Rate limiter settings
-RATE_LIMIT_MAX_CONCURRENT = 8  # cap in-flight HTTP requests globally
-RATE_LIMIT_JITTER_RANGE = (0.05, 0.2)  # seconds; random jitter to smooth bursts
-RATE_LIMIT_NEAR_LIMIT_BUFFER = (
-    3  # start throttling when within this many calls of the short-window limit
-)
-RATE_LIMIT_THROTTLE_SECONDS = 15  # throttle window applied on 429 or when near limit
 
-# Retry/backoff settings for Strava API (used by fetch loops)
-STRAVA_MAX_RETRIES = 3  # attempts per page (network/5xx/HTML/non-JSON)
-STRAVA_BACKOFF_MAX_SECONDS = 4.0  # cap for exponential backoff per attempt
+# Rate limiter settings.
+# RATE_LIMIT_MAX_CONCURRENT caps total in-flight requests.
+RATE_LIMIT_MAX_CONCURRENT = 8
+# RATE_LIMIT_JITTER_RANGE adds random delay (seconds) to smooth bursts.
+RATE_LIMIT_JITTER_RANGE = (0.05, 0.2)
+# RATE_LIMIT_NEAR_LIMIT_BUFFER starts throttling when this close to the short-window limit.
+RATE_LIMIT_NEAR_LIMIT_BUFFER = 3
+# RATE_LIMIT_THROTTLE_SECONDS is the pause applied on 429s or near-limit signals.
+RATE_LIMIT_THROTTLE_SECONDS = 15
+
+# Retry/backoff behaviour for the Strava fetch loops.
+# STRAVA_MAX_RETRIES covers network failures, 5xx, or bad payloads.
+STRAVA_MAX_RETRIES = 3
+# STRAVA_BACKOFF_MAX_SECONDS caps the exponential backoff per attempt.
+STRAVA_BACKOFF_MAX_SECONDS = 4.0
 
 
 # ---------------------------------------------------------------------------
 # Distance competition options
 # ---------------------------------------------------------------------------
-# When True, create a distance window sheet even if a specific window produced zero rows.
+# Write a distance sheet even when a window has no rows.
 DISTANCE_CREATE_EMPTY_WINDOW_SHEETS = False
 
-# Enforce canonical column ordering for distance sheets.
+# Keep distance sheets in a fixed column order.
 DISTANCE_ENFORCE_COLUMN_ORDER = True
 
-# Column order applied if enforcement enabled (missing columns ignored gracefully)
+# Column order used when enforcement is enabled. Missing columns are ignored.
 DISTANCE_COLUMN_ORDER = [
     "Runner",
     "Team",
@@ -128,7 +133,7 @@ DISTANCE_COLUMN_ORDER = [
 # ---------------------------------------------------------------------------
 # Excel formatting
 # ---------------------------------------------------------------------------
-# Enforce canonical column ordering for segment sheets.
+# Keep segment sheets in a fixed column order.
 SEGMENT_ENFORCE_COLUMN_ORDER = True
 SEGMENT_COLUMN_ORDER = [
     "Team",
@@ -140,28 +145,48 @@ SEGMENT_COLUMN_ORDER = [
     "Fastest Date",
 ]
 
-# Automatically size column widths after writing each sheet (openpyxl only)
+# Automatically size columns after writing each sheet (openpyxl only).
 EXCEL_AUTOSIZE_COLUMNS = True
 EXCEL_AUTOSIZE_MAX_WIDTH = 50  # characters
 EXCEL_AUTOSIZE_MIN_WIDTH = 6  # characters
-EXCEL_AUTOSIZE_PADDING = 2  # extra chars added to detected max
-EXCEL_AUTOSIZE_MAX_ROWS = 5000  # skip autosize for very large sheets (perf guard)
+EXCEL_AUTOSIZE_PADDING = 2  # extra characters added to the detected max
+EXCEL_AUTOSIZE_MAX_ROWS = (
+    5000  # skip autosize for very large sheets (performance guard)
+)
 
 
 # ---------------------------------------------------------------------------
 # Segment matching tolerances
 # ---------------------------------------------------------------------------
-# These configure the GPS-based matching fallback. Values can be overridden via
-# environment variables if experimentation is required without code changes.
+# These values drive the GPS fallback matcher. Set an environment variable with
+# the same name to override any default without editing this file.
+
+# Maximum deviation (metres) allowed when simplifying segment geometry.
 MATCHING_SIMPLIFICATION_TOLERANCE_M = _env_float(
     "MATCHING_SIMPLIFICATION_TOLERANCE_M", 7.5
 )
+
+# Target spacing (metres) for the resampled segment polyline.
 MATCHING_RESAMPLE_INTERVAL_M = _env_float("MATCHING_RESAMPLE_INTERVAL_M", 5.0)
+
+# Distance (metres) around the start used when trimming coverage and timing.
 MATCHING_START_TOLERANCE_M = _env_float("MATCHING_START_TOLERANCE_M", 30.0)
+
+# Baseline distance (metres) for discrete Fréchet similarity checks.
 MATCHING_FRECHET_TOLERANCE_M = _env_float("MATCHING_FRECHET_TOLERANCE_M", 20.0)
+
+# Minimum portion of the segment an activity must cover to count as a match.
 MATCHING_COVERAGE_THRESHOLD = _env_float("MATCHING_COVERAGE_THRESHOLD", 0.95)
+
+# Safety caps on simplified and resampled point counts.
 MATCHING_MAX_SIMPLIFIED_POINTS = _env_int("MATCHING_MAX_SIMPLIFIED_POINTS", 2000)
 MATCHING_MAX_RESAMPLED_POINTS = _env_int("MATCHING_MAX_RESAMPLED_POINTS", 1200)
+
+# Cache size for prepared segment geometry objects.
 MATCHING_CACHE_MAX_ENTRIES = _env_int("MATCHING_CACHE_MAX_ENTRIES", 64)
+
+# Global switch for the fallback matcher.
 MATCHING_FALLBACK_ENABLED = _env_bool("MATCHING_FALLBACK_ENABLED", True)
+
+# Largest allowed perpendicular offset (metres) when evaluating coverage.
 MATCHING_MAX_OFFSET_M = _env_float("MATCHING_MAX_OFFSET_M", 100.0)
