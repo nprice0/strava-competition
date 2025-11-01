@@ -11,11 +11,18 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import logging
 import threading
 from datetime import datetime
-from typing import Callable, Dict, List, Sequence, Tuple, Set
+from typing import Callable, Dict, List, Sequence, Tuple, Set, Optional, Iterator
 
 from ..models import Segment, Runner, SegmentResult
-from ..config import MATCHING_FALLBACK_ENABLED, MAX_WORKERS
+from ..config import (
+    MATCHING_ACTIVITY_MIN_DISTANCE_RATIO,
+    MATCHING_ACTIVITY_REQUIRED_TYPES,
+    MATCHING_FALLBACK_ENABLED,
+    MAX_WORKERS,
+)
 from ..matching.similarity import segment_cache_scope
+from ..matching.models import MatchResult
+from ..matching.fetchers import fetch_segment_geometry
 from ..strava_api import get_segment_efforts, get_activities
 from ..matching import match_activity_to_segment
 
@@ -28,6 +35,7 @@ class SegmentService:
         if self.max_workers <= 0:
             raise ValueError("max_workers must be positive")
         self._log = logging.getLogger(self.__class__.__name__)
+        self._segment_distance_cache: Dict[int, float] = {}
 
     def process(
         self,
@@ -307,25 +315,15 @@ class SegmentService:
         activities = get_activities(runner, segment.start_date, segment.end_date)
         if not activities:
             return None
+        segment_distance_m = self._get_segment_distance(runner, segment.id)
         best_match = None
         best_activity: dict | None = None
         attempts = 0
-        for activity in activities:
-            activity_id = activity.get("id")
-            if activity_id is None:
-                continue
-            try:
-                result = match_activity_to_segment(runner, int(activity_id), segment.id)
-            except Exception:  # noqa: BLE001
-                self._log.debug(
-                    "Matcher failure runner=%s segment=%s activity=%s",
-                    runner.name,
-                    segment.id,
-                    activity_id,
-                    exc_info=True,
-                )
-                continue
-            if not result.matched or result.elapsed_time_s is None:
+        for activity_id, activity in self._iter_candidate_activities(
+            activities, segment_distance_m
+        ):
+            result = self._run_matcher(runner, segment, activity_id)
+            if result is None or not result.matched or result.elapsed_time_s is None:
                 continue
             attempts += 1
             if best_match is None or result.elapsed_time_s < best_match.elapsed_time_s:  # type: ignore[union-attr]
@@ -350,6 +348,88 @@ class SegmentService:
             source="matcher",
             diagnostics=diagnostics,
         )
+
+    def _iter_candidate_activities(
+        self,
+        activities: Sequence[dict],
+        segment_distance_m: Optional[float],
+    ) -> Iterator[Tuple[int, dict]]:
+        for activity in activities:
+            activity_id = activity.get("id")
+            if activity_id is None:
+                continue
+            if not self._activity_is_candidate(activity):
+                continue
+            if not self._activity_distance_is_sufficient(activity, segment_distance_m):
+                continue
+            try:
+                yield int(activity_id), activity
+            except (TypeError, ValueError):
+                continue
+
+    def _run_matcher(
+        self,
+        runner: Runner,
+        segment: Segment,
+        activity_id: int,
+    ) -> Optional[MatchResult]:
+        try:
+            return match_activity_to_segment(runner, activity_id, segment.id)
+        except Exception:  # noqa: BLE001
+            self._log.debug(
+                "Matcher failure runner=%s segment=%s activity=%s",
+                runner.name,
+                segment.id,
+                activity_id,
+                exc_info=True,
+            )
+            return None
+
+    def _get_segment_distance(self, runner: Runner, segment_id: int) -> Optional[float]:
+        cached = self._segment_distance_cache.get(segment_id)
+        if cached is not None:
+            return cached
+        try:
+            geometry = fetch_segment_geometry(runner, segment_id)
+        except Exception:  # noqa: BLE001
+            self._log.debug(
+                "Failed to fetch segment geometry for distance check runner=%s segment=%s",
+                runner.name,
+                segment_id,
+                exc_info=True,
+            )
+            return None
+        distance = float(getattr(geometry, "distance_m", 0.0) or 0.0)
+        if distance > 0.0:
+            self._segment_distance_cache[segment_id] = distance
+            return distance
+        return None
+
+    def _activity_is_candidate(self, activity: dict) -> bool:
+        required_types = [value.lower() for value in MATCHING_ACTIVITY_REQUIRED_TYPES]
+        if not required_types:
+            return True
+        activity_type = str(activity.get("type", "")).strip()
+        if not activity_type:
+            return False
+        return activity_type.lower() in required_types
+
+    def _activity_distance_is_sufficient(
+        self,
+        activity: dict,
+        segment_distance_m: Optional[float],
+    ) -> bool:
+        ratio = MATCHING_ACTIVITY_MIN_DISTANCE_RATIO
+        if ratio <= 0.0 or segment_distance_m is None or segment_distance_m <= 0.0:
+            return True
+        raw_distance = activity.get("distance")
+        try:
+            activity_distance = float(raw_distance)
+        except (TypeError, ValueError):
+            return False
+        if activity_distance <= 0.0:
+            return False
+        return activity_distance >= segment_distance_m * ratio
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:

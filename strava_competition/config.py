@@ -190,3 +190,25 @@ MATCHING_FALLBACK_ENABLED = _env_bool("MATCHING_FALLBACK_ENABLED", True)
 
 # Largest allowed perpendicular offset (metres) when evaluating coverage.
 MATCHING_MAX_OFFSET_M = _env_float("MATCHING_MAX_OFFSET_M", 30.0)
+
+# Accepted activity types for matcher fallback. Provide a comma-separated list or leave
+# empty to disable filtering (e.g., "Run,Ride"). Values are normalised case-insensitively.
+_MATCHING_ACTIVITY_REQUIRED_TYPES_RAW = os.getenv(
+    "MATCHING_ACTIVITY_REQUIRED_TYPE", "Run"
+)
+MATCHING_ACTIVITY_REQUIRED_TYPES = [
+    item.strip()
+    for item in _MATCHING_ACTIVITY_REQUIRED_TYPES_RAW.split(",")
+    if item.strip()
+]
+
+# Minimum fraction of the segment distance an activity must cover before running the
+# matcher (e.g., 0.6 requires the activity distance to be at least 60% of the segment).
+MATCHING_ACTIVITY_MIN_DISTANCE_RATIO = _env_float(
+    "MATCHING_ACTIVITY_MIN_DISTANCE_RATIO", 0.6
+)
+
+# Maximum number of activity streams to keep in the in-memory matcher cache.
+MATCHING_ACTIVITY_STREAM_CACHE_SIZE = _env_int(
+    "MATCHING_ACTIVITY_STREAM_CACHE_SIZE", 32
+)

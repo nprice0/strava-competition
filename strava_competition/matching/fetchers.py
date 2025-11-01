@@ -2,14 +2,46 @@
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections import OrderedDict
+from typing import Sequence, Tuple
 
 from ..models import Runner
 from ..strava_api import (
     fetch_activity_stream as api_fetch_activity_stream,
     fetch_segment_geometry as api_fetch_segment_geometry,
 )
+from ..config import MATCHING_ACTIVITY_STREAM_CACHE_SIZE
 from .models import ActivityTrack, LatLon, SegmentGeometry
+
+
+_ActivityCacheKey = Tuple[str, int]
+
+
+class _ActivityStreamCache:
+    """Simple LRU cache for activity streams scoped to the current process."""
+
+    def __init__(self, max_entries: int) -> None:
+        self._data: "OrderedDict[_ActivityCacheKey, ActivityTrack]" = OrderedDict()
+        self._max_entries = max(0, max_entries)
+
+    def get(self, key: _ActivityCacheKey) -> ActivityTrack | None:
+        if key not in self._data:
+            return None
+        value = self._data.pop(key)
+        self._data[key] = value
+        return value
+
+    def put(self, key: _ActivityCacheKey, value: ActivityTrack) -> None:
+        if self._max_entries <= 0:
+            return
+        if key in self._data:
+            self._data.pop(key)
+        elif len(self._data) >= self._max_entries:
+            self._data.popitem(last=False)
+        self._data[key] = value
+
+
+_activity_stream_cache = _ActivityStreamCache(MATCHING_ACTIVITY_STREAM_CACHE_SIZE)
 
 
 def fetch_segment_geometry(runner: Runner, segment_id: int) -> SegmentGeometry:
@@ -40,6 +72,11 @@ def fetch_segment_geometry(runner: Runner, segment_id: int) -> SegmentGeometry:
 def fetch_activity_stream(runner: Runner, activity_id: int) -> ActivityTrack:
     """Fetch activity stream data (lat/lon + timestamps) from the Strava API."""
 
+    cache_key: _ActivityCacheKey = (runner.strava_id, int(activity_id))
+    cached = _activity_stream_cache.get(cache_key)
+    if cached is not None:
+        return cached
+
     payload = api_fetch_activity_stream(runner, activity_id)
     raw_points: Sequence[Sequence[float]] = payload.get("latlng", [])
     raw_times: Sequence[float] = payload.get("time", [])
@@ -52,6 +89,7 @@ def fetch_activity_stream(runner: Runner, activity_id: int) -> ActivityTrack:
         timestamps_s=timestamps,
         metadata=metadata,
     )
+    _activity_stream_cache.put(cache_key, track)
     return track
 
 
