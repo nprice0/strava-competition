@@ -210,5 +210,10 @@ MATCHING_ACTIVITY_MIN_DISTANCE_RATIO = _env_float(
 
 # Maximum number of activity streams to keep in the in-memory matcher cache.
 MATCHING_ACTIVITY_STREAM_CACHE_SIZE = _env_int(
-    "MATCHING_ACTIVITY_STREAM_CACHE_SIZE", 32
+    "MATCHING_ACTIVITY_STREAM_CACHE_SIZE", 64
+)
+
+# Maximum number of runner activity windows cached during segment fallback matching.
+MATCHING_RUNNER_ACTIVITY_CACHE_SIZE = _env_int(
+    "MATCHING_RUNNER_ACTIVITY_CACHE_SIZE", 256
 )

@@ -7,17 +7,19 @@ than a free function implementation.
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import logging
 import threading
 from datetime import datetime
-from typing import Callable, Dict, List, Sequence, Tuple, Set, Optional, Iterator
+from typing import Any, Callable, Dict, List, Sequence, Tuple, Set, Optional, Iterator
 
 from ..models import Segment, Runner, SegmentResult
 from ..config import (
     MATCHING_ACTIVITY_MIN_DISTANCE_RATIO,
     MATCHING_ACTIVITY_REQUIRED_TYPES,
     MATCHING_FALLBACK_ENABLED,
+    MATCHING_RUNNER_ACTIVITY_CACHE_SIZE,
     MAX_WORKERS,
 )
 from ..matching.similarity import segment_cache_scope
@@ -36,6 +38,10 @@ class SegmentService:
             raise ValueError("max_workers must be positive")
         self._log = logging.getLogger(self.__class__.__name__)
         self._segment_distance_cache: Dict[int, float] = {}
+        self._segment_distance_lock = threading.RLock()
+        self._activity_cache_max_entries = max(0, MATCHING_RUNNER_ACTIVITY_CACHE_SIZE)
+        self._activity_cache: "OrderedDict[tuple[str, datetime, datetime], List[Dict[str, Any]]]" = OrderedDict()
+        self._activity_cache_lock = threading.RLock()
 
     def process(
         self,
@@ -46,27 +52,30 @@ class SegmentService:
     ) -> ResultsMapping:
         results: ResultsMapping = {}
         total_segments = len(segments)
-        with segment_cache_scope():
-            for seg_index, segment in enumerate(segments, start=1):
-                if segment.start_date > segment.end_date:
-                    self._log.warning(
-                        "Skipping segment with inverted date range: %s (start=%s end=%s)",
-                        segment.name,
-                        segment.start_date,
-                        segment.end_date,
+        try:
+            with segment_cache_scope():
+                for seg_index, segment in enumerate(segments, start=1):
+                    if segment.start_date > segment.end_date:
+                        self._log.warning(
+                            "Skipping segment with inverted date range: %s (start=%s end=%s)",
+                            segment.name,
+                            segment.start_date,
+                            segment.end_date,
+                        )
+                        continue
+                    segment_results = self._process_segment(
+                        segment,
+                        runners,
+                        seg_index,
+                        total_segments,
+                        cancel_event,
+                        progress,
                     )
-                    continue
-                segment_results = self._process_segment(
-                    segment,
-                    runners,
-                    seg_index,
-                    total_segments,
-                    cancel_event,
-                    progress,
-                )
-                for team_results in segment_results.values():
-                    team_results.sort(key=lambda r: r.fastest_time)
-                results[segment.name] = segment_results
+                    for team_results in segment_results.values():
+                        team_results.sort(key=lambda r: r.fastest_time)
+                    results[segment.name] = segment_results
+        finally:
+            self._clear_runner_activity_cache()
         return results
 
     def _process_segment(
@@ -184,7 +193,12 @@ class SegmentService:
                 efforts = fut.result()
             except Exception:  # noqa: BLE001
                 efforts = None
-            seg_result = self._process_runner_results(runner, segment, efforts)
+            seg_result = self._process_runner_results(
+                runner,
+                segment,
+                efforts,
+                cancel_event,
+            )
             if seg_result:
                 bucket = segment_results.setdefault(runner.segment_team, [])
                 bucket.append(seg_result)
@@ -207,25 +221,104 @@ class SegmentService:
         completed: int,
         notify_progress: Callable[[int], None],
     ) -> int:
-        if not fallback_queue:
+        unique_runners = self._deduplicate_fallback_runners(fallback_queue)
+        if not unique_runners:
             return completed
+
+        if cancel_event and cancel_event.is_set():
+            self._log.info(
+                "Cancellation requested before fallback execution for segment %s; skipping remaining runners.",
+                segment.name,
+            )
+            return completed
+
+        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+            future_to_runner = self._submit_fallback_tasks(
+                executor,
+                unique_runners,
+                segment,
+                cancel_event,
+            )
+            completed = self._consume_fallback_results(
+                future_to_runner,
+                segment,
+                segment_results,
+                cancel_event,
+                completed,
+                notify_progress,
+            )
+
+        return completed
+
+    def _deduplicate_fallback_runners(
+        self, fallback_queue: Sequence[Runner]
+    ) -> List[Runner]:
+        unique: List[Runner] = []
         seen: Set[int] = set()
         for runner in fallback_queue:
             if runner.strava_id in seen:
                 continue
             seen.add(runner.strava_id)
+            unique.append(runner)
+        return unique
+
+    def _submit_fallback_tasks(
+        self,
+        executor: ThreadPoolExecutor,
+        runners: Sequence[Runner],
+        segment: Segment,
+        cancel_event: threading.Event | None,
+    ) -> Dict[Future, Runner]:
+        future_to_runner: Dict[Future, Runner] = {}
+        for runner in runners:
             if cancel_event and cancel_event.is_set():
                 self._log.info(
-                    "Cancellation requested during segment %s fallback processing; aborting remaining runners.",
+                    "Cancellation requested during submission for segment %s; halting fallback queue.",
                     segment.name,
                 )
                 break
-            seg_result = self._process_runner_results(runner, segment, None)
-            if seg_result:
+            future = executor.submit(
+                self._process_runner_results,
+                runner,
+                segment,
+                None,
+                cancel_event,
+            )
+            future_to_runner[future] = runner
+        return future_to_runner
+
+    def _consume_fallback_results(
+        self,
+        future_to_runner: Dict[Future, Runner],
+        segment: Segment,
+        segment_results: Dict[str, List[SegmentResult]],
+        cancel_event: threading.Event | None,
+        completed: int,
+        notify_progress: Callable[[int], None],
+    ) -> int:
+        for fut in as_completed(future_to_runner):
+            runner = future_to_runner[fut]
+            result: SegmentResult | None = None
+            try:
+                result = fut.result()
+            except Exception:  # noqa: BLE001
+                self._log.debug(
+                    "Fallback matcher failed runner=%s segment=%s",
+                    runner.name,
+                    segment.id,
+                    exc_info=True,
+                )
+            if result:
                 bucket = segment_results.setdefault(runner.segment_team, [])
-                bucket.append(seg_result)
+                bucket.append(result)
             completed += 1
             notify_progress(completed)
+            if cancel_event and cancel_event.is_set():
+                self._log.info(
+                    "Cancellation requested while processing segment %s fallback results; stopping early.",
+                    segment.name,
+                )
+                break
         return completed
 
     def _process_runner_results(
@@ -233,6 +326,7 @@ class SegmentService:
         runner: Runner,
         segment: Segment,
         efforts: List[dict] | None,
+        cancel_event: threading.Event | None = None,
     ) -> SegmentResult | None:
         seg_result = self._result_from_efforts(runner, segment, efforts)
         if seg_result is not None:
@@ -250,7 +344,7 @@ class SegmentService:
                 runner.name,
                 segment.id,
             )
-        return self._match_runner_segment(runner, segment)
+        return self._match_runner_segment(runner, segment, cancel_event)
 
     def _result_from_efforts(
         self,
@@ -310,25 +404,30 @@ class SegmentService:
         )
 
     def _match_runner_segment(
-        self, runner: Runner, segment: Segment
+        self,
+        runner: Runner,
+        segment: Segment,
+        cancel_event: threading.Event | None = None,
     ) -> SegmentResult | None:
-        activities = get_activities(runner, segment.start_date, segment.end_date)
+        if cancel_event and cancel_event.is_set():
+            return None
+
+        activities = self._get_runner_activities(
+            runner,
+            segment.start_date,
+            segment.end_date,
+            cancel_event,
+        )
         if not activities:
             return None
         segment_distance_m = self._get_segment_distance(runner, segment.id)
-        best_match = None
-        best_activity: dict | None = None
-        attempts = 0
-        for activity_id, activity in self._iter_candidate_activities(
-            activities, segment_distance_m
-        ):
-            result = self._run_matcher(runner, segment, activity_id)
-            if result is None or not result.matched or result.elapsed_time_s is None:
-                continue
-            attempts += 1
-            if best_match is None or result.elapsed_time_s < best_match.elapsed_time_s:  # type: ignore[union-attr]
-                best_match = result
-                best_activity = activity
+        best_match, best_activity, attempts = self._find_best_match(
+            runner,
+            segment,
+            activities,
+            segment_distance_m,
+            cancel_event,
+        )
         if best_match is None or best_activity is None:
             return None
         fastest_date = _parse_iso_datetime(best_activity.get("start_date_local"))
@@ -349,12 +448,46 @@ class SegmentService:
             diagnostics=diagnostics,
         )
 
+    def _find_best_match(
+        self,
+        runner: Runner,
+        segment: Segment,
+        activities: Sequence[dict],
+        segment_distance_m: Optional[float],
+        cancel_event: threading.Event | None,
+    ) -> Tuple[Optional[MatchResult], Optional[dict], int]:
+        best_match: Optional[MatchResult] = None
+        best_activity: Optional[dict] = None
+        attempts = 0
+        for activity_id, activity in self._iter_candidate_activities(
+            activities,
+            segment_distance_m,
+            cancel_event,
+        ):
+            if cancel_event and cancel_event.is_set():
+                break
+            result = self._run_matcher(runner, segment, activity_id)
+            if not self._is_successful_match(result):
+                continue
+            attempts += 1
+            if best_match is None or result.elapsed_time_s < best_match.elapsed_time_s:  # type: ignore[union-attr]
+                best_match = result
+                best_activity = activity
+        return best_match, best_activity, attempts
+
+    @staticmethod
+    def _is_successful_match(result: Optional[MatchResult]) -> bool:
+        return bool(result and result.matched and result.elapsed_time_s is not None)
+
     def _iter_candidate_activities(
         self,
         activities: Sequence[dict],
         segment_distance_m: Optional[float],
+        cancel_event: threading.Event | None = None,
     ) -> Iterator[Tuple[int, dict]]:
         for activity in activities:
+            if cancel_event and cancel_event.is_set():
+                break
             activity_id = activity.get("id")
             if activity_id is None:
                 continue
@@ -386,7 +519,8 @@ class SegmentService:
             return None
 
     def _get_segment_distance(self, runner: Runner, segment_id: int) -> Optional[float]:
-        cached = self._segment_distance_cache.get(segment_id)
+        with self._segment_distance_lock:
+            cached = self._segment_distance_cache.get(segment_id)
         if cached is not None:
             return cached
         try:
@@ -401,7 +535,8 @@ class SegmentService:
             return None
         distance = float(getattr(geometry, "distance_m", 0.0) or 0.0)
         if distance > 0.0:
-            self._segment_distance_cache[segment_id] = distance
+            with self._segment_distance_lock:
+                self._segment_distance_cache[segment_id] = distance
             return distance
         return None
 
@@ -430,6 +565,48 @@ class SegmentService:
         if activity_distance <= 0.0:
             return False
         return activity_distance >= segment_distance_m * ratio
+
+    def _get_runner_activities(
+        self,
+        runner: Runner,
+        start_date: datetime,
+        end_date: datetime,
+        cancel_event: threading.Event | None = None,
+    ) -> List[Dict[str, Any]]:
+        """Return cached activities for a runner/date window, fetching if needed."""
+
+        if cancel_event and cancel_event.is_set():
+            return []
+        cache_key = (runner.strava_id, start_date, end_date)
+        with self._activity_cache_lock:
+            cached = self._activity_cache.get(cache_key)
+            if cached is not None:
+                self._activity_cache.move_to_end(cache_key)
+        if cached is not None:
+            self._log.debug(
+                "Using cached activities runner=%s window=%s->%s",
+                runner.name,
+                start_date,
+                end_date,
+            )
+            return cached
+
+        activities = get_activities(runner, start_date, end_date) or []
+        if self._activity_cache_max_entries > 0:
+            with self._activity_cache_lock:
+                if cache_key in self._activity_cache:
+                    self._activity_cache.move_to_end(cache_key)
+                else:
+                    while len(self._activity_cache) >= self._activity_cache_max_entries:
+                        self._activity_cache.popitem(last=False)
+                self._activity_cache[cache_key] = activities
+        return activities
+
+    def _clear_runner_activity_cache(self) -> None:
+        """Reset per-runner activity cache before processing a new batch."""
+
+        with self._activity_cache_lock:
+            self._activity_cache.clear()
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+from threading import RLock
 from typing import Sequence, Tuple
 
 from ..models import Runner
@@ -23,22 +24,25 @@ class _ActivityStreamCache:
     def __init__(self, max_entries: int) -> None:
         self._data: "OrderedDict[_ActivityCacheKey, ActivityTrack]" = OrderedDict()
         self._max_entries = max(0, max_entries)
+        self._lock = RLock()
 
     def get(self, key: _ActivityCacheKey) -> ActivityTrack | None:
-        if key not in self._data:
-            return None
-        value = self._data.pop(key)
-        self._data[key] = value
-        return value
+        with self._lock:
+            if key not in self._data:
+                return None
+            value = self._data.pop(key)
+            self._data[key] = value
+            return value
 
     def put(self, key: _ActivityCacheKey, value: ActivityTrack) -> None:
         if self._max_entries <= 0:
             return
-        if key in self._data:
-            self._data.pop(key)
-        elif len(self._data) >= self._max_entries:
-            self._data.popitem(last=False)
-        self._data[key] = value
+        with self._lock:
+            if key in self._data:
+                self._data.pop(key)
+            elif len(self._data) >= self._max_entries:
+                self._data.popitem(last=False)
+            self._data[key] = value
 
 
 _activity_stream_cache = _ActivityStreamCache(MATCHING_ACTIVITY_STREAM_CACHE_SIZE)
