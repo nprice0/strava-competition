@@ -14,6 +14,7 @@ from strava_competition.config import (
 from strava_competition.matching import (
     MatchResult,
     Tolerances,
+    _clip_activity_to_gate_window,
     match_activity_to_segment,
 )
 from strava_competition.matching.models import ActivityTrack, SegmentGeometry
@@ -283,6 +284,100 @@ def test_match_activity_to_segment_success(monkeypatch: pytest.MonkeyPatch) -> N
     preprocessing = result.diagnostics.get("preprocessing")
     assert preprocessing is not None
     assert preprocessing["segment"]["resampled_points"] >= 3
+
+
+def test_matcher_ignores_post_finish_diversion(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Similarity stage should drop divergent samples captured after the finish."""
+
+    runner = Runner(name="Divergent", strava_id="456", refresh_token="tok")
+
+    segment = SegmentGeometry(
+        segment_id=4242,
+        points=[
+            (37.0, -122.0),
+            (37.0002, -122.0),
+            (37.0004, -122.0),
+        ],
+        distance_m=130.0,
+    )
+    tail_lon = segment.points[-1][1] - 0.02
+    post_finish = (segment.points[-1][0] + 0.00002, segment.points[-1][1])
+    activity = ActivityTrack(
+        activity_id=9090,
+        points=[
+            (segment.points[0][0] - 0.00005, segment.points[0][1]),
+            *segment.points,
+            post_finish,
+            (segment.points[-1][0], tail_lon),
+            (segment.points[-1][0], tail_lon - 0.003),
+        ],
+        timestamps_s=[-8.0, 0.0, 12.0, 24.0, 30.0, 42.0, 70.0],
+    )
+
+    monkeypatch.setattr(
+        "strava_competition.matching.fetch_segment_geometry",
+        lambda *_: segment,
+    )
+    monkeypatch.setattr(
+        "strava_competition.matching.fetch_activity_stream",
+        lambda *_: activity,
+    )
+
+    tolerances = Tolerances(
+        start_tolerance_m=60.0,
+        frechet_tolerance_m=40.0,
+        coverage_threshold=0.9,
+        simplification_tolerance_m=2.0,
+        resample_interval_m=5.0,
+    )
+
+    result = match_activity_to_segment(
+        runner,
+        activity.activity_id,
+        segment.segment_id,
+        tolerances,
+    )
+
+    assert result.matched is True
+    similarity_window = result.diagnostics.get("similarity_window")
+    assert similarity_window is not None
+    assert similarity_window.get("gate_trimmed") is True
+
+
+def test_gate_clipping_uses_full_activity_context() -> None:
+    """Gate clipping should fall back to the full resampled track when needed."""
+
+    segment_points = np.array([[0.0, 0.0], [50.0, 0.0], [100.0, 0.0]])
+    full_activity = np.array(
+        [
+            [-10.0, 0.0],
+            [0.0, 0.0],
+            [50.0, 0.0],
+            [100.0, 0.0],
+            [105.0, 0.0],
+            [110.0, 0.0],
+        ],
+        dtype=float,
+    )
+    trimmed_activity = full_activity[3:]
+
+    clipped = _clip_activity_to_gate_window(
+        trimmed_activity,
+        segment_points,
+        start_tolerance_m=60.0,
+        full_activity_points=full_activity,
+    )
+    assert clipped.shape[0] == trimmed_activity.shape[0] - 1
+    assert clipped[-1, 0] == pytest.approx(105.0)
+
+    fallback = _clip_activity_to_gate_window(
+        trimmed_activity,
+        segment_points,
+        start_tolerance_m=60.0,
+    )
+    assert fallback.shape[0] == trimmed_activity.shape[0]
 
 
 def test_match_activity_to_segment_direction_failure(

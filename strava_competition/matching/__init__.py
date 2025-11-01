@@ -668,6 +668,145 @@ def _trim_activity_resampled(
     return activity_points[indices[0] : indices[-1] + 1]
 
 
+def _match_subset_indices(
+    subset: np.ndarray,
+    full: np.ndarray,
+    decimals: int,
+) -> Optional[np.ndarray]:
+    """Return positions of ``subset`` samples inside ``full`` using rounding."""
+
+    if subset.shape[0] == 0:
+        return np.empty(0, dtype=int)
+    if full.shape[0] == 0:
+        return None
+
+    rounded_full = np.round(full.astype(float, copy=False), decimals=decimals)
+    rounded_subset = np.round(subset.astype(float, copy=False), decimals=decimals)
+
+    lookup: Dict[tuple[float, float], list[int]] = {}
+    for idx, point in enumerate(rounded_full):
+        key = (float(point[0]), float(point[1]))
+        lookup.setdefault(key, []).append(idx)
+
+    indices = np.empty(subset.shape[0], dtype=int)
+    prev_idx = -1
+    for pos, point in enumerate(rounded_subset):
+        key = (float(point[0]), float(point[1]))
+        candidates = lookup.get(key)
+        if not candidates:
+            return None
+        chosen = None
+        for candidate in candidates:
+            if candidate >= prev_idx:
+                chosen = candidate
+                break
+        if chosen is None:
+            chosen = candidates[-1]
+        if chosen < prev_idx:
+            return None
+        indices[pos] = chosen
+        prev_idx = chosen
+    return indices
+
+
+def _map_subset_indices(subset: np.ndarray, full: np.ndarray) -> Optional[np.ndarray]:
+    """Return positions of ``subset`` samples inside ``full`` with relaxed tolerance."""
+
+    for decimals in (6, 5, 4):
+        indices = _match_subset_indices(subset, full, decimals)
+        if indices is not None:
+            return indices
+    return None
+
+
+def _resolve_gate_start_index(
+    subset_indices: np.ndarray,
+    crosses_start: bool,
+    start_entry_idx: Optional[int],
+) -> Optional[int]:
+    """Return the sliced start index derived from the full gate crossings."""
+
+    if not crosses_start or start_entry_idx is None:
+        return 0
+    candidates = np.nonzero(subset_indices >= start_entry_idx)[0]
+    if candidates.size == 0:
+        return None
+    return int(candidates[0])
+
+
+def _resolve_gate_end_index(
+    subset_indices: np.ndarray,
+    crosses_end: bool,
+    end_exit_idx: Optional[int],
+) -> Optional[int]:
+    """Return the sliced end index derived from the full gate crossings."""
+
+    if not crosses_end or end_exit_idx is None:
+        return subset_indices.shape[0] - 1
+    end_limit = end_exit_idx + 1
+    candidates = np.nonzero(subset_indices <= end_limit)[0]
+    if candidates.size == 0:
+        return None
+    return int(candidates[-1])
+
+
+def _clip_activity_to_gate_window(
+    activity_points: np.ndarray,
+    segment_points: np.ndarray,
+    start_tolerance_m: float,
+    *,
+    full_activity_points: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Clip activity samples to stay within the detected gate crossings."""
+
+    if activity_points.shape[0] < 2 or segment_points.shape[0] < 2:
+        return activity_points
+
+    gate_context = full_activity_points
+    subset_indices: Optional[np.ndarray] = None
+    if gate_context is not None and gate_context.shape[0] >= 2:
+        subset_indices = _map_subset_indices(activity_points, gate_context)
+        if (
+            subset_indices is None
+            or subset_indices.shape[0] != activity_points.shape[0]
+        ):
+            gate_context = None
+            subset_indices = None
+    if gate_context is None:
+        gate_context = activity_points
+        subset_indices = np.arange(activity_points.shape[0], dtype=int)
+
+    crossings = _gate_crossings(gate_context, segment_points, start_tolerance_m)
+    (
+        crosses_start,
+        crosses_end,
+        start_entry_idx,
+        end_exit_idx,
+    ) = crossings
+
+    start_idx = _resolve_gate_start_index(
+        subset_indices,
+        crosses_start,
+        start_entry_idx,
+    )
+    if start_idx is None:
+        return activity_points
+    end_idx = _resolve_gate_end_index(
+        subset_indices,
+        crosses_end,
+        end_exit_idx,
+    )
+    if end_idx is None or end_idx <= start_idx:
+        return activity_points
+    if start_idx == 0 and end_idx == activity_points.shape[0] - 1:
+        return activity_points
+
+    clipped = activity_points[start_idx : end_idx + 1]
+    if clipped.shape[0] < 2:
+        return activity_points
+    return clipped
+
+
 def _extract_offset_window(
     activity_points: np.ndarray,
     offsets: Optional[np.ndarray],
@@ -904,6 +1043,17 @@ def _evaluate_similarity(
         max_offset_threshold,
     )
 
+    gate_clipped = False
+    clipped_activity = _clip_activity_to_gate_window(
+        trimmed_activity,
+        segment_window,
+        start_tolerance_m,
+        full_activity_points=prepared_activity.resampled_points,
+    )
+    if clipped_activity.shape[0] >= 2:
+        gate_clipped = clipped_activity.shape[0] != trimmed_activity.shape[0]
+        trimmed_activity = clipped_activity
+
     trimmed_max_offset: Optional[float] = None
     if trimmed_activity.shape[0] >= 2 and segment_window.shape[0] >= 2:
         trimmed_stats = compute_coverage(trimmed_activity, segment_window)
@@ -948,6 +1098,8 @@ def _evaluate_similarity(
             "trimmed_max_offset_m": trimmed_max_offset,
         },
     }
+    if gate_clipped:
+        diag["similarity_window"]["gate_trimmed"] = True
     if dtw_distance is not None:
         diag["dtw_distance_m"] = dtw_distance
 

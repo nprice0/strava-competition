@@ -138,14 +138,15 @@ The app reads the workbook, fetches the required Strava data, writes the results
 
 ### Segment matcher overview
 
-The fallback matcher kicks in when Strava refuses segment efforts (HTTP 402 or pre-flagged subscriptions). It builds a fresh comparison between the runner’s activity stream and the segment.
+The fallback matcher kicks in when Strava refuses segment efforts (HTTP 402 or pre-flagged subscriptions). It rebuilds the effort from the runner’s activity stream and compares it directly to the segment geometry.
 
-- Streams pulled: lat/lng, altitude, distance, and time. We project them into metres using the segment transformer.
-- Prepared geometry: `prepare_geometry` simplifies and resamples the segment, and `prepare_activity` applies the same transform to the activity so both paths have similar spacing.
-- Coverage trim: `compute_coverage` projects every point onto the segment. `_refine_coverage_window` keeps samples that stay within the offset tolerance and notes the last point before the start and the first point after the finish. That avoids loops.
-- Similarity: discrete Fréchet distance is the first check. If it is above the adaptive threshold we fall back to windowed DTW. Both operate on the resampled polylines.
-- Timing: `estimate_segment_time` honours the refined bounds. `_resolve_entry_exit` shifts the entry one sample back if needed, nudges the exit forward, or falls back to `_find_entry_event` and `_find_exit_event` which interpolate timestamps. You end up with the closest pre-start to post-finish duration.
-- Diagnostics: we log coverage ratios, similarity scores, sample indices, and elapsed times for every attempt.
+- Streams pulled: lat/lng, altitude, distance, and time. Everything is projected into metres using the segment transformer so later math stays accurate.
+- Prepared geometry: `prepare_geometry` simplifies and resamples the segment, and `prepare_activity` applies the same transform to the activity so both paths share spacing and coordinate frames.
+- Coverage refinement: `compute_coverage` projects every sample onto the segment. `_refine_coverage_window` keeps points inside the offset tolerance, flags the first pre-start sample and the first post-finish sample, and drops obvious detours.
+- Gate clipping with full context: `_clip_activity_to_gate_window` re-evaluates start/finish gate crossings against the full resampled activity, then slices the trimmed window to just the on-segment samples. This mirrors Strava’s `entry/exit plane` logic and prevents post-finish jogs from inflating Frechet distance.
+- Similarity: discrete Fréchet distance is evaluated first. If it misses the adaptive threshold we fall back to windowed DTW with a narrow band. Both operate on the already clipped resampled polylines.
+- Timing: `estimate_segment_time` honours the refined bounds. `_resolve_entry_exit` interpolates timestamps for the on-segment entry and exit samples so elapsed time reflects exactly when the runner crossed the gates.
+- Diagnostics: we log coverage ratios, similarity scores, `gate_trimmed` flags, sample indices, and elapsed times for every attempt.
 
 ---
 
