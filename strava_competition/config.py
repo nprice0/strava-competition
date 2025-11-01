@@ -170,13 +170,13 @@ MATCHING_SIMPLIFICATION_TOLERANCE_M = _env_float(
 MATCHING_RESAMPLE_INTERVAL_M = _env_float("MATCHING_RESAMPLE_INTERVAL_M", 5.0)
 
 # Distance (metres) around the start used when trimming coverage and timing.
-MATCHING_START_TOLERANCE_M = _env_float("MATCHING_START_TOLERANCE_M", 30.0)
+MATCHING_START_TOLERANCE_M = _env_float("MATCHING_START_TOLERANCE_M", 25.0)
 
 # Baseline distance (metres) for discrete Fréchet similarity checks.
 MATCHING_FRECHET_TOLERANCE_M = _env_float("MATCHING_FRECHET_TOLERANCE_M", 20.0)
 
 # Minimum portion of the segment an activity must cover to count as a match.
-MATCHING_COVERAGE_THRESHOLD = _env_float("MATCHING_COVERAGE_THRESHOLD", 0.95)
+MATCHING_COVERAGE_THRESHOLD = _env_float("MATCHING_COVERAGE_THRESHOLD", 0.99)
 
 # Safety caps on simplified and resampled point counts.
 MATCHING_MAX_SIMPLIFIED_POINTS = _env_int("MATCHING_MAX_SIMPLIFIED_POINTS", 2000)
@@ -189,4 +189,4 @@ MATCHING_CACHE_MAX_ENTRIES = _env_int("MATCHING_CACHE_MAX_ENTRIES", 64)
 MATCHING_FALLBACK_ENABLED = _env_bool("MATCHING_FALLBACK_ENABLED", True)
 
 # Largest allowed perpendicular offset (metres) when evaluating coverage.
-MATCHING_MAX_OFFSET_M = _env_float("MATCHING_MAX_OFFSET_M", 100.0)
+MATCHING_MAX_OFFSET_M = _env_float("MATCHING_MAX_OFFSET_M", 30.0)

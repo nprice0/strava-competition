@@ -242,10 +242,15 @@ def test_match_activity_to_segment_success(monkeypatch: pytest.MonkeyPatch) -> N
         points=[(37.0, -122.0), (37.0003, -122.0), (37.0006, -122.0)],
         distance_m=120.0,
     )
+    activity_points = [
+        (segment.points[0][0] - 0.00005, segment.points[0][1]),
+        *segment.points,
+        (segment.points[-1][0] + 0.00005, segment.points[-1][1]),
+    ]
     activity = ActivityTrack(
         activity_id=808,
-        points=list(segment.points),
-        timestamps_s=[0.0, 15.0, 30.0],
+        points=activity_points,
+        timestamps_s=[-5.0, 0.0, 15.0, 30.0, 40.0],
     )
 
     monkeypatch.setattr(
@@ -327,6 +332,7 @@ def test_match_activity_to_segment_direction_failure(
     assert result.diagnostics.get("failure_reason") in {
         "direction_check_failed",
         "coverage_threshold_not_met",
+        "coverage_offset_exceeded",
     }
 
 

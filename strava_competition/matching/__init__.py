@@ -152,6 +152,111 @@ def _max_offset_value(offsets: np.ndarray) -> float:
     return float(np.max(offsets))
 
 
+def _plane_crossing_indices(
+    values: np.ndarray, min_span_m: float, *, prefer_last: bool = False
+) -> tuple[bool, Optional[int], Optional[int]]:
+    """Return crossing status and bracketing sample indices for a plane."""
+
+    if values.size < 2:
+        return False, None, None
+
+    classifications = np.zeros(values.shape[0], dtype=int)
+    classifications[values >= min_span_m] = 1
+    classifications[values <= -min_span_m] = -1
+    signed_indices = np.nonzero(classifications != 0)[0]
+    if signed_indices.size < 2:
+        return False, None, None
+
+    candidates: list[tuple[int, int]] = []
+    prev_idx = int(signed_indices[0])
+    prev_state = int(classifications[prev_idx])
+    for idx in map(int, signed_indices[1:]):
+        curr_state = int(classifications[idx])
+        if curr_state == prev_state:
+            prev_idx = idx
+            continue
+        # The change in sign brackets a crossing between prev_idx and idx.
+        before_idx = min(prev_idx, idx)
+        after_idx = max(prev_idx, idx)
+        candidates.append((before_idx, after_idx))
+        prev_idx = idx
+        prev_state = curr_state
+
+    if not candidates:
+        return False, None, None
+
+    before_idx, after_idx = candidates[-1] if prefer_last else candidates[0]
+    return True, before_idx, after_idx
+
+
+def _has_plane_crossing(values: np.ndarray, min_span_m: float) -> bool:
+    crossed, _, _ = _plane_crossing_indices(values, min_span_m)
+    return crossed
+
+
+def _clamp_timing_indices(
+    entry_idx: int,
+    exit_idx: int,
+    start_entry_idx: Optional[int],
+    end_exit_idx: Optional[int],
+) -> tuple[int, int]:
+    """Adjust timing indices so they respect the detected gate crossings."""
+
+    adjusted_entry = entry_idx
+    adjusted_exit = exit_idx
+    if start_entry_idx is not None:
+        adjusted_entry = max(adjusted_entry, start_entry_idx)
+    if end_exit_idx is not None:
+        adjusted_exit = min(adjusted_exit, end_exit_idx)
+    if adjusted_exit > adjusted_entry:
+        return adjusted_entry, adjusted_exit
+    return entry_idx, exit_idx
+
+
+def _gate_crossings(
+    activity_points: np.ndarray,
+    segment_points: np.ndarray,
+    start_tolerance_m: float,
+) -> tuple[bool, bool, Optional[int], Optional[int]]:
+    """Determine whether the activity crosses the synthetic start and finish planes."""
+
+    required_span = min(3.0, max(0.5, start_tolerance_m * 0.02))
+    crosses_start = False
+    crosses_end = False
+    start_entry_idx: Optional[int] = None
+    end_exit_idx: Optional[int] = None
+    if activity_points.shape[0] < 2 or segment_points.shape[0] < 2:
+        return crosses_start, crosses_end, start_entry_idx, end_exit_idx
+
+    start_vec = segment_points[1] - segment_points[0]
+    start_norm = np.linalg.norm(start_vec)
+    if start_norm > 0.0:
+        start_unit = start_vec / start_norm
+        start_values = (activity_points - segment_points[0]) @ start_unit
+        crossed, before_idx, after_idx = _plane_crossing_indices(
+            start_values, required_span
+        )
+        crosses_start = crossed
+        if crossed and before_idx is not None and after_idx is not None:
+            start_entry_idx = max(after_idx, before_idx + 1)
+
+    # Reverse the finish direction so pre-finish samples project negative.
+    end_vec = segment_points[-2] - segment_points[-1]
+    end_norm = np.linalg.norm(end_vec)
+    if end_norm > 0.0:
+        end_unit = end_vec / end_norm
+        end_values = (activity_points - segment_points[-1]) @ end_unit
+        crossed, before_idx, after_idx = _plane_crossing_indices(
+            end_values, required_span, prefer_last=True
+        )
+        crosses_end = crossed
+        if crossed and before_idx is not None and after_idx is not None:
+            candidate = after_idx - 1 if after_idx > 0 else before_idx
+            end_exit_idx = max(before_idx, candidate)
+
+    return crosses_start, crosses_end, start_entry_idx, end_exit_idx
+
+
 def _prepare_refined_inputs(
     coverage: "CoverageResult",
     segment_points: np.ndarray,
@@ -321,6 +426,17 @@ def match_activity_to_segment(
         _log_match_outcome(segment_id, activity_id, cache_hit, False, diagnostics)
         return MatchResult(
             False, coverage_ratio=coverage.coverage_ratio, diagnostics=diagnostics
+        )
+
+    crosses_start = coverage_diag.get("crosses_start")
+    crosses_end = coverage_diag.get("crosses_end")
+    if crosses_start is not True or crosses_end is not True:
+        diagnostics["failure_reason"] = "segment_gate_not_crossed"
+        _log_match_outcome(segment_id, activity_id, cache_hit, False, diagnostics)
+        return MatchResult(
+            False,
+            coverage_ratio=coverage.coverage_ratio,
+            diagnostics=diagnostics,
         )
 
     direction = check_direction(
@@ -714,6 +830,11 @@ def _compute_coverage_diagnostics(
     )
     raw_bounds = coverage.coverage_bounds
     raw_max_offset = coverage.max_offset_m
+    crosses_start, crosses_end, start_entry_idx, end_exit_idx = _gate_crossings(
+        prepared_activity.metric_points,
+        prepared_segment.metric_points,
+        start_tolerance_m,
+    )
     refined = _refine_coverage_window(
         coverage,
         prepared_segment.metric_points,
@@ -726,12 +847,24 @@ def _compute_coverage_diagnostics(
         coverage.coverage_bounds = refined.expanded_bounds
         coverage.coverage_ratio = refined.ratio
         coverage.max_offset_m = refined.max_offset
-        timing_indices = (refined.entry_index, refined.exit_index)
+        clamped_entry, clamped_exit = _clamp_timing_indices(
+            refined.entry_index,
+            refined.exit_index,
+            start_entry_idx,
+            end_exit_idx,
+        )
+        timing_indices = (clamped_entry, clamped_exit)
     coverage_diag: Dict[str, object] = {
         "ratio": coverage.coverage_ratio,
         "bounds_m": coverage.coverage_bounds,
         "max_offset_m": coverage.max_offset_m,
+        "crosses_start": crosses_start,
+        "crosses_end": crosses_end,
     }
+    if start_entry_idx is not None:
+        coverage_diag["start_entry_index"] = start_entry_idx
+    if end_exit_idx is not None:
+        coverage_diag["end_exit_index"] = end_exit_idx
     if refined is not None:
         coverage_diag["raw_bounds_m"] = refined.raw_bounds
         if raw_max_offset is not None:
@@ -787,6 +920,12 @@ def _evaluate_similarity(
             similarity_threshold,
             min(trimmed_max_offset, max_offset_threshold) * 1.2,
         )
+        adaptive_cap = max_offset_threshold * 5.0
+        # Widen tolerance for well-aligned tracks that still diverge along the route.
+        similarity_threshold = max(
+            similarity_threshold,
+            min(trimmed_max_offset * 5.0, adaptive_cap),
+        )
 
     frechet_distance = discrete_frechet_distance(trimmed_activity, segment_window)
     matched = frechet_distance <= similarity_threshold
@@ -801,17 +940,6 @@ def _evaluate_similarity(
         if np.isfinite(dtw_distance):
             matched = dtw_distance <= similarity_threshold
 
-    override_max_offset = min(max_offset_threshold, 60.0)
-    override_by_offset = (
-        not matched
-        and trimmed_max_offset is not None
-        and np.isfinite(trimmed_max_offset)
-        and trimmed_max_offset <= override_max_offset
-        and coverage.coverage_ratio >= 0.98
-    )
-    if override_by_offset:
-        matched = True
-
     diag: Dict[str, object] = {
         "frechet_distance_m": frechet_distance,
         "similarity_threshold_m": similarity_threshold,
@@ -822,8 +950,6 @@ def _evaluate_similarity(
     }
     if dtw_distance is not None:
         diag["dtw_distance_m"] = dtw_distance
-    if override_by_offset:
-        diag["similarity_override"] = "offset_within_bounds"
 
     return matched, frechet_distance, dtw_distance, similarity_threshold, diag
 

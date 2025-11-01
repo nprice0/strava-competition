@@ -157,6 +157,99 @@ def _find_exit_event(
     return None
 
 
+def _align_span_to_base(
+    base_value: float,
+    start_m: float,
+    end_m: float,
+    span: float,
+    half_span: float,
+) -> Tuple[float, float]:
+    """Return coverage bounds shifted close to the local projection base."""
+
+    adjusted_start = float(start_m)
+    adjusted_end = float(end_m)
+    while adjusted_start - base_value > half_span:
+        adjusted_start -= span
+        adjusted_end -= span
+    while base_value - adjusted_start > half_span:
+        adjusted_start += span
+        adjusted_end += span
+    return adjusted_start, adjusted_end
+
+
+def _unwrap_projection_window(
+    window_proj: MetricArray,
+    start_m: float,
+    end_m: float,
+) -> Tuple[MetricArray, float, float]:
+    """Return an adjusted projection window that stays close to monotonic."""
+
+    span = max(abs(end_m - start_m), 1.0)
+    half_span = span * 0.5
+    tolerance = max(1e-6, span * 1e-6)
+    unwrapped = np.asarray(window_proj, dtype=float).copy()
+    offset = 0.0
+    for idx in range(1, unwrapped.size):
+        prev = unwrapped[idx - 1]
+        curr = unwrapped[idx]
+        if not (np.isfinite(prev) and np.isfinite(curr)):
+            unwrapped[idx] = curr + offset
+            continue
+        delta = curr - prev
+        if delta < -half_span - tolerance:
+            offset += span
+        elif delta > half_span + tolerance:
+            offset -= span
+        unwrapped[idx] = curr + offset
+    return unwrapped, span, half_span
+
+
+def _resolve_with_sample_hints(
+    projections: MetricArray,
+    timestamps: MetricArray,
+    start_m: float,
+    end_m: float,
+    entry_hint: int,
+    exit_hint: int,
+) -> Optional[Tuple[int, float, int, float]]:
+    """Resolve timing using the refined sample indices as hints."""
+
+    point_count = timestamps.shape[0]
+    search_start = max(0, entry_hint - 1)
+    search_stop = min(point_count, exit_hint + 2)
+    if search_stop - search_start < 2:
+        return None
+
+    window_proj = np.asarray(
+        projections[search_start:search_stop], dtype=float, order="C"
+    )
+    window_time = timestamps[search_start:search_stop]
+
+    unwrapped, span, half_span = _unwrap_projection_window(window_proj, start_m, end_m)
+    finite = np.nonzero(np.isfinite(unwrapped))[0]
+    if finite.size == 0:
+        return None
+
+    base_value = float(unwrapped[int(finite[0])])
+    adjusted_start, adjusted_end = _align_span_to_base(
+        base_value, start_m, end_m, span, half_span
+    )
+
+    entry = _find_entry_event(unwrapped, window_time, adjusted_start)
+    exit_event = _find_exit_event(unwrapped, window_time, adjusted_end)
+    if entry is None or exit_event is None:
+        return None
+
+    entry_idx_local, entry_time = entry
+    exit_idx_local, exit_time = exit_event
+    entry_idx = int(search_start + entry_idx_local)
+    exit_idx = int(search_start + exit_idx_local)
+    if exit_idx < entry_idx:
+        exit_idx = entry_idx
+        exit_time = entry_time
+    return entry_idx, entry_time, exit_idx, exit_time
+
+
 def _resolve_entry_exit(
     projections: MetricArray,
     timestamps: MetricArray,
@@ -174,26 +267,20 @@ def _resolve_entry_exit(
         entry_hint, exit_hint = sample_indices
         entry_hint = int(max(0, min(entry_hint, point_count - 1)))
         exit_hint = int(max(entry_hint, min(exit_hint, point_count - 1)))
-        tolerance_m = max(1.0, abs(end_m - start_m) * 1e-4)
+        resolved = _resolve_with_sample_hints(
+            projections, timestamps, start_m, end_m, entry_hint, exit_hint
+        )
+        if resolved is not None:
+            return resolved
 
-        entry_idx = _candidate_entry_index(
-            projections,
-            entry_hint,
-            tolerance_m,
-            start_m,
-        )
-        exit_idx = _candidate_exit_index(
-            projections,
-            exit_hint,
-            tolerance_m,
-            end_m,
-            point_count,
-        )
-        if entry_idx is not None and exit_idx is not None:
-            exit_idx = max(entry_idx, min(exit_idx, point_count - 1))
-            entry_time = float(timestamps[entry_idx])
-            exit_time = float(timestamps[exit_idx])
-            return entry_idx, entry_time, exit_idx, exit_time
+        entry_idx = entry_hint
+        exit_idx = exit_hint
+        entry_time = float(timestamps[entry_idx])
+        exit_time = float(timestamps[exit_idx])
+        if exit_idx < entry_idx:
+            exit_idx = entry_idx
+            exit_time = entry_time
+        return entry_idx, entry_time, exit_idx, exit_time
 
     entry = _find_entry_event(projections, timestamps, start_m)
     exit_event = _find_exit_event(projections, timestamps, end_m)
@@ -202,43 +289,6 @@ def _resolve_entry_exit(
     entry_idx, entry_time = entry
     exit_idx, exit_time = exit_event
     return entry_idx, entry_time, exit_idx, exit_time
-
-
-def _candidate_entry_index(
-    projections: MetricArray,
-    entry_hint: int,
-    tolerance_m: float,
-    start_m: float,
-) -> Optional[int]:
-    """Return index of sample used for timing entry, if determinable."""
-
-    if entry_hint >= projections.shape[0]:
-        return None
-    entry_proj = projections[entry_hint]
-    if np.isfinite(entry_proj) and entry_proj <= start_m + tolerance_m:
-        return entry_hint
-    if entry_hint == 0:
-        return 0
-    return entry_hint - 1
-
-
-def _candidate_exit_index(
-    projections: MetricArray,
-    exit_hint: int,
-    tolerance_m: float,
-    end_m: float,
-    point_count: int,
-) -> Optional[int]:
-    """Return index of sample used for timing exit, if determinable."""
-
-    if exit_hint >= projections.shape[0]:
-        return None
-    exit_proj = projections[exit_hint]
-    if np.isfinite(exit_proj) and exit_proj >= end_m - tolerance_m:
-        return exit_hint
-    if exit_hint >= point_count - 1:
-        return point_count - 1
-    return exit_hint + 1
 
 
 def _interpolate_time(
