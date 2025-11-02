@@ -157,20 +157,21 @@ def _max_offset_value(offsets: np.ndarray) -> float:
     return float(np.max(offsets))
 
 
-def _plane_crossing_indices(
-    values: np.ndarray, min_span_m: float, *, prefer_last: bool = False
-) -> tuple[bool, Optional[int], Optional[int]]:
-    """Return crossing status and bracketing sample indices for a plane."""
+def _plane_crossing_candidates(
+    values: np.ndarray,
+    min_span_m: float,
+) -> list[tuple[int, int]]:
+    """Return all sample pairs that straddle a plane crossing."""
 
     if values.size < 2:
-        return False, None, None
+        return []
 
     classifications = np.zeros(values.shape[0], dtype=int)
     classifications[values >= min_span_m] = 1
     classifications[values <= -min_span_m] = -1
     signed_indices = np.nonzero(classifications != 0)[0]
     if signed_indices.size < 2:
-        return False, None, None
+        return []
 
     candidates: list[tuple[int, int]] = []
     prev_idx = int(signed_indices[0])
@@ -180,13 +181,20 @@ def _plane_crossing_indices(
         if curr_state == prev_state:
             prev_idx = idx
             continue
-        # The change in sign brackets a crossing between prev_idx and idx.
         before_idx = min(prev_idx, idx)
         after_idx = max(prev_idx, idx)
         candidates.append((before_idx, after_idx))
         prev_idx = idx
         prev_state = curr_state
+    return candidates
 
+
+def _plane_crossing_indices(
+    values: np.ndarray, min_span_m: float, *, prefer_last: bool = False
+) -> tuple[bool, Optional[int], Optional[int]]:
+    """Return crossing status and bracketing sample indices for a plane."""
+
+    candidates = _plane_crossing_candidates(values, min_span_m)
     if not candidates:
         return False, None, None
 
@@ -197,6 +205,56 @@ def _plane_crossing_indices(
 def _has_plane_crossing(values: np.ndarray, min_span_m: float) -> bool:
     crossed, _, _ = _plane_crossing_indices(values, min_span_m)
     return crossed
+
+
+def _select_start_crossing(
+    values: np.ndarray,
+    candidates: list[tuple[int, int]],
+) -> Optional[tuple[int, int]]:
+    """Return the earliest start-gate crossing with expected orientation."""
+
+    for before_idx, after_idx in candidates:
+        before_val = float(values[before_idx])
+        after_val = float(values[after_idx])
+        if before_val <= 0.0 <= after_val:
+            return before_idx, after_idx
+    return candidates[0] if candidates else None
+
+
+def _select_end_crossing(
+    values: np.ndarray,
+    candidates: list[tuple[int, int]],
+    offset: int,
+) -> Optional[tuple[int, int]]:
+    """Return the finish-gate crossing closest to the plane."""
+
+    if not candidates:
+        return None
+
+    records: list[tuple[int, int, int, int, float, bool]] = []
+    for before_local, after_local in candidates:
+        global_before = before_local + offset
+        global_after = after_local + offset
+        before_val = float(values[global_before])
+        after_val = float(values[global_after])
+        cost = max(abs(before_val), abs(after_val))
+        orientation_ok = before_val >= 0.0 and after_val <= 0.0
+        records.append(
+            (
+                before_local,
+                after_local,
+                global_before,
+                global_after,
+                cost,
+                orientation_ok,
+            )
+        )
+
+    best = min(
+        records,
+        key=lambda item: (int(not item[5]), item[4], item[3]),
+    )
+    return best[0], best[1]
 
 
 def _clamp_timing_indices(
@@ -228,18 +286,122 @@ def _refine_crossing_indices(
 ) -> tuple[int, int]:
     """Return adjusted crossing indices favouring samples near the gate plane."""
 
-    if after_idx <= before_idx + 1:
+    if after_idx <= before_idx:
         return before_idx, after_idx
 
-    if prefer_start:
-        for idx in range(before_idx + 1, after_idx):
-            if abs(float(values[idx])) <= threshold:
-                return before_idx, idx
-    else:
-        for idx in range(after_idx - 1, before_idx, -1):
-            if abs(float(values[idx])) <= threshold:
-                return idx, after_idx
+    best_pair: Optional[tuple[int, int]] = None
+    best_abs = float("inf")
+
+    for idx in range(before_idx, after_idx):
+        lhs = float(values[idx])
+        rhs = float(values[idx + 1])
+        if abs(lhs) <= threshold or abs(rhs) <= threshold:
+            return idx, idx + 1
+        if lhs <= 0.0 <= rhs or lhs >= 0.0 >= rhs:
+            return idx, idx + 1
+
+        local_abs = min(abs(lhs), abs(rhs))
+        if best_pair is None or local_abs < best_abs:
+            best_pair = (idx, idx + 1)
+            best_abs = local_abs
+
+        if prefer_start and local_abs <= threshold:
+            return idx, idx + 1
+
+    if best_pair is not None:
+        return best_pair
+
     return before_idx, after_idx
+
+
+def _compute_start_hint(
+    activity_points: np.ndarray,
+    segment_points: np.ndarray,
+    required_span: float,
+) -> tuple[bool, Optional[int], Optional[GateCrossingHint]]:
+    """Return start gate crossing status, entry index and hint."""
+
+    start_vec = segment_points[1] - segment_points[0]
+    start_norm = np.linalg.norm(start_vec)
+    if start_norm <= 0.0:
+        return False, None, None
+
+    start_unit = start_vec / start_norm
+    start_values = (activity_points - segment_points[0]) @ start_unit
+    start_candidates = _plane_crossing_candidates(start_values, required_span)
+    if not start_candidates:
+        return False, None, None
+
+    selected = _select_start_crossing(start_values, start_candidates)
+    if selected is None:
+        return False, None, None
+
+    before_idx, after_idx = selected
+    before_idx, after_idx = _refine_crossing_indices(
+        start_values,
+        before_idx,
+        after_idx,
+        required_span,
+        prefer_start=True,
+    )
+    entry_idx = after_idx
+    hint = GateCrossingHint(
+        before_index=before_idx,
+        after_index=after_idx,
+        before_value=float(start_values[before_idx]),
+        after_value=float(start_values[after_idx]),
+    )
+    return True, entry_idx, hint
+
+
+def _compute_end_hint(
+    activity_points: np.ndarray,
+    segment_points: np.ndarray,
+    required_span: float,
+    start_entry_idx: Optional[int],
+) -> tuple[bool, Optional[int], Optional[GateCrossingHint]]:
+    """Return finish gate crossing status, exit index and hint."""
+
+    end_vec = segment_points[-2] - segment_points[-1]
+    end_norm = np.linalg.norm(end_vec)
+    if end_norm <= 0.0:
+        return False, None, None
+
+    end_unit = end_vec / end_norm
+    end_values = (activity_points - segment_points[-1]) @ end_unit
+    finish_search_start = start_entry_idx if start_entry_idx is not None else 0
+    sliced_end_values = end_values[finish_search_start:]
+    if sliced_end_values.size < 2:
+        return False, None, None
+
+    end_candidates = _plane_crossing_candidates(
+        sliced_end_values,
+        required_span,
+    )
+    if not end_candidates:
+        return False, None, None
+
+    selected = _select_end_crossing(end_values, end_candidates, finish_search_start)
+    if selected is None:
+        return False, None, None
+
+    before_idx = selected[0] + finish_search_start
+    after_idx = selected[1] + finish_search_start
+    before_idx, after_idx = _refine_crossing_indices(
+        end_values,
+        before_idx,
+        after_idx,
+        required_span,
+        prefer_start=False,
+    )
+    exit_idx = before_idx
+    hint = GateCrossingHint(
+        before_index=before_idx,
+        after_index=after_idx,
+        before_value=float(end_values[before_idx]),
+        after_value=float(end_values[after_idx]),
+    )
+    return True, exit_idx, hint
 
 
 def _gate_crossings(
@@ -250,72 +412,20 @@ def _gate_crossings(
     """Determine whether the activity crosses the synthetic start and finish planes."""
 
     required_span = min(3.0, max(0.5, start_tolerance_m * 0.02))
-    crosses_start = False
-    crosses_end = False
-    start_entry_idx: Optional[int] = None
-    end_exit_idx: Optional[int] = None
-    start_hint: Optional[GateCrossingHint] = None
-    end_hint: Optional[GateCrossingHint] = None
     if activity_points.shape[0] < 2 or segment_points.shape[0] < 2:
-        return (
-            crosses_start,
-            crosses_end,
-            start_entry_idx,
-            end_exit_idx,
-            GateTimingHints(),
-        )
+        return False, False, None, None, GateTimingHints()
 
-    start_vec = segment_points[1] - segment_points[0]
-    start_norm = np.linalg.norm(start_vec)
-    if start_norm > 0.0:
-        start_unit = start_vec / start_norm
-        start_values = (activity_points - segment_points[0]) @ start_unit
-        crossed, before_idx, after_idx = _plane_crossing_indices(
-            start_values, required_span
-        )
-        crosses_start = crossed
-        if crossed and before_idx is not None and after_idx is not None:
-            before_idx, after_idx = _refine_crossing_indices(
-                start_values,
-                before_idx,
-                after_idx,
-                required_span,
-                prefer_start=True,
-            )
-            start_entry_idx = max(after_idx, before_idx + 1)
-            start_hint = GateCrossingHint(
-                before_index=before_idx,
-                after_index=after_idx,
-                before_value=float(start_values[before_idx]),
-                after_value=float(start_values[after_idx]),
-            )
-
-    # Reverse the finish direction so pre-finish samples project negative.
-    end_vec = segment_points[-2] - segment_points[-1]
-    end_norm = np.linalg.norm(end_vec)
-    if end_norm > 0.0:
-        end_unit = end_vec / end_norm
-        end_values = (activity_points - segment_points[-1]) @ end_unit
-        crossed, before_idx, after_idx = _plane_crossing_indices(
-            end_values, required_span, prefer_last=True
-        )
-        crosses_end = crossed
-        if crossed and before_idx is not None and after_idx is not None:
-            before_idx, after_idx = _refine_crossing_indices(
-                end_values,
-                before_idx,
-                after_idx,
-                required_span,
-                prefer_start=False,
-            )
-            candidate = after_idx - 1 if after_idx > 0 else before_idx
-            end_exit_idx = max(before_idx, candidate)
-            end_hint = GateCrossingHint(
-                before_index=before_idx,
-                after_index=after_idx,
-                before_value=float(end_values[before_idx]),
-                after_value=float(end_values[after_idx]),
-            )
+    crosses_start, start_entry_idx, start_hint = _compute_start_hint(
+        activity_points,
+        segment_points,
+        required_span,
+    )
+    crosses_end, end_exit_idx, end_hint = _compute_end_hint(
+        activity_points,
+        segment_points,
+        required_span,
+        start_entry_idx,
+    )
 
     return (
         crosses_start,
@@ -469,10 +579,21 @@ def _build_coverage_diag(
             gate_hints.start.before_index,
             gate_hints.start.after_index,
         )
+        diag["start_crossing_offsets_m"] = (
+            gate_hints.start.before_value,
+            gate_hints.start.after_value,
+        )
     if gate_hints.end is not None:
         diag["end_crossing_samples"] = (
             gate_hints.end.before_index,
             gate_hints.end.after_index,
+        )
+        diag["end_crossing_offsets_m"] = (
+            gate_hints.end.before_value,
+            gate_hints.end.after_value,
+        )
+        diag["end_crossing_span_m"] = (
+            gate_hints.end.after_value - gate_hints.end.before_value
         )
     if refined is not None:
         diag["raw_bounds_m"] = refined.raw_bounds

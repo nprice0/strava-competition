@@ -16,7 +16,9 @@ from strava_competition.matching import (
     Tolerances,
     _clip_activity_to_gate_window,
     _compute_coverage_diagnostics,
+    _plane_crossing_candidates,
     _refine_coverage_window,
+    _select_end_crossing,
     match_activity_to_segment,
 )
 from strava_competition.matching.models import ActivityTrack, SegmentGeometry
@@ -287,6 +289,80 @@ def test_timing_estimation_respects_gate_interpolation(
     assert estimate.elapsed_time_s == pytest.approx(45.0, abs=1e-2)
 
 
+def test_finish_gate_prefers_first_crossing_after_entry(
+    segment_geometry: SegmentGeometry,
+) -> None:
+    """Finish timing should attach to the first post-entry plane crossing."""
+
+    start_lat, start_lon = segment_geometry.points[0]
+    mid_lat, mid_lon = segment_geometry.points[1]
+    end_lat, end_lon = segment_geometry.points[-1]
+    activity_points = [
+        (start_lat - 0.00010, start_lon),
+        (start_lat + 0.00002, start_lon),
+        (mid_lat, mid_lon),
+        (end_lat - 0.00002, end_lon),
+        (end_lat + 0.00002, end_lon),
+        (end_lat + 0.00025, end_lon),
+        (end_lat - 0.00010, end_lon),
+        (end_lat + 0.00005, end_lon),
+    ]
+    timestamps = [0.0, 10.0, 40.0, 60.0, 70.0, 90.0, 120.0, 150.0]
+    activity = ActivityTrack(
+        activity_id=990,
+        points=activity_points,
+        timestamps_s=timestamps,
+    )
+
+    prepared_segment, prepared_activity = _prepare_pair(segment_geometry, activity)
+    (
+        coverage,
+        diag,
+        timing_bounds,
+        timing_indices,
+        gate_hints,
+    ) = _compute_coverage_diagnostics(
+        prepared_activity,
+        prepared_segment,
+        max_offset_threshold=50.0,
+        start_tolerance_m=25.0,
+    )
+
+    assert "end_crossing_offsets_m" in diag
+    offsets = diag["end_crossing_offsets_m"]
+    assert offsets is not None
+    assert max(abs(o) for o in offsets if o is not None) < 15.0
+    timing_range = timing_bounds or coverage.coverage_bounds
+    assert timing_range is not None
+
+    estimate = estimate_segment_time(
+        prepared_activity,
+        prepared_segment,
+        timing_range,
+        projections=coverage.projections,
+        sample_indices=timing_indices,
+        gate_hints=gate_hints,
+    )
+
+    assert estimate.exit_time_s == pytest.approx(65.0, abs=1e-2)
+    assert estimate.elapsed_time_s < 90.0
+
+
+def test_finish_gate_prioritises_expected_orientation() -> None:
+    """Finish gate selection should favour forward crossings even if later."""
+
+    values = np.array([0.0, -1.2, 1.1, -0.8], dtype=float)
+    required_span = 0.5
+    offset = 1
+    candidates = _plane_crossing_candidates(values[offset:], required_span)
+    # Sanity: we produced two crossings with opposite orientations.
+    assert candidates == [(0, 1), (1, 2)]
+
+    selected = _select_end_crossing(values, candidates, offset)
+
+    assert selected == (1, 2)
+
+
 def test_coverage_trims_offsets_outside_gate_window(
     segment_geometry: SegmentGeometry,
 ) -> None:
@@ -487,8 +563,9 @@ def test_gate_clipping_uses_full_activity_context() -> None:
         start_tolerance_m=60.0,
         full_activity_points=full_activity,
     )
-    assert clipped.shape[0] == trimmed_activity.shape[0] - 1
-    assert clipped[-1, 0] == pytest.approx(105.0)
+    assert clipped.shape[0] == trimmed_activity.shape[0]
+    assert np.allclose(clipped, trimmed_activity)
+    assert clipped[-1, 0] == pytest.approx(110.0)
 
     fallback = _clip_activity_to_gate_window(
         trimmed_activity,

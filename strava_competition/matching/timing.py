@@ -383,6 +383,21 @@ def _interpolate_time(
     return time_a + ratio * (time_b - time_a)
 
 
+def _closest_gate_sample(
+    before_idx: int,
+    after_idx: int,
+    time_before: float,
+    time_after: float,
+    value_before: float,
+    value_after: float,
+) -> Tuple[int, float]:
+    """Return the sample closest to the gate plane using signed offsets."""
+
+    if abs(value_after) <= abs(value_before):
+        return after_idx, time_after
+    return before_idx, time_before
+
+
 def _interpolate_gate_crossing(
     hint: GateCrossingHint,
     timestamps: MetricArray,
@@ -406,8 +421,22 @@ def _interpolate_gate_crossing(
     value_after = float(hint.after_value)
 
     delta = value_after - value_before
+    epsilon = max(1e-6, abs(delta) * 1e-6)
+
     if not np.isfinite(delta) or abs(delta) < 1e-9:
-        return target_index, time_after if prefer_after else time_before
+        return _closest_gate_sample(
+            before, after, time_before, time_after, value_before, value_after
+        )
+
+    if abs(value_before) <= epsilon:
+        return before, time_before
+    if abs(value_after) <= epsilon:
+        return after, time_after
+
+    if value_before * value_after > 0.0:
+        return _closest_gate_sample(
+            before, after, time_before, time_after, value_before, value_after
+        )
 
     ratio = -value_before / delta
     ratio = float(min(max(ratio, 0.0), 1.0))

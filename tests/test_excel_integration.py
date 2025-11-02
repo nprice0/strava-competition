@@ -3,21 +3,49 @@ import os
 import tempfile
 
 import pandas as pd
-import pytest
 
 from strava_competition import excel_writer, excel_reader
 from strava_competition.services.segment_service import SegmentService
 
+
 def make_input_workbook(path):
     import pandas as pd
-    segs = pd.DataFrame([
-        {"Segment ID": 101, "Segment Name": "Hill Climb", "Start Date": datetime(2024,1,1), "End Date": datetime(2024,1,31)}
-    ])
-    runners = pd.DataFrame([
-        {"Name": "Alice", "Strava ID": 1, "Refresh Token": "rt1", "Segment Series Team": "Red", "Distance Series Team": "Red"},
-        {"Name": "Ben", "Strava ID": 2, "Refresh Token": "rt2", "Segment Series Team": "Blue", "Distance Series Team": None},
-        {"Name": "Carl", "Strava ID": 3, "Refresh Token": "rt3", "Segment Series Team": "Red", "Distance Series Team": "Red"},
-    ])
+
+    segs = pd.DataFrame(
+        [
+            {
+                "Segment ID": 101,
+                "Segment Name": "Hill Climb",
+                "Start Date": datetime(2024, 1, 1),
+                "End Date": datetime(2024, 1, 31),
+            }
+        ]
+    )
+    runners = pd.DataFrame(
+        [
+            {
+                "Name": "Alice",
+                "Strava ID": 1,
+                "Refresh Token": "rt1",
+                "Segment Series Team": "Red",
+                "Distance Series Team": "Red",
+            },
+            {
+                "Name": "Ben",
+                "Strava ID": 2,
+                "Refresh Token": "rt2",
+                "Segment Series Team": "Blue",
+                "Distance Series Team": None,
+            },
+            {
+                "Name": "Carl",
+                "Strava ID": 3,
+                "Refresh Token": "rt3",
+                "Segment Series Team": "Red",
+                "Distance Series Team": "Red",
+            },
+        ]
+    )
     with pd.ExcelWriter(path, engine="openpyxl") as w:
         segs.to_excel(w, sheet_name="Segment Series", index=False)
         runners.to_excel(w, sheet_name="Runners", index=False)
@@ -48,14 +76,32 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
             return data.get(runner.name, [])
 
         import strava_competition.services.segment_service as segment_service_mod
-        monkeypatch.setattr(segment_service_mod, "get_segment_efforts", fake_get_efforts)
+
+        def fake_get_activities(runner, start_date, end_date):
+            return []
+
+        monkeypatch.setattr(
+            segment_service_mod, "get_segment_efforts", fake_get_efforts
+        )
+        monkeypatch.setattr(segment_service_mod, "get_activities", fake_get_activities)
+        monkeypatch.setattr(
+            segment_service_mod, "MATCHING_FORCE_FALLBACK", False, raising=False
+        )
 
         service = SegmentService(max_workers=2)
         results = service.process(segments, runners)
         excel_writer.write_results(out_path, results)
         df = pd.read_excel(out_path, sheet_name="Hill Climb")
 
-    assert set(["Team", "Runner", "Rank", "Team Rank", "Attempts", "Fastest Time (sec)", "Fastest Date"]).issubset(set(df.columns))
+    assert {
+        "Team",
+        "Runner",
+        "Rank",
+        "Team Rank",
+        "Attempts",
+        "Fastest Time (sec)",
+        "Fastest Date",
+    }.issubset(set(df.columns))
     assert len(df) == 3
     df_sorted = df.sort_values("Runner").reset_index(drop=True)
     runner_to_rank = dict(zip(df_sorted["Runner"], df_sorted["Rank"]))
@@ -66,12 +112,27 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
 
 def test_update_runner_refresh_tokens_roundtrip(tmp_path):
     in_path = tmp_path / "input.xlsx"
-    segs = pd.DataFrame([
-        {"Segment ID": 1, "Segment Name": "S1", "Start Date": datetime(2024,1,1), "End Date": datetime(2024,1,2)}
-    ])
-    runners_df = pd.DataFrame([
-        {"Name": "A", "Strava ID": 10, "Refresh Token": "rt-old", "Segment Series Team": "X", "Distance Series Team": None}
-    ])
+    segs = pd.DataFrame(
+        [
+            {
+                "Segment ID": 1,
+                "Segment Name": "S1",
+                "Start Date": datetime(2024, 1, 1),
+                "End Date": datetime(2024, 1, 2),
+            }
+        ]
+    )
+    runners_df = pd.DataFrame(
+        [
+            {
+                "Name": "A",
+                "Strava ID": 10,
+                "Refresh Token": "rt-old",
+                "Segment Series Team": "X",
+                "Distance Series Team": None,
+            }
+        ]
+    )
     with pd.ExcelWriter(in_path, engine="openpyxl") as w:
         segs.to_excel(w, sheet_name="Segment Series", index=False)
         runners_df.to_excel(w, sheet_name="Runners", index=False)
@@ -81,4 +142,6 @@ def test_update_runner_refresh_tokens_roundtrip(tmp_path):
     runners_objs[0].refresh_token = "rt-new"
     excel_writer.update_runner_refresh_tokens(str(in_path), runners_objs)
     df_after = pd.read_excel(in_path, sheet_name="Runners")
-    assert df_after.loc[df_after["Strava ID"] == 10, "Refresh Token"].iloc[0] == "rt-new"
+    assert (
+        df_after.loc[df_after["Strava ID"] == 10, "Refresh Token"].iloc[0] == "rt-new"
+    )
