@@ -188,6 +188,10 @@ MATCHING_CACHE_MAX_ENTRIES = _env_int("MATCHING_CACHE_MAX_ENTRIES", 64)
 # Global switch for the fallback matcher.
 MATCHING_FALLBACK_ENABLED = _env_bool("MATCHING_FALLBACK_ENABLED", True)
 
+# When True, always bypass Strava efforts and force the matcher path. Useful for
+# exercising fallback behaviour in isolation during testing.
+MATCHING_FORCE_FALLBACK = _env_bool("MATCHING_FORCE_FALLBACK", True)
+
 # Largest allowed perpendicular offset (metres) when evaluating coverage.
 MATCHING_MAX_OFFSET_M = _env_float("MATCHING_MAX_OFFSET_M", 30.0)
 

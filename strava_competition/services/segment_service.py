@@ -19,6 +19,7 @@ from ..config import (
     MATCHING_ACTIVITY_MIN_DISTANCE_RATIO,
     MATCHING_ACTIVITY_REQUIRED_TYPES,
     MATCHING_FALLBACK_ENABLED,
+    MATCHING_FORCE_FALLBACK,
     MATCHING_RUNNER_ACTIVITY_CACHE_SIZE,
     MAX_WORKERS,
 )
@@ -353,6 +354,9 @@ class SegmentService:
         efforts: List[dict] | None,
     ) -> SegmentResult | None:
         """Convert Strava segment efforts into a SegmentResult if available."""
+
+        if MATCHING_FORCE_FALLBACK:
+            return None
 
         if not efforts:
             return None

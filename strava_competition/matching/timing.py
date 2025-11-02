@@ -24,12 +24,31 @@ class SegmentTimingEstimate:
     exit_time_s: Optional[float]
 
 
+@dataclass(slots=True)
+class GateCrossingHint:
+    """Bracketed samples around a start/finish plane crossing."""
+
+    before_index: int
+    after_index: int
+    before_value: float
+    after_value: float
+
+
+@dataclass(slots=True)
+class GateTimingHints:
+    """Optional gate crossing hints derived from plane intersection checks."""
+
+    start: Optional[GateCrossingHint] = None
+    end: Optional[GateCrossingHint] = None
+
+
 def estimate_segment_time(
     activity_track: PreparedActivityTrack,
     segment_geometry: PreparedSegmentGeometry,
     coverage_range: Tuple[float, float],
     projections: Optional[MetricArray] = None,
     sample_indices: Optional[Tuple[int, int]] = None,
+    gate_hints: Optional[GateTimingHints] = None,
 ) -> SegmentTimingEstimate:
     """Estimate elapsed time for the portion of an activity covering the segment.
 
@@ -46,6 +65,10 @@ def estimate_segment_time(
             When provided, the timing logic expands to the immediate neighbour
             before the entry sample and the neighbour after the exit sample (if
             available) so durations do not underestimate the true effort.
+        gate_hints: Optional start/finish plane crossing metadata used to
+            interpolate precise entry/exit timestamps when gate crossings are
+            detected. When provided, entry and exit indices map to the first
+            in-gate sample and the final in-gate sample respectively.
 
     Returns:
         SegmentTimingEstimate capturing the elapsed time (seconds) plus entry and
@@ -91,13 +114,65 @@ def estimate_segment_time(
     )
     if resolved is None:
         return SegmentTimingEstimate(0.0, None, None, None, None)
-    entry_idx, entry_time, exit_idx, exit_time = resolved
+    entry_idx, entry_time, exit_idx, exit_time = _apply_gate_hints(
+        resolved,
+        gate_hints,
+        timestamps,
+    )
 
     if exit_time < entry_time:
         return SegmentTimingEstimate(0.0, entry_idx, exit_idx, entry_time, exit_time)
 
     elapsed = float(exit_time - entry_time)
     return SegmentTimingEstimate(elapsed, entry_idx, exit_idx, entry_time, exit_time)
+
+
+def _apply_gate_hints(
+    resolved: Tuple[int, float, int, float],
+    gate_hints: Optional[GateTimingHints],
+    timestamps: MetricArray,
+) -> Tuple[int, float, int, float]:
+    """Return entry/exit indices adjusted with optional gate hints."""
+
+    entry_idx, entry_time, exit_idx, exit_time = resolved
+    if gate_hints is None:
+        return entry_idx, entry_time, exit_idx, exit_time
+
+    adjusted_entry = _apply_start_hint(gate_hints.start, timestamps)
+    if adjusted_entry is not None:
+        entry_idx, entry_time = adjusted_entry
+
+    adjusted_exit = _apply_end_hint(gate_hints.end, timestamps)
+    if adjusted_exit is not None:
+        exit_idx, exit_time = adjusted_exit
+
+    if exit_time < entry_time:
+        exit_idx = entry_idx
+        exit_time = entry_time
+
+    return entry_idx, entry_time, exit_idx, exit_time
+
+
+def _apply_start_hint(
+    hint: Optional[GateCrossingHint],
+    timestamps: MetricArray,
+) -> Optional[Tuple[int, float]]:
+    """Return interpolated entry index/time using a gate crossing hint."""
+
+    if hint is None:
+        return None
+    return _interpolate_gate_crossing(hint, timestamps, prefer_after=True)
+
+
+def _apply_end_hint(
+    hint: Optional[GateCrossingHint],
+    timestamps: MetricArray,
+) -> Optional[Tuple[int, float]]:
+    """Return interpolated exit index/time using a gate crossing hint."""
+
+    if hint is None:
+        return None
+    return _interpolate_gate_crossing(hint, timestamps, prefer_after=False)
 
 
 def _find_entry_event(
@@ -306,6 +381,39 @@ def _interpolate_time(
     ratio = (target_distance - distance_a) / delta
     ratio = min(max(ratio, 0.0), 1.0)
     return time_a + ratio * (time_b - time_a)
+
+
+def _interpolate_gate_crossing(
+    hint: GateCrossingHint,
+    timestamps: MetricArray,
+    *,
+    prefer_after: bool,
+) -> Optional[Tuple[int, float]]:
+    """Return interpolated timestamp at a plane crossing using hint samples."""
+
+    point_count = timestamps.shape[0]
+    before = int(hint.before_index)
+    after = int(hint.after_index)
+    if point_count == 0:
+        return None
+    if before < 0 or before >= point_count or after < 0 or after >= point_count:
+        return None
+
+    target_index = after if prefer_after else before
+    time_before = float(timestamps[before])
+    time_after = float(timestamps[after])
+    value_before = float(hint.before_value)
+    value_after = float(hint.after_value)
+
+    delta = value_after - value_before
+    if not np.isfinite(delta) or abs(delta) < 1e-9:
+        return target_index, time_after if prefer_after else time_before
+
+    ratio = -value_before / delta
+    ratio = float(min(max(ratio, 0.0), 1.0))
+    interpolated = time_before + ratio * (time_after - time_before)
+
+    return target_index, interpolated
 
 
 def _project_onto_polyline(

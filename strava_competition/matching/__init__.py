@@ -32,7 +32,12 @@ from .similarity import (
     discrete_frechet_distance,
     windowed_dtw,
 )
-from .timing import SegmentTimingEstimate, estimate_segment_time
+from .timing import (
+    GateCrossingHint,
+    GateTimingHints,
+    SegmentTimingEstimate,
+    estimate_segment_time,
+)
 from .validation import CoverageResult, check_direction, compute_coverage
 
 
@@ -213,11 +218,35 @@ def _clamp_timing_indices(
     return entry_idx, exit_idx
 
 
+def _refine_crossing_indices(
+    values: np.ndarray,
+    before_idx: int,
+    after_idx: int,
+    threshold: float,
+    *,
+    prefer_start: bool,
+) -> tuple[int, int]:
+    """Return adjusted crossing indices favouring samples near the gate plane."""
+
+    if after_idx <= before_idx + 1:
+        return before_idx, after_idx
+
+    if prefer_start:
+        for idx in range(before_idx + 1, after_idx):
+            if abs(float(values[idx])) <= threshold:
+                return before_idx, idx
+    else:
+        for idx in range(after_idx - 1, before_idx, -1):
+            if abs(float(values[idx])) <= threshold:
+                return idx, after_idx
+    return before_idx, after_idx
+
+
 def _gate_crossings(
     activity_points: np.ndarray,
     segment_points: np.ndarray,
     start_tolerance_m: float,
-) -> tuple[bool, bool, Optional[int], Optional[int]]:
+) -> tuple[bool, bool, Optional[int], Optional[int], GateTimingHints]:
     """Determine whether the activity crosses the synthetic start and finish planes."""
 
     required_span = min(3.0, max(0.5, start_tolerance_m * 0.02))
@@ -225,8 +254,16 @@ def _gate_crossings(
     crosses_end = False
     start_entry_idx: Optional[int] = None
     end_exit_idx: Optional[int] = None
+    start_hint: Optional[GateCrossingHint] = None
+    end_hint: Optional[GateCrossingHint] = None
     if activity_points.shape[0] < 2 or segment_points.shape[0] < 2:
-        return crosses_start, crosses_end, start_entry_idx, end_exit_idx
+        return (
+            crosses_start,
+            crosses_end,
+            start_entry_idx,
+            end_exit_idx,
+            GateTimingHints(),
+        )
 
     start_vec = segment_points[1] - segment_points[0]
     start_norm = np.linalg.norm(start_vec)
@@ -238,7 +275,20 @@ def _gate_crossings(
         )
         crosses_start = crossed
         if crossed and before_idx is not None and after_idx is not None:
+            before_idx, after_idx = _refine_crossing_indices(
+                start_values,
+                before_idx,
+                after_idx,
+                required_span,
+                prefer_start=True,
+            )
             start_entry_idx = max(after_idx, before_idx + 1)
+            start_hint = GateCrossingHint(
+                before_index=before_idx,
+                after_index=after_idx,
+                before_value=float(start_values[before_idx]),
+                after_value=float(start_values[after_idx]),
+            )
 
     # Reverse the finish direction so pre-finish samples project negative.
     end_vec = segment_points[-2] - segment_points[-1]
@@ -251,16 +301,36 @@ def _gate_crossings(
         )
         crosses_end = crossed
         if crossed and before_idx is not None and after_idx is not None:
+            before_idx, after_idx = _refine_crossing_indices(
+                end_values,
+                before_idx,
+                after_idx,
+                required_span,
+                prefer_start=False,
+            )
             candidate = after_idx - 1 if after_idx > 0 else before_idx
             end_exit_idx = max(before_idx, candidate)
+            end_hint = GateCrossingHint(
+                before_index=before_idx,
+                after_index=after_idx,
+                before_value=float(end_values[before_idx]),
+                after_value=float(end_values[after_idx]),
+            )
 
-    return crosses_start, crosses_end, start_entry_idx, end_exit_idx
+    return (
+        crosses_start,
+        crosses_end,
+        start_entry_idx,
+        end_exit_idx,
+        GateTimingHints(start=start_hint, end=end_hint),
+    )
 
 
 def _prepare_refined_inputs(
     coverage: "CoverageResult",
     segment_points: np.ndarray,
     max_offset_threshold: float,
+    gate_slice: Optional[Tuple[int, int]] = None,
 ) -> Optional[tuple[np.ndarray, np.ndarray, np.ndarray, float]]:
     """Return projections, offsets, indices and length for refinement."""
 
@@ -286,6 +356,14 @@ def _prepare_refined_inputs(
         if np.count_nonzero(mask) < 2:
             return None
 
+    if gate_slice is not None:
+        start_idx, end_idx = gate_slice
+        gate_mask = np.zeros_like(mask)
+        gate_mask[start_idx : end_idx + 1] = True
+        mask &= gate_mask
+        if np.count_nonzero(mask) < 2:
+            return None
+
     total_length = _polyline_length(segment_points)
     if total_length <= 0.0:
         return None
@@ -295,6 +373,119 @@ def _prepare_refined_inputs(
         return None
 
     return projections, offsets, indices, total_length
+
+
+def _gate_slice_from_hints(
+    hints: Optional[GateTimingHints],
+    point_count: int,
+) -> Optional[Tuple[int, int]]:
+    """Return inclusive index bounds representing the gate-trimmed span."""
+
+    if hints is None or point_count < 2:
+        return None
+
+    start_idx = 0
+    end_idx = point_count - 1
+    has_hint = False
+
+    if hints.start is not None:
+        start_idx = int(min(max(hints.start.after_index, 0), end_idx))
+        has_hint = True
+    if hints.end is not None:
+        end_idx = int(max(start_idx, min(hints.end.before_index, end_idx)))
+        has_hint = True
+
+    if not has_hint or end_idx - start_idx < 1:
+        return None
+    return start_idx, end_idx
+
+
+def _max_offset_within_slice(
+    offsets: Optional[np.ndarray],
+    gate_slice: Optional[Tuple[int, int]],
+) -> Optional[float]:
+    """Return the maximum offset restricted to an inclusive gate slice."""
+
+    if offsets is None or gate_slice is None:
+        return None
+
+    start_idx, end_idx = gate_slice
+    if start_idx < 0 or end_idx >= offsets.shape[0] or end_idx < start_idx:
+        return None
+
+    subset = offsets[start_idx : end_idx + 1]
+    if subset.size == 0:
+        return None
+    return _max_offset_value(subset)
+
+
+def _apply_gate_indices(
+    start_entry_idx: Optional[int],
+    end_exit_idx: Optional[int],
+    gate_hints: GateTimingHints,
+) -> tuple[Optional[int], Optional[int]]:
+    """Return gate indices adjusted with explicit hint indices when present."""
+
+    if gate_hints.start is not None:
+        start_entry_idx = gate_hints.start.after_index
+    if gate_hints.end is not None:
+        end_exit_idx = gate_hints.end.before_index
+    return start_entry_idx, end_exit_idx
+
+
+def _build_coverage_diag(
+    coverage: CoverageResult,
+    crosses_start: bool,
+    crosses_end: bool,
+    start_entry_idx: Optional[int],
+    end_exit_idx: Optional[int],
+    raw_bounds: Optional[Tuple[float, float]],
+    raw_max_offset: Optional[float],
+    refined: Optional[_RefinedCoverage],
+    trimmed_max: Optional[float],
+    gate_slice: Optional[Tuple[int, int]],
+    gate_hints: GateTimingHints,
+    timing_indices: Optional[Tuple[int, int]],
+) -> Dict[str, object]:
+    """Return a diagnostics mapping summarising coverage evaluation."""
+
+    diag: Dict[str, object] = {
+        "ratio": coverage.coverage_ratio,
+        "bounds_m": coverage.coverage_bounds,
+        "max_offset_m": coverage.max_offset_m,
+        "crosses_start": crosses_start,
+        "crosses_end": crosses_end,
+    }
+    if start_entry_idx is not None:
+        diag["start_entry_index"] = start_entry_idx
+    if end_exit_idx is not None:
+        diag["end_exit_index"] = end_exit_idx
+    if trimmed_max is not None:
+        diag["gate_trimmed_max_offset_m"] = trimmed_max
+    if gate_slice is not None:
+        diag["gate_slice_indices"] = gate_slice
+    if gate_hints.start is not None:
+        diag["start_crossing_samples"] = (
+            gate_hints.start.before_index,
+            gate_hints.start.after_index,
+        )
+    if gate_hints.end is not None:
+        diag["end_crossing_samples"] = (
+            gate_hints.end.before_index,
+            gate_hints.end.after_index,
+        )
+    if refined is not None:
+        diag["raw_bounds_m"] = refined.raw_bounds
+        if raw_max_offset is not None:
+            diag["raw_max_offset_m"] = raw_max_offset
+    else:
+        if raw_bounds is not None:
+            diag["raw_bounds_m"] = raw_bounds
+        if raw_max_offset is not None:
+            diag["raw_max_offset_m"] = raw_max_offset
+    if timing_indices is not None:
+        diag["timing_indices"] = timing_indices
+    return diag
 
 
 def _select_timing_indices(
@@ -400,6 +591,7 @@ def match_activity_to_segment(
         coverage_diag,
         timing_bounds,
         timing_indices,
+        gate_hints,
     ) = _compute_coverage_diagnostics(
         prepared_activity,
         prepared_segment,
@@ -499,6 +691,7 @@ def match_activity_to_segment(
             timing_range,
             projections=coverage.projections,
             sample_indices=timing_indices,
+            gate_hints=gate_hints,
         )
     except Exception as exc:  # noqa: BLE001
         diagnostics["timing_error"] = str(exc)
@@ -723,12 +916,18 @@ def _resolve_gate_start_index(
     subset_indices: np.ndarray,
     crosses_start: bool,
     start_entry_idx: Optional[int],
+    start_hint: Optional[GateCrossingHint],
 ) -> Optional[int]:
     """Return the sliced start index derived from the full gate crossings."""
 
-    if not crosses_start or start_entry_idx is None:
+    if not crosses_start and start_hint is None:
         return 0
-    candidates = np.nonzero(subset_indices >= start_entry_idx)[0]
+    entry_target = start_entry_idx
+    if entry_target is None and start_hint is not None:
+        entry_target = start_hint.after_index
+    if entry_target is None:
+        return 0
+    candidates = np.nonzero(subset_indices >= entry_target)[0]
     if candidates.size == 0:
         return None
     return int(candidates[0])
@@ -738,12 +937,18 @@ def _resolve_gate_end_index(
     subset_indices: np.ndarray,
     crosses_end: bool,
     end_exit_idx: Optional[int],
+    end_hint: Optional[GateCrossingHint],
 ) -> Optional[int]:
     """Return the sliced end index derived from the full gate crossings."""
 
-    if not crosses_end or end_exit_idx is None:
+    if not crosses_end and end_hint is None:
         return subset_indices.shape[0] - 1
-    end_limit = end_exit_idx + 1
+    exit_target = end_exit_idx
+    if exit_target is None and end_hint is not None:
+        exit_target = end_hint.before_index
+    if exit_target is None:
+        return subset_indices.shape[0] - 1
+    end_limit = exit_target + 1
     candidates = np.nonzero(subset_indices <= end_limit)[0]
     if candidates.size == 0:
         return None
@@ -782,12 +987,14 @@ def _clip_activity_to_gate_window(
         crosses_end,
         start_entry_idx,
         end_exit_idx,
+        gate_hints,
     ) = crossings
 
     start_idx = _resolve_gate_start_index(
         subset_indices,
         crosses_start,
         start_entry_idx,
+        gate_hints.start,
     )
     if start_idx is None:
         return activity_points
@@ -795,6 +1002,7 @@ def _clip_activity_to_gate_window(
         subset_indices,
         crosses_end,
         end_exit_idx,
+        gate_hints.end,
     )
     if end_idx is None or end_idx <= start_idx:
         return activity_points
@@ -895,6 +1103,7 @@ def _refine_coverage_window(
     *,
     max_offset_threshold: float,
     start_tolerance_m: float,
+    gate_slice: Optional[Tuple[int, int]] = None,
 ) -> Optional[_RefinedCoverage]:
     """Derive an overlap window by filtering projections with acceptable offsets."""
 
@@ -902,6 +1111,7 @@ def _refine_coverage_window(
         coverage,
         segment_points,
         max_offset_threshold,
+        gate_slice,
     )
     if prepared is None:
         return None
@@ -916,11 +1126,23 @@ def _refine_coverage_window(
         return None
     raw_start, raw_end, chunk_proj = bounds
 
+    chunk_span = max(raw_end - raw_start, 0.0)
+    if chunk_span <= 0.0:
+        return None
+
+    raw_bounds_full = getattr(coverage, "coverage_bounds", None)
+    if raw_bounds_full is not None:
+        baseline_span = max(raw_bounds_full[1] - raw_bounds_full[0], 0.0)
+        if baseline_span > 0.0 and chunk_span < baseline_span * 0.7:
+            return None
+    if total_length > 0.0 and chunk_span < total_length * 0.7:
+        return None
+
     sample_count = chunk_indices.size
     if sample_count < 3:
         return None
 
-    guard_span = max(raw_end - raw_start, 0.0)
+    guard_span = chunk_span
     segment_stride = total_length / max(segment_points.shape[0] - 1, 1)
     max_stride = max(segment_stride * 10.0, 25.0)
     mean_stride = guard_span / max(sample_count - 1, 1)
@@ -961,24 +1183,48 @@ def _compute_coverage_diagnostics(
     Dict[str, object],
     Optional[Tuple[float, float]],
     Optional[Tuple[int, int]],
+    GateTimingHints,
 ]:
     """Evaluate coverage metrics and associated diagnostics for an activity."""
 
     coverage = compute_coverage(
-        prepared_activity.metric_points, prepared_segment.metric_points
+        prepared_activity.metric_points,
+        prepared_segment.resampled_points,
     )
     raw_bounds = coverage.coverage_bounds
     raw_max_offset = coverage.max_offset_m
-    crosses_start, crosses_end, start_entry_idx, end_exit_idx = _gate_crossings(
+    (
+        crosses_start,
+        crosses_end,
+        start_entry_idx,
+        end_exit_idx,
+        gate_hints,
+    ) = _gate_crossings(
         prepared_activity.metric_points,
-        prepared_segment.metric_points,
+        prepared_segment.resampled_points,
         start_tolerance_m,
     )
+    start_entry_idx, end_exit_idx = _apply_gate_indices(
+        start_entry_idx,
+        end_exit_idx,
+        gate_hints,
+    )
+
+    offsets = getattr(coverage, "offsets", None)
+    gate_slice = _gate_slice_from_hints(
+        gate_hints,
+        offsets.shape[0] if isinstance(offsets, np.ndarray) else 0,
+    )
+    trimmed_max = _max_offset_within_slice(offsets, gate_slice)
+    if trimmed_max is not None:
+        coverage.max_offset_m = trimmed_max
+
     refined = _refine_coverage_window(
         coverage,
-        prepared_segment.metric_points,
+        prepared_segment.resampled_points,
         max_offset_threshold=max_offset_threshold,
         start_tolerance_m=start_tolerance_m,
+        gate_slice=gate_slice,
     )
     timing_bounds: Optional[Tuple[float, float]] = raw_bounds
     timing_indices: Optional[Tuple[int, int]] = None
@@ -993,29 +1239,23 @@ def _compute_coverage_diagnostics(
             end_exit_idx,
         )
         timing_indices = (clamped_entry, clamped_exit)
-    coverage_diag: Dict[str, object] = {
-        "ratio": coverage.coverage_ratio,
-        "bounds_m": coverage.coverage_bounds,
-        "max_offset_m": coverage.max_offset_m,
-        "crosses_start": crosses_start,
-        "crosses_end": crosses_end,
-    }
-    if start_entry_idx is not None:
-        coverage_diag["start_entry_index"] = start_entry_idx
-    if end_exit_idx is not None:
-        coverage_diag["end_exit_index"] = end_exit_idx
-    if refined is not None:
-        coverage_diag["raw_bounds_m"] = refined.raw_bounds
-        if raw_max_offset is not None:
-            coverage_diag["raw_max_offset_m"] = raw_max_offset
-    else:
-        if raw_bounds is not None:
-            coverage_diag["raw_bounds_m"] = raw_bounds
-        if raw_max_offset is not None:
-            coverage_diag["raw_max_offset_m"] = raw_max_offset
-    if timing_indices is not None:
-        coverage_diag["timing_indices"] = timing_indices
-    return coverage, coverage_diag, timing_bounds, timing_indices
+
+    coverage_diag = _build_coverage_diag(
+        coverage,
+        crosses_start,
+        crosses_end,
+        start_entry_idx,
+        end_exit_idx,
+        raw_bounds,
+        raw_max_offset,
+        refined,
+        trimmed_max,
+        gate_slice,
+        gate_hints,
+        timing_indices,
+    )
+
+    return coverage, coverage_diag, timing_bounds, timing_indices, gate_hints
 
 
 def _evaluate_similarity(

@@ -15,6 +15,8 @@ from strava_competition.matching import (
     MatchResult,
     Tolerances,
     _clip_activity_to_gate_window,
+    _compute_coverage_diagnostics,
+    _refine_coverage_window,
     match_activity_to_segment,
 )
 from strava_competition.matching.models import ActivityTrack, SegmentGeometry
@@ -32,7 +34,11 @@ from strava_competition.matching.similarity import (
     windowed_dtw,
 )
 from strava_competition.matching.timing import estimate_segment_time
-from strava_competition.matching.validation import check_direction, compute_coverage
+from strava_competition.matching.validation import (
+    CoverageResult,
+    check_direction,
+    compute_coverage,
+)
 from strava_competition.models import Runner
 
 
@@ -231,6 +237,118 @@ def test_timing_estimation_ignores_post_segment_samples(
 
     assert estimate.exit_time_s == pytest.approx(30.0, abs=1e-3)
     assert estimate.elapsed_time_s == pytest.approx(30.0, rel=1e-2)
+
+
+def test_timing_estimation_respects_gate_interpolation(
+    segment_geometry: SegmentGeometry,
+) -> None:
+    """Timing interpolation should use gate hints instead of raw sample indices."""
+
+    activity_points = [
+        (segment_geometry.points[0][0] - 0.00005, segment_geometry.points[0][1]),
+        (segment_geometry.points[0][0] + 0.00005, segment_geometry.points[0][1]),
+        segment_geometry.points[1],
+        (segment_geometry.points[2][0] - 0.00005, segment_geometry.points[2][1]),
+        (segment_geometry.points[2][0] + 0.00005, segment_geometry.points[2][1]),
+    ]
+    activity = ActivityTrack(
+        activity_id=888,
+        points=activity_points,
+        timestamps_s=[0.0, 10.0, 30.0, 45.0, 55.0],
+    )
+
+    prepared_segment, prepared_activity = _prepare_pair(segment_geometry, activity)
+    (
+        coverage,
+        _diag,
+        timing_bounds,
+        timing_indices,
+        gate_hints,
+    ) = _compute_coverage_diagnostics(
+        prepared_activity,
+        prepared_segment,
+        max_offset_threshold=30.0,
+        start_tolerance_m=25.0,
+    )
+
+    timing_range = timing_bounds or coverage.coverage_bounds
+    assert timing_range is not None
+    estimate = estimate_segment_time(
+        prepared_activity,
+        prepared_segment,
+        timing_range,
+        projections=coverage.projections,
+        sample_indices=timing_indices,
+        gate_hints=gate_hints,
+    )
+
+    assert estimate.entry_time_s == pytest.approx(5.0, abs=1e-2)
+    assert estimate.exit_time_s == pytest.approx(50.0, abs=1e-2)
+    assert estimate.elapsed_time_s == pytest.approx(45.0, abs=1e-2)
+
+
+def test_coverage_trims_offsets_outside_gate_window(
+    segment_geometry: SegmentGeometry,
+) -> None:
+    """Coverage diagnostics should ignore large offsets before the start gate."""
+
+    far_lon = segment_geometry.points[0][1] + 0.03
+    activity_points = [
+        (segment_geometry.points[0][0] - 0.0001, far_lon),
+        (segment_geometry.points[0][0] - 0.00002, segment_geometry.points[0][1]),
+        *segment_geometry.points,
+        (segment_geometry.points[-1][0] + 0.00002, segment_geometry.points[-1][1]),
+    ]
+    timestamps = [-30.0, -10.0, 0.0, 12.0, 24.0, 36.0]
+    activity = ActivityTrack(
+        activity_id=889,
+        points=activity_points,
+        timestamps_s=timestamps,
+    )
+
+    prepared_segment, prepared_activity = _prepare_pair(segment_geometry, activity)
+    (
+        coverage,
+        diag,
+        _bounds,
+        _indices,
+        _gate_hints,
+    ) = _compute_coverage_diagnostics(
+        prepared_activity,
+        prepared_segment,
+        max_offset_threshold=30.0,
+        start_tolerance_m=25.0,
+    )
+
+    raw_max = diag.get("raw_max_offset_m")
+    assert raw_max is not None and raw_max > 500.0
+    assert coverage.max_offset_m is not None
+    assert coverage.max_offset_m < 50.0
+
+
+def test_refine_window_reverts_on_collapsed_span() -> None:
+    """Refinement should fall back when the surviving span is too small."""
+
+    projections = np.linspace(0.0, 1000.0, num=100)
+    offsets = np.full(100, 200.0)
+    offsets[:5] = 1.0
+    coverage = CoverageResult(
+        coverage_ratio=1.0,
+        coverage_bounds=(0.0, 1000.0),
+        projections=projections,
+        max_offset_m=float(np.max(offsets)),
+        offsets=offsets,
+    )
+    segment_points = np.column_stack((np.linspace(0.0, 1000.0, num=101), np.zeros(101)))
+
+    refined = _refine_coverage_window(
+        coverage,
+        segment_points,
+        max_offset_threshold=30.0,
+        start_tolerance_m=25.0,
+    )
+
+    assert refined is None
 
 
 def test_match_activity_to_segment_success(monkeypatch: pytest.MonkeyPatch) -> None:
