@@ -18,6 +18,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
+from .api_capture import record_response, replay_response
 from .auth import get_access_token
 from .config import (
     STRAVA_BASE_URL,
@@ -114,7 +115,7 @@ class RateLimiter:
         if hi > 0:
             time.sleep(random.uniform(lo, hi))
 
-    def after_response(
+    def after_response(  # noqa: C901 - high cohesion guard logic
         self, headers: Optional[Dict[str, Any]], status_code: Optional[int]
     ) -> None:
         throttle = False
@@ -212,6 +213,66 @@ def _ensure_runner_token(runner: "Runner") -> None:
 
 def _auth_headers(runner: "Runner") -> Dict[str, str]:
     return {"Authorization": f"Bearer {runner.access_token}"}
+
+
+def _runner_identity(runner: "Runner") -> str:
+    """Return a stable identifier for capture/replay naming."""
+
+    return runner.strava_id or runner.name or "unknown"
+
+
+def _replay_list_response(
+    runner: "Runner",
+    url: str,
+    params: Dict[str, Any],
+    *,
+    context_label: str,
+    page: int,
+) -> Optional[JSONList]:
+    """Return cached list payload when replay mode is active."""
+
+    cached = replay_response(
+        "GET",
+        url,
+        _runner_identity(runner),
+        params=params,
+    )
+    if cached is None:
+        return None
+    if isinstance(cached, list):
+        logging.debug(
+            "Replay hit for %s runner=%s page=%s entries=%s",
+            context_label,
+            runner.name,
+            page,
+            len(cached),
+        )
+        return cached
+    logging.warning(
+        "Replay payload type mismatch for %s runner=%s page=%s type=%s",
+        context_label,
+        runner.name,
+        page,
+        type(cached).__name__,
+    )
+    return None
+
+
+def _record_list_response(
+    runner: "Runner",
+    url: str,
+    params: Dict[str, Any],
+    data: JSONList,
+) -> None:
+    """Persist successful list responses when capture mode is enabled."""
+
+    record_response(
+        "GET",
+        url,
+        _runner_identity(runner),
+        response=data,
+        params=params,
+    )
 
 
 def _fetch_page_with_retries(
@@ -408,7 +469,7 @@ def _fetch_page_with_retries(
         return data  # type: ignore[return-value]
 
 
-def get_segment_efforts(
+def get_segment_efforts(  # noqa: C901 - pagination and auth flow
     runner: Runner,
     segment_id: int,
     start_date: datetime,
@@ -424,9 +485,6 @@ def get_segment_efforts(
     Returns a list (possibly empty) or None on unrecoverable error.
     """
 
-    def auth_headers() -> Dict[str, str]:  # local alias for brevity
-        return _auth_headers(runner)
-
     def ensure_token() -> None:
         _ensure_runner_token(runner)
 
@@ -439,7 +497,17 @@ def get_segment_efforts(
             "per_page": 200,
             "page": page,
         }
-        return _fetch_page_with_retries(
+        cache_params = dict(params)
+        cached = _replay_list_response(
+            runner,
+            url,
+            cache_params,
+            context_label="segment efforts",
+            page=page,
+        )
+        if cached is not None:
+            return cached
+        result = _fetch_page_with_retries(
             runner,
             url,
             params,
@@ -447,6 +515,9 @@ def get_segment_efforts(
             page=page,
             segment_id=segment_id,
         )
+        if isinstance(result, list):
+            _record_list_response(runner, url, cache_params, result)
+        return result
 
     try:
         ensure_token()
@@ -542,7 +613,7 @@ def get_segment_efforts(
         return None
 
 
-def get_activities(
+def get_activities(  # noqa: C901 - pagination and auth flow
     runner: Runner,
     start_date: datetime,
     end_date: datetime,
@@ -553,9 +624,6 @@ def get_activities(
     activity 'type' == 'Run'. Returns list (possibly empty) or None on error.
     Inclusive range based on activity start_date_local.
     """
-
-    def auth_headers() -> Dict[str, str]:  # local alias
-        return _auth_headers(runner)
 
     def ensure_token() -> None:
         _ensure_runner_token(runner)
@@ -571,13 +639,26 @@ def get_activities(
             "per_page": 200,
             "page": page,
         }
-        return _fetch_page_with_retries(
+        cache_params = dict(params)
+        cached = _replay_list_response(
+            runner,
+            url,
+            cache_params,
+            context_label="activities",
+            page=page,
+        )
+        if cached is not None:
+            return cached
+        result = _fetch_page_with_retries(
             runner,
             url,
             params,
             context_label="activities",
             page=page,
         )
+        if isinstance(result, list):
+            _record_list_response(runner, url, cache_params, result)
+        return result
 
     try:
         ensure_token()
@@ -728,6 +809,42 @@ def _get_resource_json(
             raise StravaAPIError(message) from exc
 
 
+def _fetch_resource_with_capture(
+    runner: Runner,
+    url: str,
+    params: Optional[Dict[str, Any]],
+    context: str,
+) -> Any:
+    """Wrap ``_get_resource_json`` with capture/replay semantics."""
+
+    params_for_capture = dict(params) if params else None
+    identity = _runner_identity(runner)
+    cached = replay_response(
+        "GET",
+        url,
+        identity,
+        params=params_for_capture,
+    )
+    if cached is not None:
+        logging.debug(
+            "Replay hit for %s runner=%s type=%s",
+            context,
+            runner.name,
+            type(cached).__name__,
+        )
+        return cached
+
+    data = _get_resource_json(runner, url, params, context)
+    record_response(
+        "GET",
+        url,
+        identity,
+        response=data,
+        params=params_for_capture,
+    )
+    return data
+
+
 def _classify_response_status(
     runner: Runner,
     response: requests.Response,
@@ -801,7 +918,7 @@ def fetch_segment_geometry(
 
     url = f"{STRAVA_BASE_URL}/segments/{segment_id}"
     context = f"segment:{segment_id}"
-    data = _get_resource_json(runner, url, params=None, context=context)
+    data = _fetch_resource_with_capture(runner, url, params=None, context=context)
     if not isinstance(data, dict):
         message = f"{context} payload had unexpected type {type(data).__name__}"
         logging.error(message)
@@ -851,7 +968,7 @@ def fetch_activity_stream(
         "resolution": resolution,
         "series_type": series_type,
     }
-    data = _get_resource_json(runner, url, params=params, context=context)
+    data = _fetch_resource_with_capture(runner, url, params=params, context=context)
     if not isinstance(data, dict):
         message = f"{context} payload had unexpected type {type(data).__name__}"
         logging.error(message)

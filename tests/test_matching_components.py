@@ -164,6 +164,21 @@ def test_compute_coverage_handles_partial_activity() -> None:
     assert coverage.coverage_ratio == pytest.approx(0.2, rel=1e-3)
 
 
+def test_compute_coverage_ignores_points_past_finish() -> None:
+    """Coverage ratio should be zero when activity samples stay beyond the finish."""
+
+    segment_points = np.array([[0.0, 0.0], [100.0, 0.0]])
+    post_finish_activity = np.array([[120.0, 0.0], [150.0, 0.0]])
+
+    coverage = compute_coverage(post_finish_activity, segment_points)
+
+    assert coverage.coverage_ratio == pytest.approx(0.0, abs=1e-6)
+    assert coverage.coverage_bounds is not None
+    start, end = coverage.coverage_bounds
+    assert start == pytest.approx(100.0, abs=1e-6)
+    assert end == pytest.approx(100.0, abs=1e-6)
+
+
 def test_similarity_metrics_distinguish_offset() -> None:
     """Discrete Fréchet distance should increase when paths diverge."""
 
@@ -346,6 +361,69 @@ def test_finish_gate_prefers_first_crossing_after_entry(
 
     assert estimate.exit_time_s == pytest.approx(65.0, abs=1e-2)
     assert estimate.elapsed_time_s < 90.0
+
+
+def test_gate_window_prefers_first_lap_after_loop() -> None:
+    """Gate trimming should lock to the first lap even if the runner loops."""
+
+    segment = SegmentGeometry(
+        segment_id=202,
+        points=[
+            (37.0000, -122.0000),
+            (37.0040, -122.0000),
+            (37.0080, -122.0000),
+        ],
+        distance_m=800.0,
+    )
+    activity_points = [
+        (36.9995, -122.0000),
+        (37.0001, -122.0000),
+        (37.0040, -122.0000),
+        (37.0080, -122.0000),
+        (37.0085, -122.0000),
+        (36.9999, -122.0000),
+        (37.0002, -122.0000),
+        (37.0041, -122.0000),
+        (37.0081, -122.0000),
+    ]
+    timestamps = [0.0, 45.0, 165.0, 225.0, 255.0, 600.0, 660.0, 795.0, 855.0]
+    activity = ActivityTrack(
+        activity_id=2001,
+        points=activity_points,
+        timestamps_s=timestamps,
+    )
+
+    prepared_segment, prepared_activity = _prepare_pair(segment, activity)
+    (
+        coverage,
+        _diag,
+        timing_bounds,
+        timing_indices,
+        gate_hints,
+    ) = _compute_coverage_diagnostics(
+        prepared_activity,
+        prepared_segment,
+        max_offset_threshold=60.0,
+        start_tolerance_m=25.0,
+    )
+
+    timing_range = timing_bounds or coverage.coverage_bounds
+    assert timing_range is not None
+
+    estimate = estimate_segment_time(
+        prepared_activity,
+        prepared_segment,
+        timing_range,
+        projections=coverage.projections,
+        sample_indices=timing_indices,
+        gate_hints=gate_hints,
+    )
+
+    assert estimate.entry_time_s is not None
+    assert estimate.exit_time_s is not None
+    assert estimate.entry_time_s < 200.0
+    assert estimate.exit_time_s < 320.0
+    assert estimate.elapsed_time_s == pytest.approx(180.0, abs=15.0)
 
 
 def test_finish_gate_prioritises_expected_orientation() -> None:

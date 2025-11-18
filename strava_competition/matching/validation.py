@@ -119,13 +119,13 @@ def compute_coverage(
         return CoverageResult(0.0, (0.0, 0.0), None, 0.0, None)
 
     projected, offsets = _project_onto_polyline(activity_points, segment_points)
-    coverage_start = float(np.min(projected))
-    coverage_end = float(np.max(projected))
+    coverage_start_raw = float(np.min(projected))
+    coverage_end_raw = float(np.max(projected))
+    coverage_start = float(min(max(coverage_start_raw, 0.0), total_length))
+    coverage_end = float(min(max(coverage_end_raw, 0.0), total_length))
     coverage_range = max(coverage_end - coverage_start, 0.0)
     ratio = coverage_range / total_length if total_length > 0 else 0.0
     ratio = float(min(max(ratio, 0.0), 1.0))
-    coverage_start = float(min(max(coverage_start, 0.0), total_length))
-    coverage_end = float(min(max(coverage_end, 0.0), total_length))
     max_offset = None
     if offsets.size:
         finite = offsets[np.isfinite(offsets)]
@@ -163,13 +163,12 @@ def _project_onto_polyline(
                 continue
             vec_to_point = point - seg_start
             t = np.dot(vec_to_point, seg_vec) / (seg_len**2)
-            if t < 0 or t > 1:
-                continue
-            nearest = seg_start + t * seg_vec
+            t_clamped = min(max(t, 0.0), 1.0)
+            nearest = seg_start + t_clamped * seg_vec
             offset = np.linalg.norm(point - nearest)
             if offset < best_offset:
                 best_offset = offset
-                best_distance = cumulative[i] + t * seg_len
+                best_distance = cumulative[i] + t_clamped * seg_len
         if not np.isfinite(best_offset):
             # Fallback to the closest vertex when projection lies outside both endpoints.
             dists = np.linalg.norm(polyline - point, axis=1)

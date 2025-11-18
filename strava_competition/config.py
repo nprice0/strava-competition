@@ -80,6 +80,28 @@ CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
 
 
 # ---------------------------------------------------------------------------
+# API capture / replay settings
+# ---------------------------------------------------------------------------
+# Enable writing Strava API responses to disk for offline replay. This should
+# only be used in trusted environments because payloads include personal data
+# such as activity names and potentially tokens.
+STRAVA_API_CAPTURE_ENABLED = _env_bool("STRAVA_API_CAPTURE_ENABLED", True)
+
+# Enable serving responses from disk instead of calling Strava. When enabled,
+# missing files result in a cache miss and a live request when capture is also
+# enabled; otherwise the code raises an exception.
+STRAVA_API_REPLAY_ENABLED = _env_bool("STRAVA_API_REPLAY_ENABLED", True)
+
+# Directory (absolute or relative) where captured responses are stored. The
+# recorder organises files into subfolders using the request signature hash.
+STRAVA_API_CAPTURE_DIR = os.getenv("STRAVA_API_CAPTURE_DIR", "strava_api_capture")
+
+# Overwrite an existing capture file when recording new data. Defaults to
+# False to keep the first successful response unless behaviour is explicitly
+# requested otherwise.
+STRAVA_API_CAPTURE_OVERWRITE = _env_bool("STRAVA_API_CAPTURE_OVERWRITE", False)
+
+# ---------------------------------------------------------------------------
 # Performance tuning
 # ---------------------------------------------------------------------------
 # Threads used per segment when fetching efforts in parallel.
@@ -215,6 +237,11 @@ MATCHING_ACTIVITY_MIN_DISTANCE_RATIO = _env_float(
 # Maximum number of activity streams to keep in the in-memory matcher cache.
 MATCHING_ACTIVITY_STREAM_CACHE_SIZE = _env_int(
     "MATCHING_ACTIVITY_STREAM_CACHE_SIZE", 64
+)
+
+# Maximum number of prepared activity tracks cached for reuse across matches.
+MATCHING_PREPARED_ACTIVITY_CACHE_SIZE = _env_int(
+    "MATCHING_PREPARED_ACTIVITY_CACHE_SIZE", 512
 )
 
 # Maximum number of runner activity windows cached during segment fallback matching.
