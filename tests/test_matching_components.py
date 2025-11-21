@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
-from typing import Iterator
+from hashlib import sha256
+import json
+from pathlib import Path
+from typing import Iterator, Optional
 
 import numpy as np
 import pytest
 
 from strava_competition.config import (
+    MATCHING_COVERAGE_THRESHOLD,
+    MATCHING_FRECHET_TOLERANCE_M,
+    MATCHING_MAX_OFFSET_M,
     MATCHING_MAX_RESAMPLED_POINTS,
     MATCHING_MAX_SIMPLIFIED_POINTS,
+    MATCHING_RESAMPLE_INTERVAL_M,
+    MATCHING_SIMPLIFICATION_TOLERANCE_M,
+    MATCHING_START_TOLERANCE_M,
+    STRAVA_API_CAPTURE_DIR,
 )
 from strava_competition.matching import (
     MatchResult,
@@ -19,6 +29,7 @@ from strava_competition.matching import (
     _plane_crossing_candidates,
     _refine_coverage_window,
     _select_end_crossing,
+    _select_timing_indices,
     match_activity_to_segment,
 )
 from strava_competition.matching.models import ActivityTrack, SegmentGeometry
@@ -42,6 +53,7 @@ from strava_competition.matching.validation import (
     compute_coverage,
 )
 from strava_competition.models import Runner
+from strava_competition.utils import json_dumps_sorted
 
 
 @pytest.fixture(autouse=True)
@@ -107,6 +119,144 @@ def _build_basic_activity(segment: SegmentGeometry) -> ActivityTrack:
         points=list(segment.points),
         timestamps_s=[0.0, 10.0, 20.0],
     )
+
+
+def _capture_path(signature_payload: dict) -> Path:
+    """Return the capture file path for a deterministic request payload."""
+
+    signature = sha256(json_dumps_sorted(signature_payload).encode("utf-8")).hexdigest()
+    base = Path(STRAVA_API_CAPTURE_DIR)
+    return base / signature[:2] / signature[2:4] / f"{signature}.json"
+
+
+def _load_capture_response(signature_payload: dict) -> Optional[dict]:
+    """Return recorded Strava API response payload, if available."""
+
+    path = _capture_path(signature_payload)
+    if not path.is_file():
+        return None
+    with path.open("r", encoding="utf-8") as handle:
+        record = json.load(handle)
+    return record.get("response")
+
+
+def _require_capture_response(signature_payload: dict) -> dict:
+    """Return capture payload or raise a helpful assertion when missing."""
+
+    payload = _load_capture_response(signature_payload)
+    if payload is None:
+        raise AssertionError(f"Missing capture file {_capture_path(signature_payload)}")
+    return payload
+
+
+_NEIL_PRICE_STRAVA_ID = "35599907"
+_NEIL_PRICE_SEGMENT_ID = 38_987_500
+_NEIL_PRICE_ACTIVITY_ID = 14_661_937_369
+_NEIL_PRICE_ELAPSED_S = 1893.0
+_NEIL_PRICE_START_INDEX = 2665
+_NEIL_PRICE_END_INDEX = 4550
+_NEIL_PRICE_PRIOR_ACTIVITY_ID = 14_471_169_094
+_NEIL_PRICE_PRIOR_ELAPSED_S = 2118.0
+
+
+def _load_neil_price_segment() -> SegmentGeometry:
+    """Return SS25-02 geometry using Neil Price's capture payload."""
+
+    segment_payload = _require_capture_response(
+        {
+            "method": "GET",
+            "url": f"https://www.strava.com/api/v3/segments/{_NEIL_PRICE_SEGMENT_ID}",
+            "identity": _NEIL_PRICE_STRAVA_ID,
+            "params": {},
+            "body": {},
+        }
+    )
+    polyline = (segment_payload.get("map") or {}).get("polyline")
+    if not polyline:
+        raise AssertionError("Segment capture missing polyline data")
+    metadata = {
+        "name": segment_payload.get("name"),
+        "raw": segment_payload,
+    }
+    return SegmentGeometry(
+        segment_id=_NEIL_PRICE_SEGMENT_ID,
+        points=[],
+        distance_m=float(segment_payload.get("distance", 0.0)),
+        polyline=polyline,
+        metadata=metadata,
+    )
+
+
+def _load_neil_price_activity_stream_by_id(activity_id: int) -> ActivityTrack:
+    """Return Neil Price's SS25-02 activity track for a specific activity."""
+
+    stream_payload = _require_capture_response(
+        {
+            "method": "GET",
+            "url": f"https://www.strava.com/api/v3/activities/{activity_id}/streams",
+            "identity": _NEIL_PRICE_STRAVA_ID,
+            "params": {
+                "keys": "latlng,time",
+                "key_by_type": "true",
+                "resolution": "high",
+                "series_type": "time",
+            },
+            "body": {},
+        }
+    )
+    latlng_stream = stream_payload.get("latlng") or {}
+    time_stream = stream_payload.get("time") or {}
+    latlng = latlng_stream.get("data")
+    timestamps = time_stream.get("data")
+    if not latlng or not timestamps or len(latlng) != len(timestamps):
+        raise AssertionError("Activity stream capture missing aligned samples")
+    points = [(float(lat), float(lon)) for lat, lon in latlng]
+    times = [float(value) for value in timestamps]
+    return ActivityTrack(
+        activity_id=activity_id,
+        points=points,
+        timestamps_s=times,
+        metadata={"source": "capture"},
+    )
+
+
+def _load_neil_price_activity_stream() -> ActivityTrack:
+    """Return Neil Price's SS25-02 activity track from capture streams."""
+
+    return _load_neil_price_activity_stream_by_id(_NEIL_PRICE_ACTIVITY_ID)
+
+
+def _load_neil_price_effort_for_activity(activity_id: int) -> dict:
+    """Return Strava's official SS25-02 effort entry for a specific activity."""
+
+    efforts_payload = _require_capture_response(
+        {
+            "method": "GET",
+            "url": "https://www.strava.com/api/v3/segment_efforts",
+            "identity": _NEIL_PRICE_STRAVA_ID,
+            "params": {
+                "segment_id": _NEIL_PRICE_SEGMENT_ID,
+                "start_date_local": "2025-05-08T00:00:00+00:00",
+                "end_date_local": "2025-06-02T00:00:00+00:00",
+                "per_page": 200,
+                "page": 1,
+            },
+            "body": {},
+        }
+    )
+    if not isinstance(efforts_payload, list):
+        raise AssertionError("Segment efforts capture returned unexpected payload")
+    for effort in efforts_payload:
+        activity = effort.get("activity") or {}
+        if int(activity.get("id", 0)) == activity_id:
+            return effort
+    raise AssertionError("Neil Price effort not found in captured payload")
+
+
+def _load_neil_price_effort_entry() -> dict:
+    """Return Strava's official effort entry for Neil Price on SS25-02."""
+
+    return _load_neil_price_effort_for_activity(_NEIL_PRICE_ACTIVITY_ID)
 
 
 def test_prepare_geometry_resamples_points(segment_geometry: SegmentGeometry) -> None:
@@ -363,6 +513,87 @@ def test_finish_gate_prefers_first_crossing_after_entry(
     assert estimate.elapsed_time_s < 90.0
 
 
+def test_select_timing_indices_prefers_first_finish() -> None:
+    """Timing refinement should favour the earliest crossing that reaches the finish."""
+
+    chunk_indices = np.array([10, 11, 12, 13, 14, 15, 40, 41, 42], dtype=int)
+    chunk_projections = np.array(
+        [0.0, 20.0, 40.0, 60.0, 80.0, 100.0, 10.0, 60.0, 102.0],
+        dtype=float,
+    )
+
+    entry_idx, exit_idx = _select_timing_indices(
+        chunk_indices,
+        chunk_projections,
+        raw_start=0.0,
+        raw_end=102.0,
+    )
+
+    assert entry_idx == 10
+    assert exit_idx == 15
+
+
+def test_select_timing_indices_honours_first_gate_entry() -> None:
+    """Entry selection should stick with the earliest near-start projection."""
+
+    chunk_indices = np.array([7, 8, 9, 10, 11, 12, 13], dtype=int)
+    chunk_projections = np.array(
+        [1.4, 1.6, 2.1, 0.0, 200.0, 400.0, 500.0],
+        dtype=float,
+    )
+
+    entry_idx, exit_idx = _select_timing_indices(
+        chunk_indices,
+        chunk_projections,
+        raw_start=0.0,
+        raw_end=500.0,
+    )
+
+    assert entry_idx == 7
+    assert exit_idx == 13
+
+
+def test_select_end_crossing_prefers_oriented_pair() -> None:
+    """Finish crossing selection should prioritise forward orientation."""
+
+    values = np.array([10.0, 4.5, -2.5, -0.3, 0.1], dtype=float)
+    candidates = _plane_crossing_candidates(values, min_span_m=0.2)
+    assert candidates  # sanity
+
+    selection = _select_end_crossing(values, candidates, offset=0)
+    assert selection == (1, 2)
+
+
+def test_select_end_crossing_allows_early_mismatch() -> None:
+    """Later oriented crossings should not displace an early near-plane finish."""
+
+    values = np.ones(1200, dtype=float) * 10.0
+    values[100] = -0.8
+    values[101] = 1.4
+    values[900] = 12.0
+    values[901] = -12.0
+    candidates = [(100, 101), (900, 901)]
+
+    selection = _select_end_crossing(values, candidates, offset=0)
+
+    assert selection == (100, 101)
+
+
+def test_select_end_crossing_skips_backtrack_when_oriented_close() -> None:
+    """Finish crossing should favour oriented sample pairs when costs stay low."""
+
+    values = np.ones(500, dtype=float) * 8.0
+    values[150] = -1.2
+    values[151] = 1.8
+    values[320] = 0.3
+    values[321] = -0.4
+    candidates = [(150, 151), (320, 321)]
+
+    selection = _select_end_crossing(values, candidates, offset=0)
+
+    assert selection == (320, 321)
+
+
 def test_gate_window_prefers_first_lap_after_loop() -> None:
     """Gate trimming should lock to the first lap even if the runner loops."""
 
@@ -441,6 +672,22 @@ def test_finish_gate_prioritises_expected_orientation() -> None:
     assert selected == (1, 2)
 
 
+def test_finish_gate_uses_near_plane_fallback() -> None:
+    """Finish gate selection should fall back to the closest crossing."""
+
+    values = np.array([-25.0, -10.0, -5.0, -1.2, 0.6, 2.0, 8.0], dtype=float)
+    required_span = 3.0
+    offset = 0
+
+    candidates = _plane_crossing_candidates(values, required_span)
+    # The broad span candidate remains first; the near-plane option is appended.
+    assert candidates == [(2, 6), (3, 4)]
+
+    selected = _select_end_crossing(values, candidates, offset)
+
+    assert selected == (3, 4)
+
+
 def test_coverage_trims_offsets_outside_gate_window(
     segment_geometry: SegmentGeometry,
 ) -> None:
@@ -503,6 +750,138 @@ def test_refine_window_reverts_on_collapsed_span() -> None:
     )
 
     assert refined is None
+
+
+def test_ss25_02_neil_price_elapsed_time() -> None:
+    """Neil Price's SS25-02 effort should match Strava's elapsed time."""
+
+    segment = _load_neil_price_segment()
+    activity = _load_neil_price_activity_stream()
+    effort_entry = _load_neil_price_effort_entry()
+
+    prepared_segment = prepare_geometry(
+        segment,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+    prepared_activity = prepare_activity(
+        activity,
+        transformer=prepared_segment.transformer,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+
+    (
+        coverage,
+        diag,
+        timing_bounds,
+        timing_indices,
+        gate_hints,
+    ) = _compute_coverage_diagnostics(
+        prepared_activity,
+        prepared_segment,
+        max_offset_threshold=MATCHING_MAX_OFFSET_M,
+        start_tolerance_m=MATCHING_START_TOLERANCE_M,
+    )
+
+    assert coverage.coverage_bounds is not None
+    assert coverage.projections is not None
+    assert diag.get("crosses_start") is True
+    assert diag.get("crosses_end") is True
+
+    assert timing_indices is not None
+    entry_idx, exit_idx = timing_indices
+    assert entry_idx < exit_idx
+    gate_slice = diag.get("gate_slice_indices")
+    assert gate_slice is not None
+    gate_start, gate_end = gate_slice
+    assert gate_start <= entry_idx <= gate_end
+    assert gate_start <= exit_idx <= gate_end
+
+    timing_range = timing_bounds or coverage.coverage_bounds
+    assert timing_range is not None
+    estimate = estimate_segment_time(
+        prepared_activity,
+        prepared_segment,
+        timing_range,
+        projections=coverage.projections,
+        sample_indices=timing_indices,
+        gate_hints=gate_hints,
+    )
+
+    expected_elapsed = float(effort_entry.get("elapsed_time", _NEIL_PRICE_ELAPSED_S))
+    assert estimate.elapsed_time_s == pytest.approx(expected_elapsed, abs=0.5)
+    assert estimate.entry_index is not None
+    assert estimate.exit_index is not None
+    assert abs(estimate.entry_index - _NEIL_PRICE_START_INDEX) <= 1
+    assert abs(estimate.exit_index - _NEIL_PRICE_END_INDEX) <= 1
+
+    official_start_time = activity.timestamps_s[_NEIL_PRICE_START_INDEX]
+    official_end_time = activity.timestamps_s[_NEIL_PRICE_END_INDEX]
+    assert estimate.entry_time_s == pytest.approx(official_start_time, abs=0.2)
+    assert estimate.exit_time_s == pytest.approx(official_end_time, abs=0.2)
+
+
+def test_ss25_02_neil_price_prior_elapsed_time() -> None:
+    """Neil Price's earlier SS25-02 effort should keep Strava's elapsed time."""
+
+    segment = _load_neil_price_segment()
+    activity = _load_neil_price_activity_stream_by_id(_NEIL_PRICE_PRIOR_ACTIVITY_ID)
+    effort_entry = _load_neil_price_effort_for_activity(_NEIL_PRICE_PRIOR_ACTIVITY_ID)
+
+    prepared_segment = prepare_geometry(
+        segment,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+    prepared_activity = prepare_activity(
+        activity,
+        transformer=prepared_segment.transformer,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+
+    (
+        coverage,
+        diag,
+        timing_bounds,
+        timing_indices,
+        gate_hints,
+    ) = _compute_coverage_diagnostics(
+        prepared_activity,
+        prepared_segment,
+        max_offset_threshold=MATCHING_MAX_OFFSET_M,
+        start_tolerance_m=MATCHING_START_TOLERANCE_M,
+    )
+
+    assert diag.get("crosses_start") is True
+    assert diag.get("crosses_end") is True
+    timing_range = timing_bounds or coverage.coverage_bounds
+    assert timing_range is not None
+    assert timing_indices is not None
+    entry_idx, exit_idx = timing_indices
+    assert entry_idx < exit_idx
+
+    estimate = estimate_segment_time(
+        prepared_activity,
+        prepared_segment,
+        timing_range,
+        projections=coverage.projections,
+        sample_indices=timing_indices,
+        gate_hints=gate_hints,
+    )
+
+    expected_elapsed = float(
+        effort_entry.get("elapsed_time", _NEIL_PRICE_PRIOR_ELAPSED_S)
+    )
+    assert estimate.elapsed_time_s == pytest.approx(expected_elapsed, abs=0.5)
+    assert estimate.entry_time_s is not None
+    assert estimate.exit_time_s is not None
+    assert estimate.exit_time_s - estimate.entry_time_s == pytest.approx(
+        expected_elapsed,
+        abs=0.5,
+    )
+    assert estimate.entry_time_s <= 60.0
 
 
 def test_match_activity_to_segment_success(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -619,7 +998,7 @@ def test_matcher_ignores_post_finish_diversion(
 
 
 def test_gate_clipping_uses_full_activity_context() -> None:
-    """Gate clipping should fall back to the full resampled track when needed."""
+    """Gate clipping should trim using the full resampled track when available."""
 
     segment_points = np.array([[0.0, 0.0], [50.0, 0.0], [100.0, 0.0]])
     full_activity = np.array(
@@ -641,16 +1020,17 @@ def test_gate_clipping_uses_full_activity_context() -> None:
         start_tolerance_m=60.0,
         full_activity_points=full_activity,
     )
-    assert clipped.shape[0] == trimmed_activity.shape[0]
-    assert np.allclose(clipped, trimmed_activity)
-    assert clipped[-1, 0] == pytest.approx(110.0)
+    assert clipped.shape[0] == 2
+    assert np.allclose(clipped, trimmed_activity[:2])
+    assert clipped[-1, 0] == pytest.approx(105.0)
 
     fallback = _clip_activity_to_gate_window(
         trimmed_activity,
         segment_points,
         start_tolerance_m=60.0,
     )
-    assert fallback.shape[0] == trimmed_activity.shape[0]
+    assert fallback.shape[0] == 2
+    assert np.allclose(fallback, trimmed_activity[:2])
 
 
 def test_match_activity_to_segment_direction_failure(

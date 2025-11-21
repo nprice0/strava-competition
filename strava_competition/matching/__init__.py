@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
-from typing import Any, Dict, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 import numpy as np
 
@@ -39,6 +39,12 @@ from .timing import (
     estimate_segment_time,
 )
 from .validation import CoverageResult, check_direction, compute_coverage
+
+
+# Fallback tuning for gate-clipped tracks that otherwise fail similarity thresholds.
+_GATE_FALLBACK_MIN_POINTS = 200
+_GATE_FALLBACK_MAX_OFFSET_M = 25.0
+_GATE_FALLBACK_FRECHET_MULTIPLIER = 12.0
 
 
 @dataclass(slots=True)
@@ -170,23 +176,41 @@ def _plane_crossing_candidates(
     classifications[values >= min_span_m] = 1
     classifications[values <= -min_span_m] = -1
     signed_indices = np.nonzero(classifications != 0)[0]
-    if signed_indices.size < 2:
-        return []
 
     candidates: list[tuple[int, int]] = []
-    prev_idx = int(signed_indices[0])
-    prev_state = int(classifications[prev_idx])
-    for idx in map(int, signed_indices[1:]):
-        curr_state = int(classifications[idx])
-        if curr_state == prev_state:
+    if signed_indices.size >= 2:
+        prev_idx = int(signed_indices[0])
+        prev_state = int(classifications[prev_idx])
+        for idx in map(int, signed_indices[1:]):
+            curr_state = int(classifications[idx])
+            if curr_state == prev_state:
+                prev_idx = idx
+                continue
+            before_idx = min(prev_idx, idx)
+            after_idx = max(prev_idx, idx)
+            candidates.append((before_idx, after_idx))
             prev_idx = idx
+            prev_state = curr_state
+
+    fallback_pairs: list[tuple[int, int]] = []
+    for idx in range(values.shape[0] - 1):
+        lhs = float(values[idx])
+        rhs = float(values[idx + 1])
+        if not (np.isfinite(lhs) and np.isfinite(rhs)):
             continue
-        before_idx = min(prev_idx, idx)
-        after_idx = max(prev_idx, idx)
-        candidates.append((before_idx, after_idx))
-        prev_idx = idx
-        prev_state = curr_state
-    return candidates
+        if lhs == rhs:
+            continue
+        if lhs <= 0.0 <= rhs or lhs >= 0.0 >= rhs:
+            fallback_pairs.append((idx, idx + 1))
+
+    if candidates:
+        # Ensure any near-plane options participate in downstream ranking.
+        for pair in fallback_pairs:
+            if pair not in candidates:
+                candidates.append(pair)
+        return candidates
+
+    return fallback_pairs
 
 
 def _plane_crossing_indices(
@@ -205,6 +229,61 @@ def _plane_crossing_indices(
 def _has_plane_crossing(values: np.ndarray, min_span_m: float) -> bool:
     crossed, _, _ = _plane_crossing_indices(values, min_span_m)
     return crossed
+
+
+def _start_gate_values(
+    activity_points: np.ndarray,
+    segment_points: np.ndarray,
+) -> Optional[np.ndarray]:
+    """Return signed distances to the start gate plane for each activity sample."""
+
+    if segment_points.shape[0] < 2:
+        return None
+
+    start_vec = segment_points[1] - segment_points[0]
+    start_norm = np.linalg.norm(start_vec)
+    if start_norm <= 0.0:
+        return None
+
+    start_unit = start_vec / start_norm
+    return (activity_points - segment_points[0]) @ start_unit
+
+
+def _start_orientation_matches(
+    start_values: np.ndarray,
+    before_idx: int,
+    after_idx: int,
+) -> bool:
+    """Return True when the candidate crosses the plane in the forward direction."""
+
+    before_val = float(start_values[before_idx])
+    after_val = float(start_values[after_idx])
+    return before_val <= 0.0 <= after_val
+
+
+def _build_start_hint_from_candidate(
+    start_values: np.ndarray,
+    candidate: tuple[int, int],
+    required_span: float,
+) -> tuple[int, GateCrossingHint]:
+    """Return entry index and hint derived from a start gate candidate pair."""
+
+    before_idx, after_idx = candidate
+    before_idx, after_idx = _refine_crossing_indices(
+        start_values,
+        before_idx,
+        after_idx,
+        required_span,
+        prefer_start=True,
+    )
+    entry_idx = after_idx
+    hint = GateCrossingHint(
+        before_index=before_idx,
+        after_index=after_idx,
+        before_value=float(start_values[before_idx]),
+        after_value=float(start_values[after_idx]),
+    )
+    return entry_idx, hint
 
 
 def _select_start_crossing(
@@ -250,11 +329,36 @@ def _select_end_crossing(
             )
         )
 
-    best = min(
+    earliest = min(
         records,
-        key=lambda item: (int(not item[5]), item[4], item[3]),
+        key=lambda item: (item[3], item[4]),
     )
-    return best[0], best[1]
+    oriented_candidates = [item for item in records if item[5]]
+    if not oriented_candidates:
+        return earliest[0], earliest[1]
+
+    best_oriented = min(
+        oriented_candidates,
+        key=lambda item: (
+            item[4],
+            item[3],
+        ),
+    )
+
+    if earliest[5]:
+        return earliest[0], earliest[1]
+
+    # Allow an orientation-mismatch only when the best oriented option is
+    # significantly later and much less aligned with the gate plane.
+    oriented_gap = best_oriented[3] - earliest[3]
+    min_gap = 120
+    if oriented_gap > min_gap:
+        oriented_cost = best_oriented[4]
+        mismatch_limit = max(3.0, oriented_cost * 0.5)
+        if earliest[4] <= mismatch_limit and oriented_cost >= 10.0:
+            return earliest[0], earliest[1]
+
+    return best_oriented[0], best_oriented[1]
 
 
 def _clamp_timing_indices(
@@ -318,40 +422,67 @@ def _compute_start_hint(
     activity_points: np.ndarray,
     segment_points: np.ndarray,
     required_span: float,
+    *,
+    search_start_idx: Optional[int] = None,
 ) -> tuple[bool, Optional[int], Optional[GateCrossingHint]]:
     """Return start gate crossing status, entry index and hint."""
 
-    start_vec = segment_points[1] - segment_points[0]
-    start_norm = np.linalg.norm(start_vec)
-    if start_norm <= 0.0:
+    start_values = _start_gate_values(activity_points, segment_points)
+    if start_values is None:
         return False, None, None
-
-    start_unit = start_vec / start_norm
-    start_values = (activity_points - segment_points[0]) @ start_unit
     start_candidates = _plane_crossing_candidates(start_values, required_span)
+    if search_start_idx is not None:
+        start_candidates = [
+            candidate
+            for candidate in start_candidates
+            if candidate[1] >= max(search_start_idx, 0)
+        ]
     if not start_candidates:
         return False, None, None
 
     selected = _select_start_crossing(start_values, start_candidates)
     if selected is None:
         return False, None, None
-
-    before_idx, after_idx = selected
-    before_idx, after_idx = _refine_crossing_indices(
+    entry_idx, hint = _build_start_hint_from_candidate(
         start_values,
-        before_idx,
-        after_idx,
+        selected,
         required_span,
-        prefer_start=True,
-    )
-    entry_idx = after_idx
-    hint = GateCrossingHint(
-        before_index=before_idx,
-        after_index=after_idx,
-        before_value=float(start_values[before_idx]),
-        after_value=float(start_values[after_idx]),
     )
     return True, entry_idx, hint
+
+
+def _segment_point_and_direction(
+    segment_points: np.ndarray,
+    distance_m: float,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Return a point and backward-facing direction at ``distance_m`` along the polyline."""
+
+    if segment_points.shape[0] < 2:
+        raise ValueError("segment_points must contain at least two samples")
+
+    cumulative = _cumulative_distances_np(segment_points)
+    total_length = float(cumulative[-1]) if cumulative.size else 0.0
+    if total_length <= 0.0:
+        return segment_points[-1], segment_points[-2] - segment_points[-1]
+
+    clamped = float(np.clip(distance_m, 0.0, total_length))
+    upper_idx = int(np.searchsorted(cumulative, clamped, side="right"))
+    idx = max(0, min(upper_idx - 1, segment_points.shape[0] - 2))
+
+    span = float(cumulative[idx + 1] - cumulative[idx])
+    seg_start = segment_points[idx]
+    seg_end = segment_points[idx + 1]
+    if span <= 0.0:
+        point = seg_start.astype(float, copy=True)
+    else:
+        ratio = (clamped - float(cumulative[idx])) / span
+        point = seg_start + (seg_end - seg_start) * ratio
+
+    direction = seg_start - seg_end
+    if np.linalg.norm(direction) <= 0.0:
+        fallback_idx = max(0, min(idx - 1, segment_points.shape[0] - 2))
+        direction = segment_points[fallback_idx] - segment_points[fallback_idx + 1]
+    return point, direction
 
 
 def _compute_end_hint(
@@ -359,16 +490,22 @@ def _compute_end_hint(
     segment_points: np.ndarray,
     required_span: float,
     start_entry_idx: Optional[int],
+    *,
+    finish_point: Optional[np.ndarray] = None,
+    finish_direction: Optional[np.ndarray] = None,
 ) -> tuple[bool, Optional[int], Optional[GateCrossingHint]]:
     """Return finish gate crossing status, exit index and hint."""
 
-    end_vec = segment_points[-2] - segment_points[-1]
-    end_norm = np.linalg.norm(end_vec)
+    if finish_point is None or finish_direction is None:
+        finish_point = segment_points[-1]
+        finish_direction = segment_points[-2] - segment_points[-1]
+
+    end_norm = np.linalg.norm(finish_direction)
     if end_norm <= 0.0:
         return False, None, None
 
-    end_unit = end_vec / end_norm
-    end_values = (activity_points - segment_points[-1]) @ end_unit
+    end_unit = finish_direction / end_norm
+    end_values = (activity_points - finish_point) @ end_unit
     finish_search_start = start_entry_idx if start_entry_idx is not None else 0
     sliced_end_values = end_values[finish_search_start:]
     if sliced_end_values.size < 2:
@@ -408,6 +545,10 @@ def _gate_crossings(
     activity_points: np.ndarray,
     segment_points: np.ndarray,
     start_tolerance_m: float,
+    *,
+    finish_distance_m: Optional[float] = None,
+    timestamps: Optional[np.ndarray] = None,
+    projections: Optional[np.ndarray] = None,
 ) -> tuple[bool, bool, Optional[int], Optional[int], GateTimingHints]:
     """Determine whether the activity crosses the synthetic start and finish planes."""
 
@@ -415,25 +556,258 @@ def _gate_crossings(
     if activity_points.shape[0] < 2 or segment_points.shape[0] < 2:
         return False, False, None, None, GateTimingHints()
 
-    crosses_start, start_entry_idx, start_hint = _compute_start_hint(
-        activity_points,
-        segment_points,
+    finish_point: Optional[np.ndarray] = None
+    finish_direction: Optional[np.ndarray] = None
+    if finish_distance_m is not None and np.isfinite(finish_distance_m):
+        try:
+            finish_point, finish_direction = _segment_point_and_direction(
+                segment_points,
+                float(finish_distance_m),
+            )
+        except Exception:  # noqa: BLE001 - fallback to default behaviour
+            finish_point = None
+            finish_direction = None
+
+    start_values = _start_gate_values(activity_points, segment_points)
+    if start_values is None:
+        return False, False, None, None, GateTimingHints()
+
+    start_candidates = _plane_crossing_candidates(start_values, required_span)
+    selected_start = _select_start_crossing(start_values, start_candidates)
+    if selected_start is None:
+        return False, False, None, None, GateTimingHints()
+
+    start_entry_idx, start_hint = _build_start_hint_from_candidate(
+        start_values,
+        selected_start,
         required_span,
     )
+    crosses_start = True
+
     crosses_end, end_exit_idx, end_hint = _compute_end_hint(
         activity_points,
         segment_points,
         required_span,
         start_entry_idx,
+        finish_point=finish_point,
+        finish_direction=finish_direction,
     )
+
+    gate_hints = GateTimingHints(start=start_hint, end=end_hint)
+
+    if timestamps is not None and start_candidates:
+        best_window = _select_fastest_gate_window(
+            activity_points,
+            segment_points,
+            start_values,
+            start_candidates,
+            required_span,
+            timestamps,
+            projections,
+            finish_point=finish_point,
+            finish_direction=finish_direction,
+            finish_distance_m=finish_distance_m,
+        )
+        if best_window is not None:
+            (
+                start_entry_idx,
+                end_exit_idx,
+                best_start_hint,
+                best_end_hint,
+            ) = best_window
+            gate_hints = GateTimingHints(start=best_start_hint, end=best_end_hint)
+            crosses_start = True
+            crosses_end = True
 
     return (
         crosses_start,
         crosses_end,
         start_entry_idx,
         end_exit_idx,
-        GateTimingHints(start=start_hint, end=end_hint),
+        gate_hints,
     )
+
+
+def _candidate_elapsed_seconds(
+    timestamps: np.ndarray,
+    start_hint: GateCrossingHint,
+    end_hint: GateCrossingHint,
+) -> Optional[float]:
+    """Return approximate elapsed seconds between two gate hints."""
+
+    if timestamps.size == 0:
+        return None
+
+    start_idx = int(min(max(start_hint.after_index, 0), timestamps.shape[0] - 1))
+    end_idx = int(min(max(end_hint.before_index, 0), timestamps.shape[0] - 1))
+    if end_idx <= start_idx:
+        return None
+
+    return float(timestamps[end_idx] - timestamps[start_idx])
+
+
+def _candidate_span_ratio(
+    projections: Optional[np.ndarray],
+    entry_idx: int,
+    exit_idx: int,
+    finish_distance_m: Optional[float],
+) -> Optional[float]:
+    """Return the projection span ratio covered between two indices."""
+
+    if projections is None or projections.size == 0:
+        return None
+
+    point_count = projections.shape[0]
+    if point_count == 0:
+        return None
+
+    start = max(0, min(entry_idx, point_count - 1))
+    stop = max(start, min(exit_idx, point_count - 1))
+    if stop - start < 2:
+        return None
+
+    window = projections[start : stop + 1]
+    finite = window[np.isfinite(window)]
+    if finite.size < 2:
+        return None
+
+    span = float(np.max(finite) - np.min(finite))
+    if span <= 0.0:
+        return None
+
+    target = finish_distance_m
+    if target is None or not np.isfinite(target) or target <= 0.0:
+        target = span
+    if target <= 0.0:
+        return None
+    return min(max(span / target, 0.0), 1.5)
+
+
+def _score_gate_candidate(
+    activity_points: np.ndarray,
+    segment_points: np.ndarray,
+    required_span: float,
+    timestamps: np.ndarray,
+    projections: Optional[np.ndarray],
+    finish_point: Optional[np.ndarray],
+    finish_direction: Optional[np.ndarray],
+    finish_distance_m: Optional[float],
+    start_values: np.ndarray,
+    candidate: tuple[int, int],
+) -> Optional[tuple[int, float, float, int, int, GateCrossingHint, GateCrossingHint]]:
+    """Return a scored record for a single gate candidate."""
+
+    entry_idx, start_hint = _build_start_hint_from_candidate(
+        start_values,
+        candidate,
+        required_span,
+    )
+    crosses_end, exit_idx, end_hint = _compute_end_hint(
+        activity_points,
+        segment_points,
+        required_span,
+        entry_idx,
+        finish_point=finish_point,
+        finish_direction=finish_direction,
+    )
+    if not crosses_end or exit_idx is None or end_hint is None:
+        return None
+
+    elapsed = _candidate_elapsed_seconds(timestamps, start_hint, end_hint)
+    if elapsed is None or elapsed <= 0.0:
+        return None
+
+    span_ratio = _candidate_span_ratio(
+        projections,
+        entry_idx,
+        exit_idx,
+        finish_distance_m,
+    )
+    if span_ratio is not None and span_ratio < 0.65:
+        return None
+
+    orientation_penalty = (
+        0
+        if _start_orientation_matches(
+            start_values,
+            candidate[0],
+            candidate[1],
+        )
+        else 1
+    )
+    span_score = -span_ratio if span_ratio is not None else 0.0
+    return (
+        orientation_penalty,
+        elapsed,
+        span_score,
+        entry_idx,
+        exit_idx,
+        start_hint,
+        end_hint,
+    )
+
+
+def _select_fastest_gate_window(
+    activity_points: np.ndarray,
+    segment_points: np.ndarray,
+    start_values: np.ndarray,
+    start_candidates: list[tuple[int, int]],
+    required_span: float,
+    timestamps: np.ndarray,
+    projections: Optional[np.ndarray],
+    *,
+    finish_point: Optional[np.ndarray],
+    finish_direction: Optional[np.ndarray],
+    finish_distance_m: Optional[float],
+) -> Optional[tuple[int, int, GateCrossingHint, GateCrossingHint]]:
+    """Return the start/finish pair representing the fastest complete lap."""
+
+    if timestamps.size < 2 or not start_candidates:
+        return None
+
+    scored: list[
+        tuple[int, float, float, int, int, GateCrossingHint, GateCrossingHint]
+    ] = []
+    for candidate in start_candidates:
+        record = _score_gate_candidate(
+            activity_points,
+            segment_points,
+            required_span,
+            timestamps,
+            projections,
+            finish_point,
+            finish_direction,
+            finish_distance_m,
+            start_values,
+            candidate,
+        )
+        if record is not None:
+            scored.append(record)
+
+    if not scored:
+        return None
+
+    scored.sort(key=lambda item: (item[0], item[1], item[2], item[3]))
+    best = scored[0]
+    return best[3], best[4], best[5], best[6]
+
+
+def _resolve_gate_context(
+    activity_points: np.ndarray,
+    full_activity_points: Optional[np.ndarray],
+) -> tuple[np.ndarray, np.ndarray, bool]:
+    """Return the gate clipping context and matching indices."""
+
+    if full_activity_points is None or full_activity_points.shape[0] < 2:
+        indices = np.arange(activity_points.shape[0], dtype=int)
+        return activity_points, indices, False
+
+    subset_indices = _map_subset_indices(activity_points, full_activity_points)
+    if subset_indices is None or subset_indices.shape[0] != activity_points.shape[0]:
+        indices = np.arange(activity_points.shape[0], dtype=int)
+        return activity_points, indices, False
+
+    return full_activity_points, subset_indices, True
 
 
 def _prepare_refined_inputs(
@@ -529,17 +903,109 @@ def _max_offset_within_slice(
     return _max_offset_value(subset)
 
 
+def _prune_gate_hints(
+    hints: GateTimingHints,
+    timestamps: np.ndarray,
+    *,
+    entry_idx: Optional[int],
+    exit_idx: Optional[int],
+    max_start_lead_s: float = 180.0,
+    max_start_lag_s: float = 60.0,
+    max_finish_lead_s: float = 180.0,
+    max_finish_lag_s: float = 600.0,
+) -> GateTimingHints:
+    """Return gate hints with timestamps far from the refined window removed."""
+
+    if timestamps.size == 0:
+        return hints
+
+    def _timestamp_or_none(index: int) -> Optional[float]:
+        if index < 0 or index >= timestamps.shape[0]:
+            return None
+        return float(timestamps[index])
+
+    def _prune_single_hint(
+        hint: Optional[GateCrossingHint],
+        target_time: Optional[float],
+        index_getter: Callable[[GateCrossingHint], int],
+        max_lead: float,
+        max_lag: float,
+    ) -> Optional[GateCrossingHint]:
+        if hint is None or target_time is None:
+            return hint
+        hint_time = _timestamp_or_none(int(index_getter(hint)))
+        if hint_time is None:
+            return None
+        delta = target_time - hint_time
+        if delta > max_lead or delta < -max_lag:
+            return None
+        return hint
+
+    start_time = _timestamp_or_none(int(entry_idx)) if entry_idx is not None else None
+    end_time = _timestamp_or_none(int(exit_idx)) if exit_idx is not None else None
+
+    start_hint = _prune_single_hint(
+        hints.start,
+        start_time,
+        lambda hint: hint.after_index,
+        max_start_lead_s,
+        max_start_lag_s,
+    )
+    end_hint = _prune_single_hint(
+        hints.end,
+        end_time,
+        lambda hint: hint.before_index,
+        max_finish_lead_s,
+        max_finish_lag_s,
+    )
+
+    return GateTimingHints(start=start_hint, end=end_hint)
+
+
+def _restore_start_hint_from_refined_entry(
+    hints: GateTimingHints,
+    activity_points: np.ndarray,
+    segment_points: np.ndarray,
+    refined_entry_idx: Optional[int],
+    required_span: float,
+    current_start_idx: Optional[int],
+) -> Tuple[GateTimingHints, Optional[int]]:
+    """Recreate a start hint near the refined entry when the original hint was pruned."""
+
+    if hints.start is not None or refined_entry_idx is None:
+        return hints, current_start_idx
+
+    search_idx = max(int(refined_entry_idx) - 2, 0)
+    start_crossed, entry_idx, new_hint = _compute_start_hint(
+        activity_points,
+        segment_points,
+        required_span,
+        search_start_idx=search_idx,
+    )
+    if not start_crossed or entry_idx is None or new_hint is None:
+        return hints, current_start_idx
+
+    return GateTimingHints(start=new_hint, end=hints.end), entry_idx
+
+
 def _apply_gate_indices(
     start_entry_idx: Optional[int],
     end_exit_idx: Optional[int],
     gate_hints: GateTimingHints,
+    *,
+    fallback_start: Optional[int] = None,
+    fallback_end: Optional[int] = None,
 ) -> tuple[Optional[int], Optional[int]]:
     """Return gate indices adjusted with explicit hint indices when present."""
 
     if gate_hints.start is not None:
         start_entry_idx = gate_hints.start.after_index
+    elif fallback_start is not None:
+        start_entry_idx = fallback_start
     if gate_hints.end is not None:
         end_exit_idx = gate_hints.end.before_index
+    elif fallback_end is not None:
+        end_exit_idx = fallback_end
     return start_entry_idx, end_exit_idx
 
 
@@ -609,11 +1075,63 @@ def _build_coverage_diag(
     return diag
 
 
+def _entry_position_near_start(
+    projections: np.ndarray,
+    finite_indices: np.ndarray,
+    finite_values: np.ndarray,
+    lower_bound: float,
+    span: float,
+) -> int:
+    """Return the earliest finite position whose projection hugs the lower bound."""
+
+    if finite_indices.size == 0:
+        return 0
+
+    entry_band = max(3.0, min(span * 0.005, 20.0))
+    for pos in map(int, finite_indices):
+        value = projections[pos]
+        if not np.isfinite(value):
+            continue
+        if value - lower_bound <= entry_band:
+            return pos
+    # Fall back to the absolute minimum when no near-start projections exist.
+    return int(finite_indices[np.argmin(finite_values)])
+
+
+def _refined_exit_index(
+    chunk_indices: np.ndarray,
+    projections: np.ndarray,
+    entry_pos: int,
+    entry_idx: int,
+    raw_end: float,
+    span: float,
+    initial_exit_idx: int,
+) -> int:
+    """Return an exit index aligned with the first projection that reaches the finish."""
+
+    tolerance = max(2.0, span * 0.02)
+    target = float(raw_end) - tolerance
+    exit_idx = initial_exit_idx
+
+    for pos in range(entry_pos, chunk_indices.shape[0]):
+        value = projections[pos]
+        if not np.isfinite(value):
+            continue
+        if value >= target:
+            candidate_idx = int(chunk_indices[pos])
+            if candidate_idx > entry_idx:
+                return candidate_idx
+
+    return exit_idx
+
+
 def _select_timing_indices(
     chunk_indices: np.ndarray,
     chunk_projections: np.ndarray,
+    raw_start: float,
+    raw_end: float,
 ) -> tuple[int, int]:
-    """Return indices of the earliest and latest on-route samples."""
+    """Return entry index and first finish crossing matching the coverage span."""
 
     if chunk_indices.size < 2:
         return 0, 0
@@ -628,11 +1146,30 @@ def _select_timing_indices(
 
     finite_indices = np.nonzero(finite_mask)[0]
     finite_values = projections[finite_mask]
-    entry_pos = int(finite_indices[np.argmin(finite_values)])
-    exit_pos = int(finite_indices[np.argmax(finite_values)])
+    span = max(float(raw_end) - float(raw_start), 0.0)
+    lower_bound = float(raw_start)
 
+    entry_pos = _entry_position_near_start(
+        projections,
+        finite_indices,
+        finite_values,
+        lower_bound,
+        span,
+    )
     entry_idx = int(chunk_indices[entry_pos])
-    exit_idx = int(chunk_indices[exit_pos])
+
+    exit_pos = int(finite_indices[np.argmax(finite_values)])
+    initial_exit_idx = int(chunk_indices[exit_pos])
+    exit_idx = _refined_exit_index(
+        chunk_indices,
+        projections,
+        entry_pos,
+        entry_idx,
+        raw_end,
+        span,
+        initial_exit_idx,
+    )
+
     if exit_idx <= entry_idx:
         # When projections wrap around the segment start, fall back to the
         # chronological slice to keep timing indices strictly increasing.
@@ -1088,19 +1625,10 @@ def _clip_activity_to_gate_window(
     if activity_points.shape[0] < 2 or segment_points.shape[0] < 2:
         return activity_points
 
-    gate_context = full_activity_points
-    subset_indices: Optional[np.ndarray] = None
-    if gate_context is not None and gate_context.shape[0] >= 2:
-        subset_indices = _map_subset_indices(activity_points, gate_context)
-        if (
-            subset_indices is None
-            or subset_indices.shape[0] != activity_points.shape[0]
-        ):
-            gate_context = None
-            subset_indices = None
-    if gate_context is None:
-        gate_context = activity_points
-        subset_indices = np.arange(activity_points.shape[0], dtype=int)
+    gate_context, subset_indices, used_full_context = _resolve_gate_context(
+        activity_points,
+        full_activity_points,
+    )
 
     crossings = _gate_crossings(gate_context, segment_points, start_tolerance_m)
     (
@@ -1118,6 +1646,12 @@ def _clip_activity_to_gate_window(
         gate_hints.start,
     )
     if start_idx is None:
+        if full_activity_points is not None and gate_context is not activity_points:
+            return _clip_activity_to_gate_window(
+                activity_points,
+                segment_points,
+                start_tolerance_m,
+            )
         return activity_points
     end_idx = _resolve_gate_end_index(
         subset_indices,
@@ -1125,9 +1659,19 @@ def _clip_activity_to_gate_window(
         end_exit_idx,
         gate_hints.end,
     )
-    if end_idx is None or end_idx <= start_idx:
-        return activity_points
-    if start_idx == 0 and end_idx == activity_points.shape[0] - 1:
+    invalid_window = (
+        start_idx is None
+        or end_idx is None
+        or end_idx <= start_idx
+        or (start_idx == 0 and end_idx == activity_points.shape[0] - 1)
+    )
+    if invalid_window:
+        if used_full_context:
+            return _clip_activity_to_gate_window(
+                activity_points,
+                segment_points,
+                start_tolerance_m,
+            )
         return activity_points
 
     clipped = activity_points[start_idx : end_idx + 1]
@@ -1271,7 +1815,12 @@ def _refine_coverage_window(
     if mean_stride > max_stride:
         return None
 
-    entry_idx, exit_idx = _select_timing_indices(chunk_indices, chunk_proj)
+    entry_idx, exit_idx = _select_timing_indices(
+        chunk_indices,
+        chunk_proj,
+        raw_start,
+        raw_end,
+    )
     if entry_idx == 0 and exit_idx == 0:
         return None
 
@@ -1312,8 +1861,13 @@ def _compute_coverage_diagnostics(
         prepared_activity.metric_points,
         prepared_segment.resampled_points,
     )
+    timestamps = np.asarray(prepared_activity.activity.timestamps_s, dtype=float)
     raw_bounds = coverage.coverage_bounds
     raw_max_offset = coverage.max_offset_m
+    finish_distance = None
+    if isinstance(raw_bounds, tuple) and len(raw_bounds) == 2:
+        finish_distance = raw_bounds[1]
+    required_span = min(3.0, max(0.5, start_tolerance_m * 0.02))
     (
         crosses_start,
         crosses_end,
@@ -1324,11 +1878,9 @@ def _compute_coverage_diagnostics(
         prepared_activity.metric_points,
         prepared_segment.resampled_points,
         start_tolerance_m,
-    )
-    start_entry_idx, end_exit_idx = _apply_gate_indices(
-        start_entry_idx,
-        end_exit_idx,
-        gate_hints,
+        finish_distance_m=finish_distance,
+        timestamps=timestamps,
+        projections=coverage.projections,
     )
 
     offsets = getattr(coverage, "offsets", None)
@@ -1349,17 +1901,52 @@ def _compute_coverage_diagnostics(
     )
     timing_bounds: Optional[Tuple[float, float]] = raw_bounds
     timing_indices: Optional[Tuple[int, int]] = None
+    refined_entry_idx: Optional[int] = None
+    refined_exit_idx: Optional[int] = None
     if refined is not None:
         coverage.coverage_bounds = refined.expanded_bounds
         coverage.coverage_ratio = refined.ratio
         coverage.max_offset_m = refined.max_offset
+        refined_entry_idx = refined.entry_index
+        refined_exit_idx = refined.exit_index
+
+    gate_hints = _prune_gate_hints(
+        gate_hints,
+        timestamps,
+        entry_idx=refined_entry_idx
+        if refined_entry_idx is not None
+        else start_entry_idx,
+        exit_idx=refined_exit_idx if refined_exit_idx is not None else end_exit_idx,
+    )
+
+    gate_hints, start_entry_idx = _restore_start_hint_from_refined_entry(
+        gate_hints,
+        prepared_activity.metric_points,
+        prepared_segment.resampled_points,
+        refined_entry_idx,
+        required_span,
+        start_entry_idx,
+    )
+
+    start_entry_idx, end_exit_idx = _apply_gate_indices(
+        start_entry_idx,
+        end_exit_idx,
+        gate_hints,
+        fallback_start=refined_entry_idx,
+        fallback_end=refined_exit_idx,
+    )
+
+    if refined_entry_idx is not None and refined_exit_idx is not None:
         clamped_entry, clamped_exit = _clamp_timing_indices(
-            refined.entry_index,
-            refined.exit_index,
+            refined_entry_idx,
+            refined_exit_idx,
             start_entry_idx,
             end_exit_idx,
         )
         timing_indices = (clamped_entry, clamped_exit)
+    elif start_entry_idx is not None and end_exit_idx is not None:
+        if end_exit_idx > start_entry_idx:
+            timing_indices = (start_entry_idx, end_exit_idx)
 
     coverage_diag = _build_coverage_diag(
         coverage,
@@ -1377,6 +1964,37 @@ def _compute_coverage_diagnostics(
     )
 
     return coverage, coverage_diag, timing_bounds, timing_indices, gate_hints
+
+
+def _should_accept_gate_trimmed_fallback(
+    coverage: CoverageResult,
+    trimmed_max_offset: Optional[float],
+    trimmed_point_count: int,
+    gate_clipped: bool,
+    frechet_distance: float,
+) -> Optional[Dict[str, float]]:
+    """Return diagnostic payload when gate-clipped fallback should apply."""
+
+    if not gate_clipped or trimmed_point_count < _GATE_FALLBACK_MIN_POINTS:
+        return None
+    if trimmed_max_offset is None or not np.isfinite(trimmed_max_offset):
+        return None
+    if trimmed_max_offset > _GATE_FALLBACK_MAX_OFFSET_M:
+        return None
+    coverage_ratio = getattr(coverage, "coverage_ratio", 0.0) or 0.0
+    if coverage_ratio < max(0.995, MATCHING_COVERAGE_THRESHOLD):
+        return None
+    max_offset = getattr(coverage, "max_offset_m", None)
+    if max_offset is not None and np.isfinite(max_offset) and max_offset > 40.0:
+        return None
+    fallback_threshold = trimmed_max_offset * _GATE_FALLBACK_FRECHET_MULTIPLIER
+    if frechet_distance > fallback_threshold:
+        return None
+    return {
+        "threshold_m": float(fallback_threshold),
+        "coverage_ratio": float(coverage_ratio),
+        "trimmed_max_offset_m": float(trimmed_max_offset),
+    }
 
 
 def _evaluate_similarity(
@@ -1463,6 +2081,18 @@ def _evaluate_similarity(
         diag["similarity_window"]["gate_trimmed"] = True
     if dtw_distance is not None:
         diag["dtw_distance_m"] = dtw_distance
+
+    if not matched:
+        fallback_note = _should_accept_gate_trimmed_fallback(
+            coverage,
+            trimmed_max_offset,
+            int(trimmed_activity.shape[0]),
+            gate_clipped,
+            frechet_distance,
+        )
+        if fallback_note is not None:
+            diag["gate_trimmed_fallback"] = fallback_note
+            matched = True
 
     return matched, frechet_distance, dtw_distance, similarity_threshold, diag
 

@@ -101,6 +101,9 @@ STRAVA_API_CAPTURE_DIR = os.getenv("STRAVA_API_CAPTURE_DIR", "strava_api_capture
 # requested otherwise.
 STRAVA_API_CAPTURE_OVERWRITE = _env_bool("STRAVA_API_CAPTURE_OVERWRITE", False)
 
+# Skip refresh-token exchange when working entirely from cached API responses.
+STRAVA_SKIP_TOKEN_REFRESH = _env_bool("STRAVA_SKIP_TOKEN_REFRESH", True)
+
 # ---------------------------------------------------------------------------
 # Performance tuning
 # ---------------------------------------------------------------------------
@@ -210,8 +213,9 @@ MATCHING_CACHE_MAX_ENTRIES = _env_int("MATCHING_CACHE_MAX_ENTRIES", 64)
 # Global switch for the fallback matcher.
 MATCHING_FALLBACK_ENABLED = _env_bool("MATCHING_FALLBACK_ENABLED", True)
 
-# When True, always bypass Strava efforts and force the matcher path. Useful for
-# exercising fallback behaviour in isolation during testing.
+# When True, always bypass Strava efforts and force the matcher path. Defaults to
+# True so non-subscriber runners still receive calculated segment efforts while
+# allowing subscribers to validate accuracy. Override via env var when needed.
 MATCHING_FORCE_FALLBACK = _env_bool("MATCHING_FORCE_FALLBACK", True)
 
 # Largest allowed perpendicular offset (metres) when evaluating coverage.

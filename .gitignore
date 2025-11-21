@@ -218,3 +218,4 @@ competition_results.xlsx
 competition_results_*.xlsx
 .DS_Store
 strava_api_capture/
+maps/

@@ -31,6 +31,7 @@ from .config import (
     RATE_LIMIT_THROTTLE_SECONDS,
     STRAVA_MAX_RETRIES,
     STRAVA_BACKOFF_MAX_SECONDS,
+    STRAVA_SKIP_TOKEN_REFRESH,
 )
 from .errors import (
     StravaAPIError,
@@ -189,9 +190,22 @@ def set_rate_limiter(max_concurrent: Optional[int] = None) -> None:
 def _ensure_runner_token(runner: "Runner") -> None:
     """Ensure the runner has a current access token.
 
-    Performs a refresh using the runner's stored refresh_token if no access token
-    is cached. If Strava rotates the refresh token, update the runner instance.
+    Performs a refresh using the runner's stored ``refresh_token`` if no access token
+    is cached. When ``STRAVA_SKIP_TOKEN_REFRESH`` is enabled we assume cached API
+    responses are available and quietly return without performing the refresh.
+    If Strava rotates the refresh token, update the runner instance.
     """
+    if STRAVA_SKIP_TOKEN_REFRESH:
+        if not getattr(runner, "access_token", None) and not getattr(
+            runner, "_skip_token_logged", False
+        ):
+            logging.info(
+                "Skipping Strava token refresh for runner=%s (STRAVA_SKIP_TOKEN_REFRESH)",
+                getattr(runner, "name", "?"),
+            )
+            setattr(runner, "_skip_token_logged", True)
+        return
+
     if not getattr(runner, "access_token", None):
         access_token, new_refresh_token = get_access_token(
             runner.refresh_token, runner_name=runner.name

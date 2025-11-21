@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from .preprocessing import PreparedActivityTrack, PreparedSegmentGeometry
 
 MetricArray = NDArray[np.float64]
+_GATE_TIMING_SNAP_DELTA_S = 1.5
 
 
 @dataclass(slots=True)
@@ -161,7 +162,12 @@ def _apply_start_hint(
 
     if hint is None:
         return None
-    return _interpolate_gate_crossing(hint, timestamps, prefer_after=True)
+    interpolated = _interpolate_gate_crossing(hint, timestamps, prefer_after=True)
+    if interpolated is None:
+        return None
+    index, time_s = interpolated
+    snapped = _snap_time_to_sample(index, time_s, timestamps)
+    return index, snapped
 
 
 def _apply_end_hint(
@@ -172,7 +178,12 @@ def _apply_end_hint(
 
     if hint is None:
         return None
-    return _interpolate_gate_crossing(hint, timestamps, prefer_after=False)
+    interpolated = _interpolate_gate_crossing(hint, timestamps, prefer_after=False)
+    if interpolated is None:
+        return None
+    index, time_s = interpolated
+    snapped = _snap_time_to_sample(index, time_s, timestamps)
+    return index, snapped
 
 
 def _find_entry_event(
@@ -443,6 +454,23 @@ def _interpolate_gate_crossing(
     interpolated = time_before + ratio * (time_after - time_before)
 
     return target_index, interpolated
+
+
+def _snap_time_to_sample(
+    index: int,
+    candidate_time: float,
+    timestamps: MetricArray,
+) -> float:
+    """Return gate timestamp snapped to the discrete sample when nearby."""
+
+    if timestamps.size == 0:
+        return candidate_time
+    if index < 0 or index >= timestamps.shape[0]:
+        return candidate_time
+    sample_time = float(timestamps[index])
+    if abs(sample_time - candidate_time) <= _GATE_TIMING_SNAP_DELTA_S:
+        return sample_time
+    return candidate_time
 
 
 def _project_onto_polyline(
