@@ -229,7 +229,7 @@ MATCHING_FALLBACK_ENABLED = _env_bool("MATCHING_FALLBACK_ENABLED", True)
 # When True, always bypass Strava efforts and force the matcher path. Defaults to
 # True so non-subscriber runners still receive calculated segment efforts while
 # allowing subscribers to validate accuracy. Override via env var when needed.
-MATCHING_FORCE_FALLBACK = _env_bool("MATCHING_FORCE_FALLBACK", True)
+MATCHING_FORCE_FALLBACK = _env_bool("MATCHING_FORCE_FALLBACK", False)
 
 # Largest allowed perpendicular offset (metres) when evaluating coverage.
 MATCHING_MAX_OFFSET_M = _env_float("MATCHING_MAX_OFFSET_M", 30.0)
