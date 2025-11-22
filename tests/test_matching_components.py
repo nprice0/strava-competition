@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
-from hashlib import sha256
 import json
+import os
+from hashlib import sha256
 from pathlib import Path
 from typing import Iterator, Optional
 
 import numpy as np
 import pytest
+
+TEST_CAPTURE_DIR = Path(__file__).resolve().parent / "strava_api_capture"
+os.environ.setdefault("STRAVA_API_CAPTURE_DIR", str(TEST_CAPTURE_DIR))
 
 from strava_competition.config import (
     MATCHING_COVERAGE_THRESHOLD,

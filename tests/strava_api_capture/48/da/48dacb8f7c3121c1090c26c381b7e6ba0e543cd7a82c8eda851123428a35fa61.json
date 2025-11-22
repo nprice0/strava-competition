@@ -1,0 +1,204 @@
+{
+  "captured_at": "2025-11-22T16:33:41.444191+00:00",
+  "request": {
+    "method": "GET",
+    "url": "https://www.strava.com/api/v3/segment_efforts",
+    "identity": "35599907",
+    "params": {
+      "segment_id": 38987500,
+      "start_date_local": "2025-05-08T00:00:00+00:00",
+      "end_date_local": "2025-06-02T00:00:00+00:00",
+      "per_page": 200,
+      "page": 1
+    },
+    "body": {}
+  },
+  "response": [
+    {
+      "id": 3364233778472664576,
+      "resource_state": 2,
+      "name": "SS25-02-Fiveways to Hell",
+      "activity": {
+        "id": 14661937369,
+        "visibility": "everyone",
+        "resource_state": 1
+      },
+      "athlete": {
+        "id": 35599907,
+        "resource_state": 1
+      },
+      "elapsed_time": 1893,
+      "moving_time": 1641,
+      "start_date": "2025-06-01T11:51:27Z",
+      "start_date_local": "2025-06-01T12:51:27Z",
+      "distance": 4991.0,
+      "start_index": 2665,
+      "end_index": 4550,
+      "device_watts": false,
+      "segment": {
+        "id": 38987500,
+        "resource_state": 2,
+        "name": "SS25-02-Fiveways to Hell",
+        "activity_type": "Run",
+        "distance": 4991.0,
+        "average_grade": 0.0,
+        "maximum_grade": 49.5,
+        "elevation_high": 73.2,
+        "elevation_low": 10.4,
+        "start_latlng": [
+          51.484609,
+          -3.647659
+        ],
+        "end_latlng": [
+          51.481945,
+          -3.631121
+        ],
+        "elevation_profile": null,
+        "elevation_profiles": null,
+        "climb_category": 0,
+        "city": null,
+        "state": "Wales",
+        "country": "United Kingdom",
+        "private": false,
+        "hazardous": false,
+        "starred": true
+      },
+      "pr_rank": 1,
+      "achievements": [
+        {
+          "type_id": 3,
+          "type": "pr",
+          "rank": 1
+        }
+      ],
+      "visibility": "everyone",
+      "kom_rank": null
+    },
+    {
+      "id": 3357467255241079096,
+      "resource_state": 2,
+      "name": "SS25-02-Fiveways to Hell",
+      "activity": {
+        "id": 14471169094,
+        "visibility": "everyone",
+        "resource_state": 1
+      },
+      "athlete": {
+        "id": 35599907,
+        "resource_state": 1
+      },
+      "elapsed_time": 2118,
+      "moving_time": 2005,
+      "start_date": "2025-05-13T19:12:39Z",
+      "start_date_local": "2025-05-13T20:12:39Z",
+      "distance": 4991.0,
+      "start_index": 7,
+      "end_index": 2095,
+      "average_cadence": 83.4,
+      "device_watts": false,
+      "average_heartrate": 160.7,
+      "max_heartrate": 179.0,
+      "segment": {
+        "id": 38987500,
+        "resource_state": 2,
+        "name": "SS25-02-Fiveways to Hell",
+        "activity_type": "Run",
+        "distance": 4991.0,
+        "average_grade": 0.0,
+        "maximum_grade": 49.5,
+        "elevation_high": 73.2,
+        "elevation_low": 10.4,
+        "start_latlng": [
+          51.484609,
+          -3.647659
+        ],
+        "end_latlng": [
+          51.481945,
+          -3.631121
+        ],
+        "elevation_profile": null,
+        "elevation_profiles": null,
+        "climb_category": 0,
+        "city": null,
+        "state": "Wales",
+        "country": "United Kingdom",
+        "private": false,
+        "hazardous": false,
+        "starred": true
+      },
+      "pr_rank": null,
+      "achievements": [
+        {
+          "type_id": 2,
+          "type": "overall",
+          "rank": 4
+        }
+      ],
+      "visibility": "everyone",
+      "kom_rank": 4
+    },
+    {
+      "id": 3362903168042617914,
+      "resource_state": 2,
+      "name": "SS25-02-Fiveways to Hell",
+      "activity": {
+        "id": 14624467801,
+        "visibility": "everyone",
+        "resource_state": 1
+      },
+      "athlete": {
+        "id": 35599907,
+        "resource_state": 1
+      },
+      "elapsed_time": 2191,
+      "moving_time": 1972,
+      "start_date": "2025-05-28T18:49:15Z",
+      "start_date_local": "2025-05-28T19:49:15Z",
+      "distance": 4991.0,
+      "start_index": 8,
+      "end_index": 2199,
+      "average_cadence": 70.5,
+      "device_watts": false,
+      "average_heartrate": 153.2,
+      "max_heartrate": 175.0,
+      "segment": {
+        "id": 38987500,
+        "resource_state": 2,
+        "name": "SS25-02-Fiveways to Hell",
+        "activity_type": "Run",
+        "distance": 4991.0,
+        "average_grade": 0.0,
+        "maximum_grade": 49.5,
+        "elevation_high": 73.2,
+        "elevation_low": 10.4,
+        "start_latlng": [
+          51.484609,
+          -3.647659
+        ],
+        "end_latlng": [
+          51.481945,
+          -3.631121
+        ],
+        "elevation_profile": null,
+        "elevation_profiles": null,
+        "climb_category": 0,
+        "city": null,
+        "state": "Wales",
+        "country": "United Kingdom",
+        "private": false,
+        "hazardous": false,
+        "starred": true
+      },
+      "pr_rank": 2,
+      "achievements": [
+        {
+          "type_id": 3,
+          "type": "pr",
+          "rank": 2
+        }
+      ],
+      "visibility": "everyone",
+      "kom_rank": null
+    }
+  ]
+}

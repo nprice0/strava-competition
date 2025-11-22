@@ -174,6 +174,7 @@ SEGMENT_COLUMN_ORDER = [
     "Team Rank",
     "Attempts",
     "Fastest Time (sec)",
+    "Fastest Time (h:mm:ss)",
     "Fastest Date",
 ]
 
@@ -224,7 +225,20 @@ MATCHING_MAX_RESAMPLED_POINTS = _env_int("MATCHING_MAX_RESAMPLED_POINTS", 1200)
 MATCHING_CACHE_MAX_ENTRIES = _env_int("MATCHING_CACHE_MAX_ENTRIES", 64)
 
 # Global switch for the fallback matcher.
-MATCHING_FALLBACK_ENABLED = _env_bool("MATCHING_FALLBACK_ENABLED", True)
+USE_ACTIVITY_SCAN_FALLBACK = _env_bool("USE_ACTIVITY_SCAN_FALLBACK", True)
+
+_ACTIVITY_SCAN_MAX_PAGES_RAW = _env_int("ACTIVITY_SCAN_MAX_ACTIVITY_PAGES", 10)
+ACTIVITY_SCAN_MAX_ACTIVITY_PAGES = (
+    _ACTIVITY_SCAN_MAX_PAGES_RAW if _ACTIVITY_SCAN_MAX_PAGES_RAW > 0 else None
+)
+
+ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS = _env_bool(
+    "ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS", True
+)
+
+MATCHING_FALLBACK_ENABLED = _env_bool(
+    "MATCHING_FALLBACK_ENABLED", not USE_ACTIVITY_SCAN_FALLBACK
+)
 
 # When True, always bypass Strava efforts and force the matcher path. Defaults to
 # True so non-subscriber runners still receive calculated segment efforts while

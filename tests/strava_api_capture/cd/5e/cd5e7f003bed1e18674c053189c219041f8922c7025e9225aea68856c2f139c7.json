@@ -1,0 +1,25 @@
+{
+  "captured_at": "2025-11-22T17:21:48.316288+00:00",
+  "request": {
+    "method": "GET",
+    "url": "https://www.strava.com/api/v3/athlete/activities",
+    "identity": "35599907",
+    "params": {
+      "after": 1746662400,
+      "before": 1748822400,
+      "per_page": 200,
+      "page": 1
+    },
+    "body": {}
+  },
+  "response": [
+    {
+      "id": 14661937369,
+      "name": "SS25 Fallback Attempt",
+      "type": "Run",
+      "sport_type": "Run",
+      "start_date_local": "2025-05-21T06:07:42+00:00",
+      "distance": 4991.0
+    }
+  ]
+}

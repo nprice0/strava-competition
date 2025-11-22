@@ -1,0 +1,42 @@
+{
+  "captured_at": "2025-11-22T17:21:48.316288+00:00",
+  "request": {
+    "method": "GET",
+    "url": "https://www.strava.com/api/v3/activities/14661937369",
+    "identity": "35599907",
+    "params": {
+      "include_all_efforts": "true"
+    },
+    "body": {}
+  },
+  "response": {
+    "id": 14661937369,
+    "name": "SS25 Fallback Attempt",
+    "segment_efforts": [
+      {
+        "id": "scan-effort-fast",
+        "segment": {
+          "id": 38987500,
+          "name": "SS25-02-Fiveways to Hell",
+          "activity_type": "Run"
+        },
+        "elapsed_time": 1893,
+        "moving_time": 1885,
+        "start_date": "2025-05-21T05:07:42Z",
+        "start_date_local": "2025-05-21T06:07:42+00:00"
+      },
+      {
+        "id": "scan-effort-slow",
+        "segment": {
+          "id": 38987500,
+          "name": "SS25-02-Fiveways to Hell",
+          "activity_type": "Run"
+        },
+        "elapsed_time": 1940,
+        "moving_time": 1930,
+        "start_date": "2025-05-24T06:17:21Z",
+        "start_date_local": "2025-05-24T07:17:21+00:00"
+      }
+    ]
+  }
+}

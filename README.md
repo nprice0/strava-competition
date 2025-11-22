@@ -8,6 +8,7 @@ You get:
 - Distance competition sheets covering each window and an overall summary
 - Automatic refresh-token updates so the input workbook always stays current
 - A segment matcher fallback that rebuilds efforts with discrete Fréchet and DTW distance checks plus accurate start/finish timing
+- An activity-scan fallback that uses Strava's `include_all_efforts` payloads for runners without leaderboard access
 
 ---
 
@@ -73,6 +74,9 @@ Create a `.env` file in the project root so credentials stay out of source contr
 ```dotenv
 STRAVA_CLIENT_ID=<your_id>
 STRAVA_CLIENT_SECRET=<your_secret>
+USE_ACTIVITY_SCAN_FALLBACK=false
+ACTIVITY_SCAN_MAX_ACTIVITY_PAGES=10
+ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true
 ```
 
 The app loads `.env` automatically when it starts.
@@ -81,11 +85,13 @@ The app loads `.env` automatically when it starts.
 
 All sheet names are case sensitive.
 
-- `Segment Series`: segment ID, segment name, start date, end date
+- `Segment Series`: segment ID, segment name, start date, end date, default time
 - `Runners`: name, Strava ID, refresh token, segment team, distance team
 - Optional `Distance Series`: start date, end date, distance threshold (km)
 
 Leave a team column blank to skip that runner for the related competition. Dates can be Excel dates or ISO strings; pandas handles both.
+
+`Default Time` accepts `HH:MM:SS`, Excel time values, or raw seconds. Every runner without a recorded effort for a segment is assigned this fallback so rankings and summaries always include every participant.
 
 ---
 
@@ -110,6 +116,46 @@ curl -X POST https://www.strava.com/oauth/token \
 ```
 
 The response includes the refresh token. Store it securely.
+
+---
+
+## Helper script: `fetch_runner_segment_efforts`
+
+Located in `helper/fetch_runner_segment_efforts.py`, this standalone probe lets
+you inspect every segment effort Strava reports for a single runner over a
+specific window. It is handy when you need to debug subscriber-only segment
+data, reproduce a support request, or capture `include_all_efforts` payloads
+without running the full competition pipeline.
+
+What it does:
+
+- Exchanges the supplied refresh token for a short-lived access token using the
+  credentials already configured in `.env`.
+- Calls `GET /athlete/activities` with `after`/`before` filters covering either
+  a single day (`--day`) or an arbitrary ISO8601 range (`--start`/`--end`).
+- Iterates each activity and fetches the detail view with
+  `include_all_efforts=true`, printing a concise JSON line per segment effort
+  (and optionally the full payload with `--print-json`).
+
+### How to run it
+
+Activate your virtual environment and invoke the script from the repo root. The
+example below fetches Helen Lawrence’s segment efforts between
+`2025-11-03T00:00:00Z` (inclusive) and `2025-11-24T00:00:00Z` (exclusive):
+
+```bash
+source .venv/bin/activate && \
+python helper/fetch_runner_segment_efforts.py \
+   --runner-id 13056193 \
+   --runner-name "Helen Lawrence" \
+   --refresh-token abcdef5ffe85a428b5678fafe749e3a758cc3614 \
+   --start 2025-11-03T00:00:00Z \
+   --end 2025-11-24T00:00:00Z
+```
+
+You can omit `--start/--end` and pass `--day 2025-11-03` instead for a
+single-day window. Increase `--per-page` or set `--log-level DEBUG` when
+troubleshooting.
 
 ---
 
@@ -147,6 +193,38 @@ The fallback matcher kicks in when Strava refuses segment efforts (HTTP 402 or p
 - Similarity: discrete Fréchet distance is evaluated first. If it misses the adaptive threshold we fall back to windowed DTW with a narrow band. Both operate on the already clipped resampled polylines.
 - Timing: `estimate_segment_time` honours the refined bounds. `_resolve_entry_exit` interpolates timestamps for the on-segment entry and exit samples so elapsed time reflects exactly when the runner crossed the gates.
 - Diagnostics: we log coverage ratios, similarity scores, `gate_trimmed` flags, sample indices, and elapsed times for every attempt.
+
+### Activity scan fallback
+
+Some runners only expose full Strava activities (not segment leaderboards). Enable the activity scan fallback by setting `USE_ACTIVITY_SCAN_FALLBACK=true`. When active, the service:
+
+- Fetches every run activity inside the competition window (respecting `ACTIVITY_SCAN_MAX_ACTIVITY_PAGES` if set)
+- Calls `GET /activities/{id}?include_all_efforts=true` once per activity with rate limiting, optional capture via `ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS`, and in-memory caching
+- Counts attempts and identifies the fastest elapsed time for the target segment using the activity payload alone
+- Emits diagnostics with inspected activity IDs so you can audit workbook results later
+
+When the flag is on, the GPS matcher stays idle unless you explicitly set `MATCHING_FALLBACK_ENABLED=true`. This makes the pipeline reliable for non-subscriber athletes while keeping the legacy matcher available for debugging.
+
+#### Operator playbook
+
+1. Toggle the feature flags:
+
+- `USE_ACTIVITY_SCAN_FALLBACK=true`
+- `MATCHING_FORCE_FALLBACK=false` (so paid runners continue using the official Strava efforts)
+- Optionally cap pagination with `ACTIVITY_SCAN_MAX_ACTIVITY_PAGES=10` while validating
+
+2. Record captures for the current competition window by running the pipeline once with
+   `STRAVA_API_CAPTURE_ENABLED=true` and `STRAVA_API_REPLAY_ENABLED=false`.
+3. Switch to deterministic mode for day-to-day runs: set `STRAVA_API_CAPTURE_ENABLED=false`,
+   `STRAVA_API_REPLAY_ENABLED=true`, and (if you want to block live calls) `STRAVA_OFFLINE_MODE=true`.
+4. Monitor logs for entries tagged `source=activity_scan` and spot-check the emitted
+   `inspected_activities` list when validating workbook outputs.
+
+#### Capture and replay tips
+
+- Include `ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true` so the activity detail payloads match what the scanner expects.
+- When `STRAVA_OFFLINE_MODE=true`, a missing capture now raises `StravaAPIError`; the runner is skipped and the log will point at the exact request signature you need to record.
+- Captures live under `strava_api_capture/` by default. Vendored regression fixtures live in `tests/strava_api_capture/` and power the pytest suite.
 
 ---
 

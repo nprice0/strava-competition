@@ -256,3 +256,51 @@ def test_runner_activity_cache_reused_across_segments(
 
     assert first is not None and second is not None
     assert len(fetch_calls) == 1
+
+
+def test_default_time_results_added_for_missing_runners() -> None:
+    from datetime import datetime, timedelta, timezone
+
+    service = SegmentService(max_workers=1)
+    now = datetime.now(timezone.utc)
+    segment = Segment(
+        id=42,
+        name="Defaulted",
+        start_date=now - timedelta(days=5),
+        end_date=now,
+        default_time_seconds=150.0,
+    )
+    runners = [
+        Runner("Alice", "1", "rt1", segment_team="Alpha"),
+        Runner("Bob", "2", "rt2", segment_team="Alpha"),
+        Runner("Cara", "3", "rt3", segment_team="Beta"),
+        Runner("Skip", "4", "rt4", segment_team=None),
+    ]
+    segment_results = {
+        "Alpha": [
+            SegmentResult(
+                runner="Alice",
+                team="Alpha",
+                segment=segment.name,
+                attempts=2,
+                fastest_time=140.0,
+                fastest_date=None,
+            )
+        ]
+    }
+
+    service._inject_default_segment_results(segment, runners, segment_results)
+
+    alpha_results = {res.runner: res for res in segment_results["Alpha"]}
+    assert "Bob" in alpha_results
+    default_result = alpha_results["Bob"]
+    assert default_result.fastest_time == pytest.approx(150.0)
+    assert default_result.attempts == 0
+    assert default_result.fastest_date == segment.start_date
+    assert default_result.source == "default_time"
+    assert default_result.diagnostics.get("reason") == "default_time_applied"
+    assert "Beta" in segment_results
+    beta_default = segment_results["Beta"][0]
+    assert beta_default.runner == "Cara"
+    assert beta_default.fastest_time == pytest.approx(150.0)
+    assert beta_default.fastest_date == segment.start_date

@@ -12,7 +12,7 @@ import random
 import threading
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional, TypeAlias
+from typing import Any, Dict, Iterable, List, Optional, TypeAlias
 
 import requests
 from requests.adapters import HTTPAdapter
@@ -32,6 +32,7 @@ from .config import (
     STRAVA_MAX_RETRIES,
     STRAVA_BACKOFF_MAX_SECONDS,
     STRAVA_OFFLINE_MODE,
+    ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS,
 )
 from .errors import (
     StravaAPIError,
@@ -634,16 +635,38 @@ def get_segment_efforts(  # noqa: C901 - pagination and auth flow
         return None
 
 
+def _normalize_activity_type(value: Any) -> str | None:
+    if value is None:
+        return None
+    normalized = str(value).strip().lower()
+    return normalized or None
+
+
+def _activity_type_matches(activity: Dict[str, Any], allowed: set[str]) -> bool:
+    """Return True when an activity is one of the allowed types."""
+
+    if not allowed:
+        return True
+    for key in ("sport_type", "type"):
+        normalized = _normalize_activity_type(activity.get(key))
+        if normalized and normalized in allowed:
+            return True
+    return False
+
+
 def get_activities(  # noqa: C901 - pagination and auth flow
     runner: Runner,
     start_date: datetime,
     end_date: datetime,
+    *,
+    activity_types: Optional[Iterable[str]] = ("Run",),
+    max_pages: Optional[int] = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Fetch all activities for a runner in [start_date, end_date].
+    """Fetch activities for a runner in [start_date, end_date].
 
-    Uses /athlete/activities with pagination (per_page=200). Filters locally to
-    activity 'type' == 'Run'. Returns list (possibly empty) or None on error.
-    Inclusive range based on activity start_date_local.
+    Uses /athlete/activities with pagination (per_page=200). Returns a list
+    (possibly empty) or ``None`` on error. Inclusive range based on
+    ``start_date_local`` and filtered to ``activity_types`` when provided.
     """
 
     def ensure_token() -> None:
@@ -683,6 +706,13 @@ def get_activities(  # noqa: C901 - pagination and auth flow
 
     try:
         ensure_token()
+        normalized_types: Optional[set[str]] = None
+        if activity_types:
+            normalized_types = {
+                str(value).strip().lower()
+                for value in activity_types
+                if str(value).strip()
+            }
         all_acts: List[Dict[str, Any]] = []
         page = 1
         attempted_refresh = False
@@ -709,11 +739,13 @@ def get_activities(  # noqa: C901 - pagination and auth flow
             all_acts.extend(data)
             if len(data) < 200:
                 break
+            if max_pages is not None and page >= max_pages:
+                break
             page += 1
         # Local filter by time & type
         filtered: List[Dict[str, Any]] = []
         for act in all_acts:
-            if act.get("type") != "Run":
+            if normalized_types and not _activity_type_matches(act, normalized_types):
                 continue
             start_local = act.get("start_date_local")
             if not start_local:
@@ -740,6 +772,28 @@ def get_activities(  # noqa: C901 - pagination and auth flow
             detail,
         )
         return None
+
+
+def get_activity_with_efforts(
+    runner: Runner,
+    activity_id: int,
+    *,
+    include_all_efforts: bool = True,
+) -> Dict[str, Any]:
+    """Return ``/activities/{id}`` payload, optionally with segment efforts."""
+
+    params = {"include_all_efforts": "true"} if include_all_efforts else None
+    url = f"{STRAVA_BASE_URL}/activities/{activity_id}"
+    context = "activity_detail"
+    if include_all_efforts and ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS:
+        payload = _fetch_resource_with_capture(runner, url, params, context)
+    else:
+        payload = _get_resource_json(runner, url, params, context)
+    if isinstance(payload, dict):
+        return payload
+    raise StravaAPIError(
+        f"{context} returned non-object payload for runner {runner.name} activity={activity_id}"
+    )
 
 
 def _get_resource_json(

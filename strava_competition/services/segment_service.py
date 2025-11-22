@@ -14,13 +14,16 @@ import threading
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Sequence, Tuple, Set, Optional, Iterator
 
+from ..errors import StravaAPIError
 from ..models import Segment, Runner, SegmentResult
+from ..activity_scan import ActivityEffortScanner
 from ..config import (
     MATCHING_ACTIVITY_MIN_DISTANCE_RATIO,
     MATCHING_ACTIVITY_REQUIRED_TYPES,
     MATCHING_FALLBACK_ENABLED,
     MATCHING_FORCE_FALLBACK,
     MATCHING_RUNNER_ACTIVITY_CACHE_SIZE,
+    USE_ACTIVITY_SCAN_FALLBACK,
     MAX_WORKERS,
 )
 from ..matching.similarity import segment_cache_scope
@@ -43,6 +46,9 @@ class SegmentService:
         self._activity_cache_max_entries = max(0, MATCHING_RUNNER_ACTIVITY_CACHE_SIZE)
         self._activity_cache: "OrderedDict[tuple[str, datetime, datetime], List[Dict[str, Any]]]" = OrderedDict()
         self._activity_cache_lock = threading.RLock()
+        self._activity_scanner = ActivityEffortScanner(
+            activity_provider=self._get_runner_activities
+        )
 
     def process(
         self,
@@ -145,6 +151,7 @@ class SegmentService:
             completed,
             notify_progress,
         )
+        self._inject_default_segment_results(segment, eligible_runners, segment_results)
         return segment_results
 
     def _submit_effort_futures(
@@ -322,6 +329,38 @@ class SegmentService:
                 break
         return completed
 
+    def _inject_default_segment_results(
+        self,
+        segment: Segment,
+        runners: Sequence[Runner],
+        segment_results: Dict[str, List[SegmentResult]],
+    ) -> None:
+        default_time = segment.default_time_seconds
+        if default_time is None:
+            return
+        for runner in runners:
+            team = runner.segment_team
+            if not team:
+                continue
+            bucket = segment_results.setdefault(team, [])
+            if any(result.runner == runner.name for result in bucket):
+                continue
+            bucket.append(
+                SegmentResult(
+                    runner=runner.name,
+                    team=team,
+                    segment=segment.name,
+                    attempts=0,
+                    fastest_time=default_time,
+                    fastest_date=segment.start_date,
+                    source="default_time",
+                    diagnostics={
+                        "reason": "default_time_applied",
+                        "segment_id": segment.id,
+                    },
+                )
+            )
+
     def _process_runner_results(
         self,
         runner: Runner,
@@ -332,6 +371,14 @@ class SegmentService:
         seg_result = self._result_from_efforts(runner, segment, efforts)
         if seg_result is not None:
             return seg_result
+        if USE_ACTIVITY_SCAN_FALLBACK:
+            scan_result = self._result_from_activity_scan(
+                runner,
+                segment,
+                cancel_event,
+            )
+            if scan_result is not None:
+                return scan_result
         if not MATCHING_FALLBACK_ENABLED:
             self._log.debug(
                 "Matcher fallback disabled; skipping runner=%s segment=%s",
@@ -346,6 +393,51 @@ class SegmentService:
                 segment.id,
             )
         return self._match_runner_segment(runner, segment, cancel_event)
+
+    def _result_from_activity_scan(
+        self,
+        runner: Runner,
+        segment: Segment,
+        cancel_event: threading.Event | None,
+    ) -> SegmentResult | None:
+        if not USE_ACTIVITY_SCAN_FALLBACK:
+            return None
+        try:
+            scan = self._activity_scanner.scan_segment(
+                runner,
+                segment,
+                cancel_event=cancel_event,
+            )
+        except StravaAPIError as exc:
+            self._log.warning(
+                "Activity scan failed runner=%s segment=%s: %s",
+                runner.name,
+                segment.id,
+                exc,
+            )
+            return None
+        if scan is None:
+            return None
+        team = runner.segment_team or ""
+        diagnostics: Dict[str, Any] = {
+            "source": "activity_scan",
+            "effort_ids": scan.effort_ids,
+            "inspected_activities": scan.inspected_activities,
+            "fastest_activity_id": scan.fastest_activity_id,
+            "fastest_effort_id": scan.fastest_effort_id,
+            "moving_time": scan.moving_time,
+        }
+        attempts = scan.attempts if scan.attempts > 0 else 1
+        return SegmentResult(
+            runner=runner.name,
+            team=team,
+            segment=segment.name,
+            attempts=attempts,
+            fastest_time=scan.fastest_elapsed,
+            fastest_date=scan.fastest_start_date,
+            source="activity_scan",
+            diagnostics=diagnostics,
+        )
 
     def _result_from_efforts(
         self,

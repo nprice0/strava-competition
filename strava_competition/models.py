@@ -9,6 +9,7 @@ class Segment:
     name: str
     start_date: datetime
     end_date: datetime
+    default_time_seconds: float | None = None
 
 
 @dataclass

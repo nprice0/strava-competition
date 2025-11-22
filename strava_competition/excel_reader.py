@@ -5,6 +5,7 @@ Separated from writing logic for clearer responsibilities and easier testing.
 
 from __future__ import annotations
 
+from datetime import datetime, time, timedelta
 from pathlib import Path
 from typing import List
 import pandas as pd
@@ -15,7 +16,18 @@ SEGMENTS_SHEET = "Segment Series"
 RUNNERS_SHEET = "Runners"
 DISTANCE_SHEET = "Distance Series"
 
-_REQUIRED_SEGMENT_COLS = {"Segment ID", "Segment Name", "Start Date", "End Date"}
+_SEGMENT_ID_COL = "Segment ID"
+_SEGMENT_NAME_COL = "Segment Name"
+_SEGMENT_START_COL = "Start Date"
+_SEGMENT_END_COL = "End Date"
+_SEGMENT_DEFAULT_TIME_COL = "Default Time"
+_REQUIRED_SEGMENT_COLS = {
+    _SEGMENT_ID_COL,
+    _SEGMENT_NAME_COL,
+    _SEGMENT_START_COL,
+    _SEGMENT_END_COL,
+    _SEGMENT_DEFAULT_TIME_COL,
+}
 _REQUIRED_RUNNER_COLS = {
     "Name",
     "Strava ID",
@@ -23,7 +35,11 @@ _REQUIRED_RUNNER_COLS = {
     "Segment Series Team",
     "Distance Series Team",
 }
-_REQUIRED_DISTANCE_COLS = {"Start Date", "End Date", "Distance Threshold (km)"}
+_REQUIRED_DISTANCE_COLS = {
+    _SEGMENT_START_COL,
+    _SEGMENT_END_COL,
+    "Distance Threshold (km)",
+}
 
 
 class ExcelFormatError(RuntimeError):
@@ -76,6 +92,77 @@ def _clean_team(value):
     return str(value).strip()
 
 
+def _seconds_from_timedelta(value) -> float | None:
+    if isinstance(value, pd.Timedelta):
+        return float(value.total_seconds())
+    if isinstance(value, timedelta):
+        return float(value.total_seconds())
+    return None
+
+
+def _seconds_from_datetime(value) -> float | None:
+    if isinstance(value, (pd.Timestamp, datetime)):
+        return float(value.hour * 3600 + value.minute * 60 + value.second)
+    return None
+
+
+def _seconds_from_time(value) -> float | None:
+    if isinstance(value, time):
+        return float(value.hour * 3600 + value.minute * 60 + value.second)
+    return None
+
+
+def _seconds_from_string(value) -> float | None:
+    if not isinstance(value, str):
+        return None
+    candidate = value.strip()
+    if not candidate:
+        return None
+    parsed = pd.to_timedelta(candidate, errors="coerce")
+    if not pd.isna(parsed):
+        return float(parsed.total_seconds())
+    try:
+        return float(candidate)
+    except ValueError:
+        return None
+
+
+def _seconds_from_number(value) -> float | None:
+    if not isinstance(value, (int, float)) or pd.isna(value):
+        return None
+    numeric = float(value)
+    if 0 < numeric < 1:
+        return numeric * 24 * 3600
+    return numeric
+
+
+def _coerce_duration_seconds(value) -> float | None:
+    if value is None:
+        return None
+    for converter in (
+        _seconds_from_timedelta,
+        _seconds_from_datetime,
+        _seconds_from_time,
+        _seconds_from_string,
+        _seconds_from_number,
+    ):
+        seconds = converter(value)
+        if seconds is not None:
+            return seconds
+    return None
+
+
+def _parse_segment_default_time(value, seg_name: str, row_label: str) -> float | None:
+    seconds = _coerce_duration_seconds(value)
+    if seconds is None:
+        return None
+    if seconds <= 0:
+        raise ExcelFormatError(
+            f"Segment '{seg_name}' in {row_label} has non-positive default time '{value}'"
+        )
+    return float(seconds)
+
+
 def _assert_file_exists(path: str) -> None:
     if not Path(path).is_file():
         raise FileNotFoundError(f"Workbook not found: {path}")
@@ -101,15 +188,33 @@ def read_segments(filepath) -> List[Segment]:
     except ValueError as e:
         raise ExcelFormatError(f"Sheet '{SEGMENTS_SHEET}' not found: {e}") from e
     _validate_columns(df, _REQUIRED_SEGMENT_COLS, SEGMENTS_SHEET)
-    df["Start Date"] = pd.to_datetime(df["Start Date"], errors="coerce")
-    df["End Date"] = pd.to_datetime(df["End Date"], errors="coerce")
+    df[_SEGMENT_START_COL] = pd.to_datetime(df[_SEGMENT_START_COL], errors="coerce")
+    df[_SEGMENT_END_COL] = pd.to_datetime(df[_SEGMENT_END_COL], errors="coerce")
     segs: List[Segment] = []
-    for seg_id, seg_name, start_dt, end_dt in df[
-        ["Segment ID", "Segment Name", "Start Date", "End Date"]
-    ].itertuples(index=False, name=None):
+    columns = [
+        _SEGMENT_ID_COL,
+        _SEGMENT_NAME_COL,
+        _SEGMENT_START_COL,
+        _SEGMENT_END_COL,
+        _SEGMENT_DEFAULT_TIME_COL,
+    ]
+    for row_offset, (
+        seg_id,
+        seg_name,
+        start_dt,
+        end_dt,
+        default_time_raw,
+    ) in enumerate(df[columns].itertuples(index=False, name=None), start=2):
+        row_label = f"row {row_offset}"
         segs.append(
             Segment(
-                id=int(seg_id), name=str(seg_name), start_date=start_dt, end_date=end_dt
+                id=int(seg_id),
+                name=str(seg_name),
+                start_date=start_dt,
+                end_date=end_dt,
+                default_time_seconds=_parse_segment_default_time(
+                    default_time_raw, str(seg_name), row_label
+                ),
             )
         )
     return segs
@@ -167,11 +272,11 @@ def read_distance_windows(
     except ValueError:
         return []
     _validate_columns(df, _REQUIRED_DISTANCE_COLS, DISTANCE_SHEET)
-    df["Start Date"] = pd.to_datetime(df["Start Date"], errors="coerce")
-    df["End Date"] = pd.to_datetime(df["End Date"], errors="coerce")
+    df[_SEGMENT_START_COL] = pd.to_datetime(df[_SEGMENT_START_COL], errors="coerce")
+    df[_SEGMENT_END_COL] = pd.to_datetime(df[_SEGMENT_END_COL], errors="coerce")
     windows: List[tuple[pd.Timestamp, pd.Timestamp, float | None]] = []
     for start_dt, end_dt, threshold in df[
-        ["Start Date", "End Date", "Distance Threshold (km)"]
+        [_SEGMENT_START_COL, _SEGMENT_END_COL, "Distance Threshold (km)"]
     ].itertuples(index=False, name=None):
         if pd.isna(start_dt) or pd.isna(end_dt) or start_dt > end_dt:
             continue

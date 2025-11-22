@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import List, Sequence, Iterable, Tuple
 import pandas as pd
+from openpyxl.styles import Font, PatternFill, Border, Side
 
 from .models import Runner
 from .errors import ExcelFormatError
@@ -31,6 +32,14 @@ __all__ = [
 ]
 
 ResultsMapping = SegResultsMapping
+SUMMARY_HEADER_FONT = Font(bold=True)
+HEADER_FILL = PatternFill(patternType="solid", fgColor="FFFF40FF")
+HEADER_BORDER = Border(
+    left=Side(style="thin", color="000000"),
+    right=Side(style="thin", color="000000"),
+    top=Side(style="thin", color="000000"),
+    bottom=Side(style="thin", color="000000"),
+)
 
 
 def _assert_file_exists(path: str) -> None:
@@ -110,7 +119,14 @@ def _write_segment_sheets(
     for base_name, df in outputs:
         sheet_name = _unique_sheet_name(base_name, used_sheet_names)
         df.to_excel(writer, sheet_name=sheet_name, index=False)
-        _autosize(writer.sheets[sheet_name])
+        ws = _get_worksheet(writer, sheet_name)
+        if ws is None:
+            continue
+        _style_header_row(ws, 1, len(df.columns))
+        summary_df = getattr(df, "attrs", {}).get("segment_summary")
+        if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
+            _append_segment_summary(ws, summary_df)
+        _autosize(ws)
 
 
 ## Summary building handled via segment_aggregation
@@ -147,10 +163,7 @@ def _write_distance_sheets(
             len(rows),
             not bool(rows),
         )
-        try:
-            ws = writer.book[sheet_name]
-        except Exception:
-            ws = writer.sheets.get(sheet_name)
+        ws = _get_worksheet(writer, sheet_name)
         if ws is not None:
             _autosize(ws)
 
@@ -176,12 +189,43 @@ def write_results(
         if distance_windows_results:
             _write_distance_sheets(writer, distance_windows_results, used_sheet_names)
             for sn in used_sheet_names:
-                try:
-                    ws = writer.book[sn]
-                except Exception:
-                    ws = writer.sheets.get(sn)
+                ws = _get_worksheet(writer, sn)
                 if ws is not None:
                     _autosize(ws)
+
+
+def _get_worksheet(writer, sheet_name: str):
+    try:
+        return writer.book[sheet_name]
+    except Exception:
+        return writer.sheets.get(sheet_name)
+
+
+def _append_segment_summary(ws, summary_df: pd.DataFrame) -> None:
+    if summary_df.empty:
+        return
+    ws.append([])
+    ws.append([])
+    header = list(summary_df.columns)
+    ws.append(header)
+    header_row_idx = ws.max_row
+    for col_idx in range(1, len(header) + 1):
+        cell = ws.cell(row=header_row_idx, column=col_idx)
+        cell.font = SUMMARY_HEADER_FONT
+    _style_header_row(ws, header_row_idx, len(header))
+    for row in summary_df.itertuples(index=False, name=None):
+        ws.append(list(row))
+
+
+def _style_header_row(ws, row_idx: int, max_col: int | None = None) -> None:
+    if row_idx <= 0:
+        return
+    max_col = max_col or ws.max_column
+    fill = PatternFill(patternType="solid", fgColor="FFFF40FF")
+    for col_idx in range(1, max_col + 1):
+        cell = ws.cell(row=row_idx, column=col_idx)
+        cell.fill = fill
+        cell.border = HEADER_BORDER
 
 
 def _normalise_ids(series: pd.Series) -> pd.Series:
