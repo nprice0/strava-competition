@@ -1033,9 +1033,7 @@ def test_ss25_02_andrew_knott_elapsed_time() -> None:
     expected_elapsed = float(
         effort_entry.get("elapsed_time", _ANDREW_KNOTT_SS25_ELAPSED_S)
     )
-    # Andrew's capture still differs by ~3.5s because of a GPS spike near the
-    # finish; assert we stay within a tight ±4s guardrail to catch regressions.
-    assert estimate.elapsed_time_s == pytest.approx(expected_elapsed, abs=4.0)
+    assert estimate.elapsed_time_s == pytest.approx(expected_elapsed, abs=0.5)
 
     official_start = int(effort_entry.get("start_index", 0))
     official_end = int(effort_entry.get("end_index", gate_end))

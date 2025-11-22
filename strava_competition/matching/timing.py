@@ -11,7 +11,10 @@ from numpy.typing import NDArray
 from .preprocessing import PreparedActivityTrack, PreparedSegmentGeometry
 
 MetricArray = NDArray[np.float64]
-_GATE_TIMING_SNAP_DELTA_S = 1.5
+# Strava elapsed times snap to discrete stream samples even when the
+# interpolated gate crossing differs by nearly two seconds. Use a larger
+# delta so our fallback matcher mirrors the official timing harness.
+_GATE_TIMING_SNAP_DELTA_S = 2.5
 
 
 @dataclass(slots=True)
