@@ -19,7 +19,8 @@ from ..config import (
 )
 from ..excel_reader import ExcelFormatError, read_runners, read_segments
 from ..models import Runner, Segment
-from ..matching import _compute_coverage_diagnostics, create_deviation_map
+from ..matching import _compute_coverage_diagnostics
+from ..matching.visualization import create_deviation_map
 from ..matching.fetchers import fetch_activity_stream, fetch_segment_geometry
 from ..matching.models import ActivityTrack, SegmentGeometry
 from ..matching.preprocessing import prepare_activity, prepare_geometry

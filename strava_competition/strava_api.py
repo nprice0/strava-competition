@@ -31,7 +31,7 @@ from .config import (
     RATE_LIMIT_THROTTLE_SECONDS,
     STRAVA_MAX_RETRIES,
     STRAVA_BACKOFF_MAX_SECONDS,
-    STRAVA_SKIP_TOKEN_REFRESH,
+    STRAVA_OFFLINE_MODE,
 )
 from .errors import (
     StravaAPIError,
@@ -195,12 +195,12 @@ def _ensure_runner_token(runner: "Runner") -> None:
     responses are available and quietly return without performing the refresh.
     If Strava rotates the refresh token, update the runner instance.
     """
-    if STRAVA_SKIP_TOKEN_REFRESH:
+    if STRAVA_OFFLINE_MODE:
         if not getattr(runner, "access_token", None) and not getattr(
             runner, "_skip_token_logged", False
         ):
             logging.info(
-                "Skipping Strava token refresh for runner=%s (STRAVA_SKIP_TOKEN_REFRESH)",
+                "Skipping Strava token refresh for runner=%s (STRAVA_OFFLINE_MODE)",
                 getattr(runner, "name", "?"),
             )
             setattr(runner, "_skip_token_logged", True)
@@ -252,6 +252,13 @@ def _replay_list_response(
         params=params,
     )
     if cached is None:
+        if STRAVA_OFFLINE_MODE:
+            message = (
+                f"{context_label} cache miss for runner {runner.name} while "
+                "STRAVA_OFFLINE_MODE is enabled"
+            )
+            logging.error(message)
+            raise StravaAPIError(message)
         return None
     if isinstance(cached, list):
         logging.debug(
@@ -847,6 +854,13 @@ def _fetch_resource_with_capture(
             type(cached).__name__,
         )
         return cached
+    if STRAVA_OFFLINE_MODE:
+        message = (
+            f"{context} cache miss for runner {runner.name} while "
+            "STRAVA_OFFLINE_MODE is enabled"
+        )
+        logging.error(message)
+        raise StravaAPIError(message)
 
     data = _get_resource_json(runner, url, params, context)
     record_response(

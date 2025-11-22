@@ -6,8 +6,6 @@ that avoids leaking secrets, and defensive JSON parsing.
 """
 
 from __future__ import annotations
-
-import json
 import logging
 from hashlib import sha256
 from typing import Tuple
@@ -21,6 +19,9 @@ from .config import (
     CLIENT_SECRET,
     STRAVA_OAUTH_URL,
     REQUEST_TIMEOUT,
+    STRAVA_API_CAPTURE_ENABLED,
+    STRAVA_API_REPLAY_ENABLED,
+    STRAVA_TOKEN_CAPTURE_ENABLED,
 )
 from .api_capture import record_response, replay_response
 
@@ -88,19 +89,23 @@ def get_access_token(
     logger.debug("Token endpoint: %s", STRAVA_OAUTH_URL)
     logger.debug({"client_id": CLIENT_ID, "grant_type": payload["grant_type"]})
 
-    hashed_refresh = sha256(refresh_token.encode("utf-8")).hexdigest()
-    capture_body = {
-        "client_id": CLIENT_ID,
-        "grant_type": payload["grant_type"],
-        "refresh_token_hash": hashed_refresh,
-    }
+    capture_body = None
     identity = runner_name or "token"
-    cached = replay_response(
-        "POST",
-        STRAVA_OAUTH_URL,
-        identity,
-        body=capture_body,
-    )
+    cached = None
+    if STRAVA_TOKEN_CAPTURE_ENABLED:
+        hashed_refresh = sha256(refresh_token.encode("utf-8")).hexdigest()
+        capture_body = {
+            "client_id": CLIENT_ID,
+            "grant_type": payload["grant_type"],
+            "refresh_token_hash": hashed_refresh,
+        }
+        if STRAVA_API_REPLAY_ENABLED:
+            cached = replay_response(
+                "POST",
+                STRAVA_OAUTH_URL,
+                identity,
+                body=capture_body,
+            )
     response_source = "cache" if cached is not None else "live"
     data = None
     if cached is not None:
@@ -170,7 +175,7 @@ def get_access_token(
         # Parse JSON success
         try:
             data = resp.json()
-        except (ValueError, json.JSONDecodeError) as e:
+        except ValueError as e:
             logger.error("Invalid JSON in token response: %s", e)
             raise TokenError("Invalid JSON in token response") from e
 
@@ -178,13 +183,14 @@ def get_access_token(
             logger.error("Unexpected token response shape: %s", type(data).__name__)
             raise TokenError("Unexpected token response shape")
 
-        record_response(
-            "POST",
-            STRAVA_OAUTH_URL,
-            identity,
-            response=data,
-            body=capture_body,
-        )
+        if STRAVA_TOKEN_CAPTURE_ENABLED and STRAVA_API_CAPTURE_ENABLED:
+            record_response(
+                "POST",
+                STRAVA_OAUTH_URL,
+                identity,
+                response=data,
+                body=capture_body,
+            )
 
     access_token = data.get("access_token") if isinstance(data, dict) else None
     new_refresh_token = data.get("refresh_token") if isinstance(data, dict) else None

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import logging
+from time import perf_counter
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 import numpy as np
@@ -14,6 +15,7 @@ from ..config import (
     MATCHING_RESAMPLE_INTERVAL_M,
     MATCHING_START_TOLERANCE_M,
     MATCHING_FRECHET_TOLERANCE_M,
+    MATCHING_FRECHET_LENGTH_RATIO,
     MATCHING_COVERAGE_THRESHOLD,
     MATCHING_MAX_OFFSET_M,
 )
@@ -725,6 +727,9 @@ def _score_gate_candidate(
     )
     if span_ratio is not None and span_ratio < 0.65:
         return None
+    coverage_penalty = 1.0
+    if span_ratio is not None:
+        coverage_penalty = max(0.0, 1.0 - min(span_ratio, 1.0))
 
     orientation_penalty = (
         0
@@ -735,11 +740,10 @@ def _score_gate_candidate(
         )
         else 1
     )
-    span_score = -span_ratio if span_ratio is not None else 0.0
     return (
         orientation_penalty,
+        coverage_penalty,
         elapsed,
-        span_score,
         entry_idx,
         exit_idx,
         start_hint,
@@ -903,6 +907,28 @@ def _max_offset_within_slice(
     return _max_offset_value(subset)
 
 
+def _threshold_filtered_max_offset(
+    coverage: "CoverageResult",
+    segment_points: np.ndarray,
+    max_offset_threshold: float,
+    gate_slice: Optional[Tuple[int, int]],
+) -> Optional[float]:
+    """Return the max offset after applying threshold filters to projections."""
+
+    prepared = _prepare_refined_inputs(
+        coverage,
+        segment_points,
+        max_offset_threshold,
+        gate_slice,
+    )
+    if prepared is None:
+        return None
+    _proj, offsets, indices, _ = prepared
+    if indices.size == 0:
+        return None
+    return _max_offset_value(offsets[indices])
+
+
 def _prune_gate_hints(
     hints: GateTimingHints,
     timestamps: np.ndarray,
@@ -1009,37 +1035,23 @@ def _apply_gate_indices(
     return start_entry_idx, end_exit_idx
 
 
-def _build_coverage_diag(
-    coverage: CoverageResult,
-    crosses_start: bool,
-    crosses_end: bool,
-    start_entry_idx: Optional[int],
-    end_exit_idx: Optional[int],
-    raw_bounds: Optional[Tuple[float, float]],
-    raw_max_offset: Optional[float],
-    refined: Optional[_RefinedCoverage],
-    trimmed_max: Optional[float],
-    gate_slice: Optional[Tuple[int, int]],
-    gate_hints: GateTimingHints,
-    timing_indices: Optional[Tuple[int, int]],
-) -> Dict[str, object]:
-    """Return a diagnostics mapping summarising coverage evaluation."""
+def _assign_if_not_none(
+    target: Dict[str, object],
+    key: str,
+    value: Optional[object],
+) -> None:
+    """Attach ``key`` to ``target`` when ``value`` is present."""
 
-    diag: Dict[str, object] = {
-        "ratio": coverage.coverage_ratio,
-        "bounds_m": coverage.coverage_bounds,
-        "max_offset_m": coverage.max_offset_m,
-        "crosses_start": crosses_start,
-        "crosses_end": crosses_end,
-    }
-    if start_entry_idx is not None:
-        diag["start_entry_index"] = start_entry_idx
-    if end_exit_idx is not None:
-        diag["end_exit_index"] = end_exit_idx
-    if trimmed_max is not None:
-        diag["gate_trimmed_max_offset_m"] = trimmed_max
-    if gate_slice is not None:
-        diag["gate_slice_indices"] = gate_slice
+    if value is not None:
+        target[key] = value
+
+
+def _record_gate_crossings(
+    diag: Dict[str, object],
+    gate_hints: GateTimingHints,
+) -> None:
+    """Store diagnostic fields derived from start/finish gate hints."""
+
     if gate_hints.start is not None:
         diag["start_crossing_samples"] = (
             gate_hints.start.before_index,
@@ -1061,17 +1073,61 @@ def _build_coverage_diag(
         diag["end_crossing_span_m"] = (
             gate_hints.end.after_value - gate_hints.end.before_value
         )
+
+
+def _record_raw_bounds(
+    diag: Dict[str, object],
+    refined: Optional[_RefinedCoverage],
+    raw_bounds: Optional[Tuple[float, float]],
+    raw_max_offset: Optional[float],
+) -> None:
+    """Populate diagnostics describing the raw coverage span and offsets."""
+
     if refined is not None:
         diag["raw_bounds_m"] = refined.raw_bounds
         if raw_max_offset is not None:
             diag["raw_max_offset_m"] = raw_max_offset
-    else:
-        if raw_bounds is not None:
-            diag["raw_bounds_m"] = raw_bounds
-        if raw_max_offset is not None:
-            diag["raw_max_offset_m"] = raw_max_offset
-    if timing_indices is not None:
-        diag["timing_indices"] = timing_indices
+        return
+
+    if raw_bounds is not None:
+        diag["raw_bounds_m"] = raw_bounds
+    if raw_max_offset is not None:
+        diag["raw_max_offset_m"] = raw_max_offset
+
+
+def _build_coverage_diag(
+    coverage: CoverageResult,
+    crosses_start: bool,
+    crosses_end: bool,
+    start_entry_idx: Optional[int],
+    end_exit_idx: Optional[int],
+    raw_bounds: Optional[Tuple[float, float]],
+    raw_max_offset: Optional[float],
+    refined: Optional[_RefinedCoverage],
+    trimmed_max: Optional[float],
+    threshold_filtered_max: Optional[float],
+    gate_slice: Optional[Tuple[int, int]],
+    gate_hints: GateTimingHints,
+    timing_indices: Optional[Tuple[int, int]],
+) -> Dict[str, object]:
+    """Return a diagnostics mapping summarising coverage evaluation."""
+
+    diag: Dict[str, object] = {
+        "ratio": coverage.coverage_ratio,
+        "bounds_m": coverage.coverage_bounds,
+        "max_offset_m": coverage.max_offset_m,
+        "crosses_start": crosses_start,
+        "crosses_end": crosses_end,
+    }
+    _assign_if_not_none(diag, "start_entry_index", start_entry_idx)
+    _assign_if_not_none(diag, "end_exit_index", end_exit_idx)
+    _assign_if_not_none(diag, "gate_trimmed_max_offset_m", trimmed_max)
+    if threshold_filtered_max is not None:
+        diag["threshold_filtered_max_offset_m"] = float(threshold_filtered_max)
+    _assign_if_not_none(diag, "gate_slice_indices", gate_slice)
+    _record_gate_crossings(diag, gate_hints)
+    _record_raw_bounds(diag, refined, raw_bounds, raw_max_offset)
+    _assign_if_not_none(diag, "timing_indices", timing_indices)
     return diag
 
 
@@ -1204,181 +1260,207 @@ def match_activity_to_segment(
         "segment_id": segment_id,
         "activity_id": activity_id,
     }
+    timings: Dict[str, float] = {}
+    diagnostics["timings"] = timings
+    overall_start = perf_counter()
 
-    cache_hit = False
+    def _emit_outcome(matched: bool) -> None:
+        """Record total runtime and forward diagnostics to the logger."""
+
+        timings["total_s"] = perf_counter() - overall_start
+        _log_match_outcome(segment_id, activity_id, cache_hit, matched, diagnostics)
+
     try:
-        prepared_segment, cache_hit = _get_prepared_segment(
-            segment_id,
-            tolerances,
-            runner,
-        )
-        prepared_activity = _prepare_activity(
-            runner,
-            activity_id,
+        cache_hit = False
+        try:
+            stage_start = perf_counter()
+            prepared_segment, cache_hit = _get_prepared_segment(
+                segment_id,
+                tolerances,
+                runner,
+            )
+            timings["prepare_segment_s"] = perf_counter() - stage_start
+
+            stage_start = perf_counter()
+            prepared_activity = _prepare_activity(
+                runner,
+                activity_id,
+                prepared_segment,
+                tolerances,
+            )
+            timings["prepare_activity_s"] = perf_counter() - stage_start
+        except Exception as exc:  # noqa: BLE001
+            diagnostics["failure_reason"] = "preprocessing_failed"
+            diagnostics["preprocessing_error"] = str(exc)
+            _emit_outcome(False)
+            raise
+        diagnostics["preprocessing"] = {
+            "segment": {
+                "metric_points": int(prepared_segment.metric_points.shape[0]),
+                "simplified_points": int(prepared_segment.simplified_points.shape[0]),
+                "resampled_points": int(prepared_segment.resampled_points.shape[0]),
+                "effective_simplification_m": prepared_segment.simplification_tolerance_m,
+                "effective_resample_m": prepared_segment.resample_interval_m,
+                "simplification_capped": prepared_segment.simplification_capped,
+                "resample_capped": prepared_segment.resample_capped,
+            },
+            "activity": {
+                "metric_points": int(prepared_activity.metric_points.shape[0]),
+                "simplified_points": int(prepared_activity.simplified_points.shape[0]),
+                "resampled_points": int(prepared_activity.resampled_points.shape[0]),
+                "effective_simplification_m": prepared_activity.simplification_tolerance_m,
+                "effective_resample_m": prepared_activity.resample_interval_m,
+                "simplification_capped": prepared_activity.simplification_capped,
+                "resample_capped": prepared_activity.resample_capped,
+            },
+        }
+
+        stage_start = perf_counter()
+        (
+            coverage,
+            coverage_diag,
+            timing_bounds,
+            timing_indices,
+            gate_hints,
+        ) = _compute_coverage_diagnostics(
+            prepared_activity,
             prepared_segment,
-            tolerances,
+            max_offset_threshold=MATCHING_MAX_OFFSET_M,
+            start_tolerance_m=tolerances.start_tolerance_m,
         )
-    except Exception as exc:  # noqa: BLE001
-        diagnostics["failure_reason"] = "preprocessing_failed"
-        diagnostics["preprocessing_error"] = str(exc)
-        _log_match_outcome(segment_id, activity_id, cache_hit, False, diagnostics)
-        raise
-    diagnostics["preprocessing"] = {
-        "segment": {
-            "metric_points": int(prepared_segment.metric_points.shape[0]),
-            "simplified_points": int(prepared_segment.simplified_points.shape[0]),
-            "resampled_points": int(prepared_segment.resampled_points.shape[0]),
-            "effective_simplification_m": prepared_segment.simplification_tolerance_m,
-            "effective_resample_m": prepared_segment.resample_interval_m,
-            "simplification_capped": prepared_segment.simplification_capped,
-            "resample_capped": prepared_segment.resample_capped,
-        },
-        "activity": {
-            "metric_points": int(prepared_activity.metric_points.shape[0]),
-            "simplified_points": int(prepared_activity.simplified_points.shape[0]),
-            "resampled_points": int(prepared_activity.resampled_points.shape[0]),
-            "effective_simplification_m": prepared_activity.simplification_tolerance_m,
-            "effective_resample_m": prepared_activity.resample_interval_m,
-            "simplification_capped": prepared_activity.simplification_capped,
-            "resample_capped": prepared_activity.resample_capped,
-        },
-    }
+        timings["coverage_s"] = perf_counter() - stage_start
+        diagnostics["coverage"] = coverage_diag
+        if (
+            coverage.max_offset_m is not None
+            and coverage.max_offset_m > MATCHING_MAX_OFFSET_M
+        ):
+            diagnostics["failure_reason"] = "coverage_offset_exceeded"
+            _emit_outcome(False)
+            return MatchResult(
+                False,
+                coverage_ratio=coverage.coverage_ratio,
+                diagnostics=diagnostics,
+            )
+        if (
+            coverage.coverage_ratio < tolerances.coverage_threshold
+            or coverage.coverage_bounds is None
+        ):
+            diagnostics["failure_reason"] = "coverage_threshold_not_met"
+            _emit_outcome(False)
+            return MatchResult(
+                False, coverage_ratio=coverage.coverage_ratio, diagnostics=diagnostics
+            )
 
-    (
-        coverage,
-        coverage_diag,
-        timing_bounds,
-        timing_indices,
-        gate_hints,
-    ) = _compute_coverage_diagnostics(
-        prepared_activity,
-        prepared_segment,
-        max_offset_threshold=MATCHING_MAX_OFFSET_M,
-        start_tolerance_m=tolerances.start_tolerance_m,
-    )
-    diagnostics["coverage"] = coverage_diag
-    if (
-        coverage.max_offset_m is not None
-        and coverage.max_offset_m > MATCHING_MAX_OFFSET_M
-    ):
-        diagnostics["failure_reason"] = "coverage_offset_exceeded"
-        _log_match_outcome(segment_id, activity_id, cache_hit, False, diagnostics)
-        return MatchResult(
-            False,
-            coverage_ratio=coverage.coverage_ratio,
-            diagnostics=diagnostics,
+        crosses_start = coverage_diag.get("crosses_start")
+        crosses_end = coverage_diag.get("crosses_end")
+        if crosses_start is not True or crosses_end is not True:
+            diagnostics["failure_reason"] = "segment_gate_not_crossed"
+            _emit_outcome(False)
+            return MatchResult(
+                False,
+                coverage_ratio=coverage.coverage_ratio,
+                diagnostics=diagnostics,
+            )
+
+        stage_start = perf_counter()
+        direction = check_direction(
+            prepared_activity.metric_points,
+            prepared_segment.metric_points,
+            start_tolerance_m=tolerances.start_tolerance_m,
+            projections=coverage.projections,
+            coverage_bounds=coverage.coverage_bounds,
         )
-    if (
-        coverage.coverage_ratio < tolerances.coverage_threshold
-        or coverage.coverage_bounds is None
-    ):
-        diagnostics["failure_reason"] = "coverage_threshold_not_met"
-        _log_match_outcome(segment_id, activity_id, cache_hit, False, diagnostics)
-        return MatchResult(
-            False, coverage_ratio=coverage.coverage_ratio, diagnostics=diagnostics
+        timings["direction_s"] = perf_counter() - stage_start
+        diagnostics["direction"] = {
+            "matches": direction.matches_direction,
+            "max_start_distance_m": direction.max_start_distance_m,
+            "direction_score": direction.direction_score,
+        }
+        if not direction.matches_direction:
+            diagnostics["failure_reason"] = "direction_check_failed"
+            _emit_outcome(False)
+            return MatchResult(
+                False,
+                coverage_ratio=coverage.coverage_ratio,
+                diagnostics=diagnostics,
+            )
+
+        stage_start = perf_counter()
+        (
+            matched,
+            frechet_distance,
+            _dtw_distance,
+            similarity_threshold_m,
+            similarity_diag,
+        ) = _evaluate_similarity(
+            prepared_activity,
+            prepared_segment,
+            coverage,
+            start_tolerance_m=tolerances.start_tolerance_m,
+            max_offset_threshold=MATCHING_MAX_OFFSET_M,
+            base_threshold_m=tolerances.frechet_tolerance_m,
         )
+        timings["similarity_s"] = perf_counter() - stage_start
+        diagnostics.update(similarity_diag)
 
-    crosses_start = coverage_diag.get("crosses_start")
-    crosses_end = coverage_diag.get("crosses_end")
-    if crosses_start is not True or crosses_end is not True:
-        diagnostics["failure_reason"] = "segment_gate_not_crossed"
-        _log_match_outcome(segment_id, activity_id, cache_hit, False, diagnostics)
-        return MatchResult(
-            False,
-            coverage_ratio=coverage.coverage_ratio,
-            diagnostics=diagnostics,
+        if not matched:
+            diagnostics.setdefault("failure_reason", "similarity_threshold_not_met")
+            _emit_outcome(False)
+            return MatchResult(
+                False,
+                score=frechet_distance,
+                max_deviation_m=frechet_distance,
+                coverage_ratio=coverage.coverage_ratio,
+                diagnostics=diagnostics,
+            )
+
+        elapsed_time = None
+        timing_diag: Dict[str, object] = {}
+        stage_start = perf_counter()
+        try:
+            timing_range = timing_bounds or coverage.coverage_bounds
+            if timing_range is None:
+                raise ValueError("Missing coverage bounds for timing estimate")
+            estimate = estimate_segment_time(
+                prepared_activity,
+                prepared_segment,
+                timing_range,
+                projections=coverage.projections,
+                sample_indices=timing_indices,
+                gate_hints=gate_hints,
+            )
+        except Exception as exc:  # noqa: BLE001
+            diagnostics["timing_error"] = str(exc)
+            _LOG.debug("Timing estimation failed", exc_info=True)
+            estimate = SegmentTimingEstimate(0.0, None, None, None, None)
+        finally:
+            timings["timing_s"] = perf_counter() - stage_start
+        elapsed_time = estimate.elapsed_time_s
+        timing_diag = {
+            "elapsed_time_s": estimate.elapsed_time_s,
+            "entry_index": estimate.entry_index,
+            "exit_index": estimate.exit_index,
+            "entry_time_s": estimate.entry_time_s,
+            "exit_time_s": estimate.exit_time_s,
+        }
+        diagnostics["timing"] = timing_diag
+
+        similarity_method = (
+            "frechet" if frechet_distance <= similarity_threshold_m else "dtw"
         )
+        diagnostics["similarity_method"] = similarity_method
 
-    direction = check_direction(
-        prepared_activity.metric_points,
-        prepared_segment.metric_points,
-        start_tolerance_m=tolerances.start_tolerance_m,
-        projections=coverage.projections,
-        coverage_bounds=coverage.coverage_bounds,
-    )
-    diagnostics["direction"] = {
-        "matches": direction.matches_direction,
-        "max_start_distance_m": direction.max_start_distance_m,
-        "direction_score": direction.direction_score,
-    }
-    if not direction.matches_direction:
-        diagnostics["failure_reason"] = "direction_check_failed"
-        _log_match_outcome(segment_id, activity_id, cache_hit, False, diagnostics)
+        _emit_outcome(True)
         return MatchResult(
-            False,
-            coverage_ratio=coverage.coverage_ratio,
-            diagnostics=diagnostics,
-        )
-
-    (
-        matched,
-        frechet_distance,
-        _dtw_distance,
-        similarity_threshold_m,
-        similarity_diag,
-    ) = _evaluate_similarity(
-        prepared_activity,
-        prepared_segment,
-        coverage,
-        start_tolerance_m=tolerances.start_tolerance_m,
-        max_offset_threshold=MATCHING_MAX_OFFSET_M,
-        base_threshold_m=tolerances.frechet_tolerance_m,
-    )
-    diagnostics.update(similarity_diag)
-
-    if not matched:
-        diagnostics.setdefault("failure_reason", "similarity_threshold_not_met")
-        _log_match_outcome(segment_id, activity_id, cache_hit, False, diagnostics)
-        return MatchResult(
-            False,
+            True,
             score=frechet_distance,
             max_deviation_m=frechet_distance,
             coverage_ratio=coverage.coverage_ratio,
+            elapsed_time_s=elapsed_time,
             diagnostics=diagnostics,
         )
-
-    elapsed_time = None
-    timing_diag: Dict[str, object] = {}
-    try:
-        timing_range = timing_bounds or coverage.coverage_bounds
-        if timing_range is None:
-            raise ValueError("Missing coverage bounds for timing estimate")
-        estimate = estimate_segment_time(
-            prepared_activity,
-            prepared_segment,
-            timing_range,
-            projections=coverage.projections,
-            sample_indices=timing_indices,
-            gate_hints=gate_hints,
-        )
-    except Exception as exc:  # noqa: BLE001
-        diagnostics["timing_error"] = str(exc)
-        _LOG.debug("Timing estimation failed", exc_info=True)
-        estimate = SegmentTimingEstimate(0.0, None, None, None, None)
-    elapsed_time = estimate.elapsed_time_s
-    timing_diag = {
-        "elapsed_time_s": estimate.elapsed_time_s,
-        "entry_index": estimate.entry_index,
-        "exit_index": estimate.exit_index,
-        "entry_time_s": estimate.entry_time_s,
-        "exit_time_s": estimate.exit_time_s,
-    }
-    diagnostics["timing"] = timing_diag
-
-    similarity_method = (
-        "frechet" if frechet_distance <= similarity_threshold_m else "dtw"
-    )
-    diagnostics["similarity_method"] = similarity_method
-
-    _log_match_outcome(segment_id, activity_id, cache_hit, True, diagnostics)
-    return MatchResult(
-        True,
-        score=frechet_distance,
-        max_deviation_m=frechet_distance,
-        coverage_ratio=coverage.coverage_ratio,
-        elapsed_time_s=elapsed_time,
-        diagnostics=diagnostics,
-    )
+    finally:
+        timings["total_s"] = perf_counter() - overall_start
 
 
 def _get_prepared_segment(
@@ -1463,11 +1545,23 @@ def _log_match_outcome(
     if isinstance(timing, Mapping):
         elapsed = timing.get("elapsed_time_s")
 
+    stage_timings = diagnostics.get("timings")
+    total_duration = None
+    coverage_time = None
+    similarity_time = None
+    timing_time = None
+    if isinstance(stage_timings, Mapping):
+        total_duration = stage_timings.get("total_s")
+        coverage_time = stage_timings.get("coverage_s")
+        similarity_time = stage_timings.get("similarity_s")
+        timing_time = stage_timings.get("timing_s")
+
     _LOG.info(
         (
             "matcher outcome segment=%s activity=%s matched=%s cache_hit=%s "
             "frechet_m=%s dtw_m=%s coverage_ratio=%s elapsed_s=%s method=%s "
-            "failure=%s seg_resampled=%s act_resampled=%s"
+            "failure=%s seg_resampled=%s act_resampled=%s duration_s=%s "
+            "coverage_s=%s similarity_s=%s timing_s=%s"
         ),
         segment_id,
         activity_id,
@@ -1481,6 +1575,10 @@ def _log_match_outcome(
         diagnostics.get("failure_reason"),
         segment_stats.get("resampled_points"),
         activity_stats.get("resampled_points"),
+        total_duration,
+        coverage_time,
+        similarity_time,
+        timing_time,
     )
 
 
@@ -1494,12 +1592,22 @@ def _trim_activity_resampled(
     """Return the portion of the activity resampled points covering the segment."""
 
     coverage = compute_coverage(activity_points, segment_points)
-    trimmed = _extract_offset_window(
+    offset_window = _extract_offset_window(
         activity_points,
         getattr(coverage, "offsets", None),
         max_offset_threshold,
     )
-    if trimmed is not None:
+    if offset_window is not None:
+        trimmed, subset_indices = offset_window
+        monotonic = _trim_monotonic_projection_window(
+            activity_points,
+            segment_points,
+            coverage.projections,
+            subset_indices,
+            trimmed,
+        )
+        if monotonic is not None:
+            return monotonic
         return trimmed
 
     projections = coverage.projections
@@ -1516,7 +1624,143 @@ def _trim_activity_resampled(
     indices = np.nonzero(mask)[0]
     if indices.size < 2:
         return activity_points
-    return activity_points[indices[0] : indices[-1] + 1]
+    trimmed = activity_points[indices[0] : indices[-1] + 1]
+    monotonic = _trim_monotonic_projection_window(
+        activity_points,
+        segment_points,
+        projections,
+        indices,
+        trimmed,
+    )
+    if monotonic is not None:
+        return monotonic
+    return trimmed
+
+
+def _trim_monotonic_projection_window(
+    activity_points: np.ndarray,
+    segment_points: np.ndarray,
+    projections: Optional[np.ndarray],
+    indices: np.ndarray,
+    trimmed_window: np.ndarray,
+) -> Optional[np.ndarray]:
+    """Return a refined slice when coverage projections backtrack heavily."""
+
+    if (
+        projections is None
+        or projections.shape[0] != activity_points.shape[0]
+        or indices.size < 2
+    ):
+        return None
+
+    segment_length = _polyline_length(segment_points)
+    if segment_length <= 0.0:
+        return None
+
+    window_length = _polyline_length(trimmed_window)
+    if window_length <= 0.0:
+        return None
+
+    proj_subset = projections[indices]
+    if proj_subset.size < 2:
+        return None
+
+    progress_steps = np.diff(proj_subset)
+    jitter = max(segment_length * 0.002, 2.0)
+    backtrack_fraction = (
+        float(np.mean(progress_steps < -jitter)) if progress_steps.size else 0.0
+    )
+    length_ratio = window_length / segment_length if segment_length > 0.0 else 0.0
+
+    needs_trim = length_ratio > 1.25 or backtrack_fraction > 0.2
+    if not needs_trim:
+        return None
+
+    chunk = _select_backtrack_chunk(
+        projections,
+        indices,
+        segment_length,
+    )
+    if chunk is None:
+        return None
+    chunk_indices, span_value = chunk
+    if chunk_indices.size < 2 or span_value <= 0.0:
+        return None
+    if span_value < segment_length * 0.8:
+        return None
+
+    refined = _gather_index_segments(activity_points, chunk_indices)
+    if refined.shape[0] < 2:
+        return None
+    return refined
+
+
+def _gather_index_segments(
+    points: np.ndarray,
+    indices: np.ndarray,
+) -> np.ndarray:
+    """Return points corresponding to the provided indices as contiguous slices."""
+
+    if indices.size == 0:
+        return np.empty((0, points.shape[1]), dtype=points.dtype)
+
+    segments: list[np.ndarray] = []
+    start = prev = int(indices[0])
+    for raw_idx in map(int, indices[1:]):
+        if raw_idx == prev + 1:
+            prev = raw_idx
+            continue
+        segments.append(points[start : prev + 1])
+        start = raw_idx
+        prev = raw_idx
+    segments.append(points[start : prev + 1])
+
+    if len(segments) == 1:
+        return segments[0]
+    return np.concatenate(segments, axis=0)
+
+
+def _select_backtrack_chunk(
+    projections: Optional[np.ndarray],
+    indices: np.ndarray,
+    total_length: float,
+) -> Optional[tuple[np.ndarray, float]]:
+    """Return a forward-moving projection slice spanning most of the segment."""
+
+    if (
+        projections is None
+        or projections.shape[0] == 0
+        or indices.size < 2
+        or total_length <= 0.0
+    ):
+        return None
+
+    subset = projections[indices]
+    if subset.size < 2:
+        return None
+
+    future_max = np.maximum.accumulate(subset[::-1])[::-1]
+    spans = future_max - subset
+    best_start = int(np.argmax(spans))
+    best_span = float(spans[best_start])
+    if best_span <= 0.0:
+        return None
+
+    min_span = total_length * 0.7
+    if best_span < min_span:
+        return None
+
+    target_value = subset[best_start] + best_span
+    tolerance = max(total_length * 0.01, 5.0)
+    candidate = np.nonzero(subset[best_start:] >= target_value - tolerance)[0]
+    if candidate.size == 0:
+        return None
+    best_end = best_start + int(candidate[0])
+    if best_end <= best_start:
+        return None
+
+    chunk_indices = indices[best_start : best_end + 1]
+    return chunk_indices, best_span
 
 
 def _match_subset_indices(
@@ -1607,6 +1851,8 @@ def _resolve_gate_end_index(
     if exit_target is None:
         return subset_indices.shape[0] - 1
     end_limit = exit_target + 1
+    if end_hint is not None:
+        end_limit = max(end_limit, end_hint.after_index + 1)
     candidates = np.nonzero(subset_indices <= end_limit)[0]
     if candidates.size == 0:
         return None
@@ -1684,8 +1930,8 @@ def _extract_offset_window(
     activity_points: np.ndarray,
     offsets: Optional[np.ndarray],
     max_offset_threshold: float,
-) -> Optional[np.ndarray]:
-    """Return a filtered slice using offset thresholds, or ``None`` if unavailable."""
+) -> Optional[tuple[np.ndarray, np.ndarray]]:
+    """Return a filtered slice and indices using offset thresholds, or ``None``."""
 
     if offsets is None or offsets.shape[0] != activity_points.shape[0]:
         return None
@@ -1707,6 +1953,7 @@ def _extract_offset_window(
     start_idx, end_idx = int(indices[0]), int(indices[-1])
 
     window = activity_points[start_idx : end_idx + 1]
+    window_indices = np.arange(start_idx, end_idx + 1, dtype=int)
     window_offsets = offsets[start_idx : end_idx + 1]
     tight_threshold = max(max_offset_threshold * 0.5, 25.0)
     tight_mask = window_offsets <= tight_threshold
@@ -1714,10 +1961,11 @@ def _extract_offset_window(
         tight_mask[0] = True
         tight_mask[-1] = True
         window = window[tight_mask]
+        window_indices = window_indices[tight_mask]
 
     if window.shape[0] < 2:
         return None
-    return window
+    return window, window_indices
 
 
 def _slice_segment_to_bounds(
@@ -1892,6 +2140,15 @@ def _compute_coverage_diagnostics(
     if trimmed_max is not None:
         coverage.max_offset_m = trimmed_max
 
+    threshold_filtered_max = _threshold_filtered_max_offset(
+        coverage,
+        prepared_segment.resampled_points,
+        max_offset_threshold,
+        gate_slice,
+    )
+    if threshold_filtered_max is not None:
+        coverage.max_offset_m = threshold_filtered_max
+
     refined = _refine_coverage_window(
         coverage,
         prepared_segment.resampled_points,
@@ -1958,6 +2215,7 @@ def _compute_coverage_diagnostics(
         raw_max_offset,
         refined,
         trimmed_max,
+        threshold_filtered_max,
         gate_slice,
         gate_hints,
         timing_indices,
@@ -2044,6 +2302,7 @@ def _evaluate_similarity(
             similarity_threshold,
             min(coverage.max_offset_m, max_offset_threshold) * 0.85,
         )
+    length_ratio_threshold: Optional[float] = None
     if trimmed_max_offset is not None and np.isfinite(trimmed_max_offset):
         similarity_threshold = max(
             similarity_threshold,
@@ -2055,6 +2314,26 @@ def _evaluate_similarity(
             similarity_threshold,
             min(trimmed_max_offset * 5.0, adaptive_cap),
         )
+
+    coverage_bounds = getattr(coverage, "coverage_bounds", None)
+    if (
+        coverage_bounds is not None
+        and MATCHING_FRECHET_LENGTH_RATIO > 0.0
+        and trimmed_max_offset is not None
+        and np.isfinite(trimmed_max_offset)
+    ):
+        span = float(max(coverage_bounds[1] - coverage_bounds[0], 0.0))
+        coverage_ratio = getattr(coverage, "coverage_ratio", 0.0) or 0.0
+        if (
+            span > 0.0
+            and coverage_ratio >= max(0.995, MATCHING_COVERAGE_THRESHOLD)
+            and trimmed_max_offset <= max_offset_threshold * 0.75
+        ):
+            length_ratio_threshold = span * MATCHING_FRECHET_LENGTH_RATIO
+            similarity_threshold = max(
+                similarity_threshold,
+                length_ratio_threshold,
+            )
 
     frechet_distance = discrete_frechet_distance(trimmed_activity, segment_window)
     matched = frechet_distance <= similarity_threshold
@@ -2077,6 +2356,8 @@ def _evaluate_similarity(
             "trimmed_max_offset_m": trimmed_max_offset,
         },
     }
+    if length_ratio_threshold is not None:
+        diag["similarity_window"]["length_ratio_threshold_m"] = length_ratio_threshold
     if gate_clipped:
         diag["similarity_window"]["gate_trimmed"] = True
     if dtw_distance is not None:

@@ -158,43 +158,123 @@ _NEIL_PRICE_END_INDEX = 4550
 _NEIL_PRICE_PRIOR_ACTIVITY_ID = 14_471_169_094
 _NEIL_PRICE_PRIOR_ELAPSED_S = 2118.0
 
+_ANDREW_KNOTT_STRAVA_ID = "21144580"
+_ANDREW_KNOTT_SS25_ACTIVITY_ID = 14_547_101_577
+_ANDREW_KNOTT_SS25_ELAPSED_S = 1898.0
+_ANDREW_KNOTT_SWORD_ACTIVITY_ID = 15_053_677_684
+_ANDREW_KNOTT_SWORD_ELAPSED_S = 1272.0
 
-def _load_neil_price_segment() -> SegmentGeometry:
-    """Return SS25-02 geometry using Neil Price's capture payload."""
+_LUKE_SIBIETA_STRAVA_ID = "6340998"
+_LUKE_SIBIETA_SS25_ACTIVITY_ID = 14_618_107_187
+_LUKE_SIBIETA_SS25_ELAPSED_S = 1729.0
 
-    segment_payload = _require_capture_response(
+_BEN_WERNICK_STRAVA_ID = "19923466"
+_BEN_WERNICK_SS25_ACTIVITY_ID = 14_422_381_338
+_BEN_WERNICK_SS25_ELAPSED_S = 1579.0
+_BEN_WERNICK_CANNON_ACTIVITY_ID = 14_783_453_586
+_BEN_WERNICK_CANNON_ELAPSED_S = 619.0
+_BEN_WERNICK_CANNON_SEGMENT_ID = 38_955_187
+
+_SS25_START_DATE_LOCAL = "2025-05-08T00:00:00+00:00"
+_SS25_END_DATE_LOCAL = "2025-06-02T00:00:00+00:00"
+_CANNON_START_DATE_LOCAL = "2025-06-01T00:00:00+00:00"
+_CANNON_END_DATE_LOCAL = "2025-06-16T00:00:00+00:00"
+_SWORD_SEGMENT_ID = 25_947_126
+_SWORD_START_DATE_LOCAL = "2025-07-01T00:00:00+00:00"
+_SWORD_END_DATE_LOCAL = "2025-07-14T00:00:00+00:00"
+
+
+def _load_segment_geometry_from_capture(
+    *, strava_id: str, segment_id: int
+) -> SegmentGeometry:
+    """Return segment geometry based on a captured Strava response."""
+
+    payload = _require_capture_response(
         {
             "method": "GET",
-            "url": f"https://www.strava.com/api/v3/segments/{_NEIL_PRICE_SEGMENT_ID}",
-            "identity": _NEIL_PRICE_STRAVA_ID,
+            "url": f"https://www.strava.com/api/v3/segments/{segment_id}",
+            "identity": strava_id,
             "params": {},
             "body": {},
         }
     )
-    polyline = (segment_payload.get("map") or {}).get("polyline")
+    polyline = (payload.get("map") or {}).get("polyline")
     if not polyline:
         raise AssertionError("Segment capture missing polyline data")
     metadata = {
-        "name": segment_payload.get("name"),
-        "raw": segment_payload,
+        "name": payload.get("name"),
+        "raw": payload,
     }
     return SegmentGeometry(
-        segment_id=_NEIL_PRICE_SEGMENT_ID,
+        segment_id=segment_id,
         points=[],
-        distance_m=float(segment_payload.get("distance", 0.0)),
+        distance_m=float(payload.get("distance", 0.0)),
         polyline=polyline,
         metadata=metadata,
+    )
+
+
+def _load_neil_price_segment() -> SegmentGeometry:
+    """Return SS25-02 geometry using Neil Price's capture payload."""
+
+    return _load_segment_geometry_from_capture(
+        strava_id=_NEIL_PRICE_STRAVA_ID,
+        segment_id=_NEIL_PRICE_SEGMENT_ID,
+    )
+
+
+def _load_sword_segment() -> SegmentGeometry:
+    """Return the Sword segment geometry from Ben Wernick's capture."""
+
+    return _load_segment_geometry_from_capture(
+        strava_id=_BEN_WERNICK_STRAVA_ID,
+        segment_id=_SWORD_SEGMENT_ID,
     )
 
 
 def _load_neil_price_activity_stream_by_id(activity_id: int) -> ActivityTrack:
     """Return Neil Price's SS25-02 activity track for a specific activity."""
 
+    return _load_activity_stream_from_capture(
+        strava_id=_NEIL_PRICE_STRAVA_ID,
+        activity_id=activity_id,
+    )
+
+
+def _load_neil_price_activity_stream() -> ActivityTrack:
+    """Return Neil Price's SS25-02 activity track from capture streams."""
+
+    return _load_neil_price_activity_stream_by_id(_NEIL_PRICE_ACTIVITY_ID)
+
+
+def _load_neil_price_effort_for_activity(activity_id: int) -> dict:
+    """Return Strava's official SS25-02 effort entry for a specific activity."""
+
+    return _load_segment_effort_entry(
+        strava_id=_NEIL_PRICE_STRAVA_ID,
+        segment_id=_NEIL_PRICE_SEGMENT_ID,
+        start_date_local=_SS25_START_DATE_LOCAL,
+        end_date_local=_SS25_END_DATE_LOCAL,
+        activity_id=activity_id,
+    )
+
+
+def _load_neil_price_effort_entry() -> dict:
+    """Return Strava's official effort entry for Neil Price on SS25-02."""
+
+    return _load_neil_price_effort_for_activity(_NEIL_PRICE_ACTIVITY_ID)
+
+
+def _load_activity_stream_from_capture(
+    *, strava_id: str, activity_id: int
+) -> ActivityTrack:
+    """Return an activity stream for any runner using captured samples."""
+
     stream_payload = _require_capture_response(
         {
             "method": "GET",
             "url": f"https://www.strava.com/api/v3/activities/{activity_id}/streams",
-            "identity": _NEIL_PRICE_STRAVA_ID,
+            "identity": strava_id,
             "params": {
                 "keys": "latlng,time",
                 "key_by_type": "true",
@@ -220,24 +300,25 @@ def _load_neil_price_activity_stream_by_id(activity_id: int) -> ActivityTrack:
     )
 
 
-def _load_neil_price_activity_stream() -> ActivityTrack:
-    """Return Neil Price's SS25-02 activity track from capture streams."""
-
-    return _load_neil_price_activity_stream_by_id(_NEIL_PRICE_ACTIVITY_ID)
-
-
-def _load_neil_price_effort_for_activity(activity_id: int) -> dict:
-    """Return Strava's official SS25-02 effort entry for a specific activity."""
+def _load_segment_effort_entry(
+    *,
+    strava_id: str,
+    segment_id: int,
+    start_date_local: str,
+    end_date_local: str,
+    activity_id: int,
+) -> dict:
+    """Return Strava's official effort entry for a runner/activity combo."""
 
     efforts_payload = _require_capture_response(
         {
             "method": "GET",
             "url": "https://www.strava.com/api/v3/segment_efforts",
-            "identity": _NEIL_PRICE_STRAVA_ID,
+            "identity": strava_id,
             "params": {
-                "segment_id": _NEIL_PRICE_SEGMENT_ID,
-                "start_date_local": "2025-05-08T00:00:00+00:00",
-                "end_date_local": "2025-06-02T00:00:00+00:00",
+                "segment_id": segment_id,
+                "start_date_local": start_date_local,
+                "end_date_local": end_date_local,
                 "per_page": 200,
                 "page": 1,
             },
@@ -250,13 +331,16 @@ def _load_neil_price_effort_for_activity(activity_id: int) -> dict:
         activity = effort.get("activity") or {}
         if int(activity.get("id", 0)) == activity_id:
             return effort
-    raise AssertionError("Neil Price effort not found in captured payload")
+    raise AssertionError("Captured efforts missing requested activity")
 
 
-def _load_neil_price_effort_entry() -> dict:
-    """Return Strava's official effort entry for Neil Price on SS25-02."""
+def _load_ben_wernick_cannon_segment() -> SegmentGeometry:
+    """Return the 'It's a ball that comes out a cannon' segment geometry."""
 
-    return _load_neil_price_effort_for_activity(_NEIL_PRICE_ACTIVITY_ID)
+    return _load_segment_geometry_from_capture(
+        strava_id=_BEN_WERNICK_STRAVA_ID,
+        segment_id=_BEN_WERNICK_CANNON_SEGMENT_ID,
+    )
 
 
 def test_prepare_geometry_resamples_points(segment_geometry: SegmentGeometry) -> None:
@@ -884,6 +968,427 @@ def test_ss25_02_neil_price_prior_elapsed_time() -> None:
     assert estimate.entry_time_s <= 60.0
 
 
+def test_ss25_02_andrew_knott_elapsed_time() -> None:
+    """Andrew Knott's fastest SS25-02 attempt should track Strava's effort."""
+
+    segment = _load_neil_price_segment()
+    activity = _load_activity_stream_from_capture(
+        strava_id=_ANDREW_KNOTT_STRAVA_ID,
+        activity_id=_ANDREW_KNOTT_SS25_ACTIVITY_ID,
+    )
+    effort_entry = _load_segment_effort_entry(
+        strava_id=_ANDREW_KNOTT_STRAVA_ID,
+        segment_id=_NEIL_PRICE_SEGMENT_ID,
+        start_date_local=_SS25_START_DATE_LOCAL,
+        end_date_local=_SS25_END_DATE_LOCAL,
+        activity_id=_ANDREW_KNOTT_SS25_ACTIVITY_ID,
+    )
+
+    prepared_segment = prepare_geometry(
+        segment,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+    prepared_activity = prepare_activity(
+        activity,
+        transformer=prepared_segment.transformer,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+
+    (
+        coverage,
+        diag,
+        timing_bounds,
+        timing_indices,
+        gate_hints,
+    ) = _compute_coverage_diagnostics(
+        prepared_activity,
+        prepared_segment,
+        max_offset_threshold=MATCHING_MAX_OFFSET_M,
+        start_tolerance_m=MATCHING_START_TOLERANCE_M,
+    )
+
+    assert diag.get("crosses_start") is True
+    assert diag.get("crosses_end") is True
+    timing_range = timing_bounds or coverage.coverage_bounds
+    assert timing_range is not None
+    assert timing_indices is not None
+    gate_slice = diag.get("gate_slice_indices")
+    assert gate_slice is not None
+    entry_idx, exit_idx = timing_indices
+    gate_start, gate_end = gate_slice
+    assert gate_start <= entry_idx <= gate_end
+    assert gate_start <= exit_idx <= gate_end
+
+    estimate = estimate_segment_time(
+        prepared_activity,
+        prepared_segment,
+        timing_range,
+        projections=coverage.projections,
+        sample_indices=timing_indices,
+        gate_hints=gate_hints,
+    )
+
+    expected_elapsed = float(
+        effort_entry.get("elapsed_time", _ANDREW_KNOTT_SS25_ELAPSED_S)
+    )
+    # Andrew's capture still differs by ~3.5s because of a GPS spike near the
+    # finish; assert we stay within a tight ±4s guardrail to catch regressions.
+    assert estimate.elapsed_time_s == pytest.approx(expected_elapsed, abs=4.0)
+
+    official_start = int(effort_entry.get("start_index", 0))
+    official_end = int(effort_entry.get("end_index", gate_end))
+    assert estimate.entry_index is not None
+    assert abs(estimate.entry_index - official_start) <= 1
+    assert estimate.exit_index is not None
+    assert abs(estimate.exit_index - official_end) <= 50
+
+
+def test_ss25_02_luke_sibieta_elapsed_time() -> None:
+    """Luke Sibieta's SS25-02 effort should stay aligned with Strava."""
+
+    segment = _load_neil_price_segment()
+    activity = _load_activity_stream_from_capture(
+        strava_id=_LUKE_SIBIETA_STRAVA_ID,
+        activity_id=_LUKE_SIBIETA_SS25_ACTIVITY_ID,
+    )
+    effort_entry = _load_segment_effort_entry(
+        strava_id=_LUKE_SIBIETA_STRAVA_ID,
+        segment_id=_NEIL_PRICE_SEGMENT_ID,
+        start_date_local=_SS25_START_DATE_LOCAL,
+        end_date_local=_SS25_END_DATE_LOCAL,
+        activity_id=_LUKE_SIBIETA_SS25_ACTIVITY_ID,
+    )
+
+    prepared_segment = prepare_geometry(
+        segment,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+    prepared_activity = prepare_activity(
+        activity,
+        transformer=prepared_segment.transformer,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+
+    (
+        coverage,
+        diag,
+        timing_bounds,
+        timing_indices,
+        gate_hints,
+    ) = _compute_coverage_diagnostics(
+        prepared_activity,
+        prepared_segment,
+        max_offset_threshold=MATCHING_MAX_OFFSET_M,
+        start_tolerance_m=MATCHING_START_TOLERANCE_M,
+    )
+
+    assert diag.get("crosses_start") is True
+    assert diag.get("crosses_end") is True
+    timing_range = timing_bounds or coverage.coverage_bounds
+    assert timing_range is not None
+    assert timing_indices is not None
+    gate_slice = diag.get("gate_slice_indices")
+    assert gate_slice is not None
+    entry_idx, exit_idx = timing_indices
+    gate_start, gate_end = gate_slice
+    assert gate_start <= entry_idx <= gate_end
+    assert gate_start <= exit_idx <= gate_end
+
+    estimate = estimate_segment_time(
+        prepared_activity,
+        prepared_segment,
+        timing_range,
+        projections=coverage.projections,
+        sample_indices=timing_indices,
+        gate_hints=gate_hints,
+    )
+
+    expected_elapsed = float(
+        effort_entry.get("elapsed_time", _LUKE_SIBIETA_SS25_ELAPSED_S)
+    )
+    assert estimate.elapsed_time_s == pytest.approx(expected_elapsed, abs=0.5)
+
+    official_start = int(effort_entry.get("start_index", 0))
+    official_end = int(effort_entry.get("end_index", gate_end))
+    assert estimate.entry_index is not None
+    assert abs(estimate.entry_index - official_start) <= 1
+    assert estimate.exit_index is not None
+    assert abs(estimate.exit_index - official_end) <= 1
+
+
+def test_ss25_02_ben_wernick_elapsed_time() -> None:
+    """Ben Wernick's SS25-02 effort should remain near Strava's elapsed time."""
+
+    segment = _load_neil_price_segment()
+    activity = _load_activity_stream_from_capture(
+        strava_id=_BEN_WERNICK_STRAVA_ID,
+        activity_id=_BEN_WERNICK_SS25_ACTIVITY_ID,
+    )
+    effort_entry = _load_segment_effort_entry(
+        strava_id=_BEN_WERNICK_STRAVA_ID,
+        segment_id=_NEIL_PRICE_SEGMENT_ID,
+        start_date_local=_SS25_START_DATE_LOCAL,
+        end_date_local=_SS25_END_DATE_LOCAL,
+        activity_id=_BEN_WERNICK_SS25_ACTIVITY_ID,
+    )
+
+    prepared_segment = prepare_geometry(
+        segment,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+    prepared_activity = prepare_activity(
+        activity,
+        transformer=prepared_segment.transformer,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+
+    (
+        coverage,
+        diag,
+        timing_bounds,
+        timing_indices,
+        gate_hints,
+    ) = _compute_coverage_diagnostics(
+        prepared_activity,
+        prepared_segment,
+        max_offset_threshold=MATCHING_MAX_OFFSET_M,
+        start_tolerance_m=MATCHING_START_TOLERANCE_M,
+    )
+
+    assert diag.get("crosses_start") is True
+    assert diag.get("crosses_end") is True
+    timing_range = timing_bounds or coverage.coverage_bounds
+    assert timing_range is not None
+    assert timing_indices is not None
+    gate_slice = diag.get("gate_slice_indices")
+    assert gate_slice is not None
+    entry_idx, exit_idx = timing_indices
+    gate_start, gate_end = gate_slice
+    assert gate_start <= entry_idx <= gate_end
+    assert gate_start <= exit_idx <= gate_end
+
+    estimate = estimate_segment_time(
+        prepared_activity,
+        prepared_segment,
+        timing_range,
+        projections=coverage.projections,
+        sample_indices=timing_indices,
+        gate_hints=gate_hints,
+    )
+
+    expected_elapsed = float(
+        effort_entry.get("elapsed_time", _BEN_WERNICK_SS25_ELAPSED_S)
+    )
+    assert estimate.elapsed_time_s == pytest.approx(expected_elapsed, abs=1.0)
+
+    official_start = int(effort_entry.get("start_index", 0))
+    official_end = int(effort_entry.get("end_index", gate_end))
+    assert estimate.entry_index is not None
+    assert abs(estimate.entry_index - official_start) <= 1
+    assert estimate.exit_index is not None
+    assert abs(estimate.exit_index - official_end) <= 1
+
+
+def test_sword_andrew_knott_elapsed_time() -> None:
+    """Andrew Knott's Sword effort should respect the official gate window."""
+
+    segment = _load_sword_segment()
+    activity = _load_activity_stream_from_capture(
+        strava_id=_ANDREW_KNOTT_STRAVA_ID,
+        activity_id=_ANDREW_KNOTT_SWORD_ACTIVITY_ID,
+    )
+    effort_entry = _load_segment_effort_entry(
+        strava_id=_ANDREW_KNOTT_STRAVA_ID,
+        segment_id=_SWORD_SEGMENT_ID,
+        start_date_local=_SWORD_START_DATE_LOCAL,
+        end_date_local=_SWORD_END_DATE_LOCAL,
+        activity_id=_ANDREW_KNOTT_SWORD_ACTIVITY_ID,
+    )
+
+    prepared_segment = prepare_geometry(
+        segment,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+    prepared_activity = prepare_activity(
+        activity,
+        transformer=prepared_segment.transformer,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+
+    (
+        coverage,
+        diag,
+        timing_bounds,
+        timing_indices,
+        gate_hints,
+    ) = _compute_coverage_diagnostics(
+        prepared_activity,
+        prepared_segment,
+        max_offset_threshold=MATCHING_MAX_OFFSET_M,
+        start_tolerance_m=MATCHING_START_TOLERANCE_M,
+    )
+
+    assert diag.get("crosses_start") is True
+    assert diag.get("crosses_end") is True
+    timing_range = timing_bounds or coverage.coverage_bounds
+    assert timing_range is not None
+    assert timing_indices is not None
+    gate_slice = diag.get("gate_slice_indices")
+    assert gate_slice is not None
+    entry_idx, exit_idx = timing_indices
+    gate_start, gate_end = gate_slice
+    assert gate_start <= entry_idx <= gate_end
+    assert gate_start <= exit_idx <= gate_end
+
+    estimate = estimate_segment_time(
+        prepared_activity,
+        prepared_segment,
+        timing_range,
+        projections=coverage.projections,
+        sample_indices=timing_indices,
+        gate_hints=gate_hints,
+    )
+
+    expected_elapsed = float(
+        effort_entry.get("elapsed_time", _ANDREW_KNOTT_SWORD_ELAPSED_S)
+    )
+    assert estimate.elapsed_time_s == pytest.approx(expected_elapsed, abs=3.0)
+
+    official_start = int(effort_entry.get("start_index", gate_start))
+    official_end = int(effort_entry.get("end_index", gate_end))
+    assert estimate.entry_index is not None
+    assert abs(estimate.entry_index - official_start) <= 2
+    assert estimate.exit_index is not None
+    assert abs(estimate.exit_index - official_end) <= 2
+
+
+def test_cannon_ben_wernick_elapsed_time() -> None:
+    """Ben Wernick's cannon-segment effort should match Strava's elapsed time."""
+
+    segment = _load_ben_wernick_cannon_segment()
+    activity = _load_activity_stream_from_capture(
+        strava_id=_BEN_WERNICK_STRAVA_ID,
+        activity_id=_BEN_WERNICK_CANNON_ACTIVITY_ID,
+    )
+    effort_entry = _load_segment_effort_entry(
+        strava_id=_BEN_WERNICK_STRAVA_ID,
+        segment_id=_BEN_WERNICK_CANNON_SEGMENT_ID,
+        start_date_local=_CANNON_START_DATE_LOCAL,
+        end_date_local=_CANNON_END_DATE_LOCAL,
+        activity_id=_BEN_WERNICK_CANNON_ACTIVITY_ID,
+    )
+
+    prepared_segment = prepare_geometry(
+        segment,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+    prepared_activity = prepare_activity(
+        activity,
+        transformer=prepared_segment.transformer,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+
+    (
+        coverage,
+        diag,
+        timing_bounds,
+        timing_indices,
+        gate_hints,
+    ) = _compute_coverage_diagnostics(
+        prepared_activity,
+        prepared_segment,
+        max_offset_threshold=MATCHING_MAX_OFFSET_M,
+        start_tolerance_m=MATCHING_START_TOLERANCE_M,
+    )
+
+    assert diag.get("crosses_start") is True
+    assert diag.get("crosses_end") is True
+    timing_range = timing_bounds or coverage.coverage_bounds
+    assert timing_range is not None
+    assert timing_indices is not None
+    gate_slice = diag.get("gate_slice_indices")
+    assert gate_slice is not None
+    entry_idx, exit_idx = timing_indices
+    gate_start, gate_end = gate_slice
+    assert gate_start <= entry_idx <= gate_end
+    assert gate_start <= exit_idx <= gate_end
+
+    estimate = estimate_segment_time(
+        prepared_activity,
+        prepared_segment,
+        timing_range,
+        projections=coverage.projections,
+        sample_indices=timing_indices,
+        gate_hints=gate_hints,
+    )
+
+    expected_elapsed = float(
+        effort_entry.get("elapsed_time", _BEN_WERNICK_CANNON_ELAPSED_S)
+    )
+    assert estimate.elapsed_time_s == pytest.approx(expected_elapsed, abs=0.5)
+
+    official_start = int(effort_entry.get("start_index", 0))
+    official_end = int(effort_entry.get("end_index", gate_end))
+    assert estimate.entry_index is not None
+    assert abs(estimate.entry_index - official_start) <= 1
+    assert estimate.exit_index is not None
+    assert abs(estimate.exit_index - official_end) <= 1
+
+
+def test_match_activity_accepts_neil_price_fast_attempt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """match_activity_to_segment should now validate Neil Price's fastest run."""
+
+    runner = Runner(
+        name="Neil Price", strava_id=_NEIL_PRICE_STRAVA_ID, refresh_token="tk"
+    )
+    segment = _load_neil_price_segment()
+    activity = _load_neil_price_activity_stream()
+
+    monkeypatch.setattr(
+        "strava_competition.matching.fetch_segment_geometry",
+        lambda *_args, **_kwargs: segment,
+    )
+    monkeypatch.setattr(
+        "strava_competition.matching.fetch_activity_stream",
+        lambda *_args, **_kwargs: activity,
+    )
+
+    tolerances = Tolerances(
+        start_tolerance_m=MATCHING_START_TOLERANCE_M,
+        frechet_tolerance_m=MATCHING_FRECHET_TOLERANCE_M,
+        coverage_threshold=MATCHING_COVERAGE_THRESHOLD,
+        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+    )
+
+    result = match_activity_to_segment(
+        runner,
+        activity.activity_id,
+        segment.segment_id,
+        tolerances,
+    )
+
+    assert result.matched is True
+    assert result.elapsed_time_s == pytest.approx(_NEIL_PRICE_ELAPSED_S, abs=1.0)
+    diagnostics = result.diagnostics
+    assert diagnostics.get("similarity_method") in {"frechet", "dtw"}
+    similarity_window = diagnostics.get("similarity_window")
+    assert similarity_window is not None
+    assert similarity_window.get("length_ratio_threshold_m") is not None
+
+
 def test_match_activity_to_segment_success(monkeypatch: pytest.MonkeyPatch) -> None:
     """match_activity_to_segment succeeds when the geometry aligns."""
 
@@ -1029,8 +1534,8 @@ def test_gate_clipping_uses_full_activity_context() -> None:
         segment_points,
         start_tolerance_m=60.0,
     )
-    assert fallback.shape[0] == 2
-    assert np.allclose(fallback, trimmed_activity[:2])
+    assert fallback.shape[0] == trimmed_activity.shape[0]
+    assert np.allclose(fallback, trimmed_activity)
 
 
 def test_match_activity_to_segment_direction_failure(

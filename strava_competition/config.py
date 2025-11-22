@@ -101,8 +101,15 @@ STRAVA_API_CAPTURE_DIR = os.getenv("STRAVA_API_CAPTURE_DIR", "strava_api_capture
 # requested otherwise.
 STRAVA_API_CAPTURE_OVERWRITE = _env_bool("STRAVA_API_CAPTURE_OVERWRITE", False)
 
-# Skip refresh-token exchange when working entirely from cached API responses.
-STRAVA_SKIP_TOKEN_REFRESH = _env_bool("STRAVA_SKIP_TOKEN_REFRESH", True)
+# Token responses include highly sensitive data and typically do not need to
+# be captured for offline analysis. Disable capture/replay for the OAuth token
+# exchange unless explicitly opted in.
+STRAVA_TOKEN_CAPTURE_ENABLED = _env_bool("STRAVA_TOKEN_CAPTURE_ENABLED", False)
+
+# When enabled, the tool never makes live Strava requests; a cache miss raises
+# an error instead of falling back to HTTP. Useful for deterministic offline
+# runs.
+STRAVA_OFFLINE_MODE = _env_bool("STRAVA_OFFLINE_MODE", False)
 
 # ---------------------------------------------------------------------------
 # Performance tuning
@@ -199,6 +206,12 @@ MATCHING_START_TOLERANCE_M = _env_float("MATCHING_START_TOLERANCE_M", 25.0)
 
 # Baseline distance (metres) for discrete Fréchet similarity checks.
 MATCHING_FRECHET_TOLERANCE_M = _env_float("MATCHING_FRECHET_TOLERANCE_M", 20.0)
+
+# Fraction of the covered segment length used to expand the Fréchet tolerance
+# for well-aligned efforts on long routes. Acts as an additive guard so the
+# matcher can accept accurate runs even when GPS projections progress at a
+# different rate along the course. Set to zero to disable the scaling.
+MATCHING_FRECHET_LENGTH_RATIO = _env_float("MATCHING_FRECHET_LENGTH_RATIO", 0.07)
 
 # Minimum portion of the segment an activity must cover to count as a match.
 MATCHING_COVERAGE_THRESHOLD = _env_float("MATCHING_COVERAGE_THRESHOLD", 0.99)
