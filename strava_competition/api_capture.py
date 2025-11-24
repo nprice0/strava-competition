@@ -83,6 +83,14 @@ class APICapture:
     def _file_path(self, signature: str) -> Path:
         return self._base_dir / signature[0:2] / signature[2:4] / f"{signature}.json"
 
+    def _overlay_path(self, signature: str) -> Path:
+        return (
+            self._base_dir
+            / signature[0:2]
+            / signature[2:4]
+            / f"{signature}.overlay.json"
+        )
+
     def _ensure_parent(self, path: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -109,17 +117,50 @@ class APICapture:
             json.dump(payload, handle, ensure_ascii=True, indent=2)
         temp_path.replace(path)
 
-    def fetch(self, key: CaptureKey) -> Optional[Any]:
-        """Return cached response when replay is active."""
+    def _load_record(
+        self,
+        path: Path,
+        signature: str,
+        *,
+        source: str,
+    ) -> Optional["CaptureRecord"]:
+        payload = self._read_file(path)
+        if payload is None:
+            return None
+        captured_at = payload.get("captured_at")
+        try:
+            captured_dt = (
+                datetime.fromisoformat(captured_at)
+                if isinstance(captured_at, str)
+                else None
+            )
+        except Exception:  # pragma: no cover - defensive fallback
+            captured_dt = None
+        return CaptureRecord(
+            signature=signature,
+            response=payload.get("response"),
+            captured_at=captured_dt,
+            source=source,
+        )
+
+    def fetch_record(self, key: CaptureKey) -> Optional["CaptureRecord"]:
+        """Return cached response + metadata when replay is active."""
 
         if not self._replay_enabled:
             return None
         signature = self._signature(key)
-        path = self._file_path(str(signature))
-        record = self._read_file(path)
-        if record is None:
-            return None
-        return record.get("response")
+        overlay = self._load_record(
+            self._overlay_path(signature), signature, source="overlay"
+        )
+        if overlay is not None:
+            return overlay
+        return self._load_record(self._file_path(signature), signature, source="base")
+
+    def fetch(self, key: CaptureKey) -> Optional[Any]:
+        """Return cached response when replay is active (legacy helper)."""
+
+        record = self.fetch_record(key)
+        return None if record is None else record.response
 
     def store(self, key: CaptureKey, response: Any) -> None:
         """Persist a JSON response when recording is active."""
@@ -138,6 +179,23 @@ class APICapture:
         with self._lock:
             self._write_file(path, payload)
         _LOGGER.debug("Captured response signature=%s path=%s", signature, path)
+
+    def store_overlay(self, key: CaptureKey, response: Any) -> None:
+        """Persist an enriched response that should override the base capture."""
+
+        if not self._record_enabled:
+            return
+        signature = self._signature(key)
+        path = self._overlay_path(signature)
+        payload = {
+            "captured_at": datetime.now(timezone.utc).isoformat(),
+            "request": key.to_serialisable(),
+            "response": response,
+            "source": "overlay",
+        }
+        with self._lock:
+            self._write_file(path, payload)
+        _LOGGER.debug("Overlay stored signature=%s path=%s", signature, path)
 
 
 _CAPTURE = APICapture()
@@ -158,6 +216,31 @@ def replay_response(
     )
 
 
+@dataclass(frozen=True)
+class CaptureRecord:
+    """Container for cached payloads and their metadata."""
+
+    signature: str
+    response: Any
+    captured_at: datetime | None
+    source: str
+
+
+def replay_response_with_meta(
+    method: str,
+    url: str,
+    identity: str,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    body: Optional[Dict[str, Any]] = None,
+) -> Optional[CaptureRecord]:
+    """Return cached response and metadata when replay mode is active."""
+
+    return _CAPTURE.fetch_record(
+        CaptureKey(method=method, url=url, identity=identity, params=params, body=body)
+    )
+
+
 def record_response(
     method: str,
     url: str,
@@ -170,6 +253,23 @@ def record_response(
     """Persist a JSON serialisable response when capture mode is active."""
 
     _CAPTURE.store(
+        CaptureKey(method=method, url=url, identity=identity, params=params, body=body),
+        response,
+    )
+
+
+def record_overlay_response(
+    method: str,
+    url: str,
+    identity: str,
+    response: Any,
+    *,
+    params: Optional[Dict[str, Any]] = None,
+    body: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Persist an enriched response that should override the cached payload."""
+
+    _CAPTURE.store_overlay(
         CaptureKey(method=method, url=url, identity=identity, params=params, body=body),
         response,
     )

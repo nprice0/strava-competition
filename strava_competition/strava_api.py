@@ -11,14 +11,21 @@ import logging
 import random
 import threading
 import time
-from datetime import datetime
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, TypeAlias
 
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
-from .api_capture import record_response, replay_response
+from .api_capture import (
+    record_overlay_response,
+    record_response,
+    replay_response,
+    replay_response_with_meta,
+    CaptureRecord,
+)
 from .auth import get_access_token
 from .config import (
     STRAVA_BASE_URL,
@@ -33,6 +40,21 @@ from .config import (
     STRAVA_BACKOFF_MAX_SECONDS,
     STRAVA_OFFLINE_MODE,
     ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS,
+    STRAVA_API_CAPTURE_ENABLED,
+    STRAVA_API_CAPTURE_OVERWRITE,
+    STRAVA_API_REPLAY_ENABLED,
+    REPLAY_CACHE_TTL_DAYS,
+    REPLAY_MAX_LOOKBACK_DAYS,
+    REPLAY_EPSILON_SECONDS,
+)
+from .replay_tail import (
+    cache_is_stale,
+    chunk_activities,
+    dedupe_activities,
+    merge_activity_lists,
+    summarize_activities,
+    exceeds_lookback,
+    clamp_window,
 )
 from .errors import (
     StravaAPIError,
@@ -73,6 +95,45 @@ _session.headers.update(
 )
 
 DEFAULT_TIMEOUT: int = REQUEST_TIMEOUT
+ACTIVITY_PAGE_SIZE = 200
+
+
+@dataclass
+class CachedPage:
+    """Container for a cached activities page and its capture metadata."""
+
+    params: Dict[str, Any]
+    data: JSONList
+    record: Optional[CaptureRecord]
+
+
+_runner_tail_lock = threading.Lock()
+_runner_tail_refreshed_until: Dict[str, datetime] = {}
+
+
+def _to_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _runner_refresh_deadline(runner_id: str) -> Optional[datetime]:
+    with _runner_tail_lock:
+        return _runner_tail_refreshed_until.get(runner_id)
+
+
+def _mark_runner_refreshed(runner_id: str, refresh_until: datetime) -> None:
+    with _runner_tail_lock:
+        current = _runner_tail_refreshed_until.get(runner_id)
+        if current is None or refresh_until > current:
+            _runner_tail_refreshed_until[runner_id] = refresh_until
+
+
+def _flatten_pages(pages: List[JSONList]) -> List[Dict[str, Any]]:
+    flattened: List[Dict[str, Any]] = []
+    for page in pages:
+        flattened.extend(page)
+    return flattened
 
 
 class RateLimiter:
@@ -276,6 +337,43 @@ def _replay_list_response(
         runner.name,
         page,
         type(cached).__name__,
+    )
+    return None
+
+
+def _replay_list_response_with_meta(
+    runner: "Runner",
+    url: str,
+    params: Dict[str, Any],
+    *,
+    context_label: str,
+    page: int,
+) -> Optional[CaptureRecord]:
+    """Return cached payload with metadata when replaying list endpoints."""
+
+    record = replay_response_with_meta(
+        "GET",
+        url,
+        _runner_identity(runner),
+        params=params,
+    )
+    if record is None:
+        return None
+    if isinstance(record.response, list):
+        logging.debug(
+            "Replay hit(meta) for %s runner=%s page=%s entries=%s",
+            context_label,
+            runner.name,
+            page,
+            len(record.response),
+        )
+        return record
+    logging.warning(
+        "Replay payload type mismatch for %s runner=%s page=%s type=%s",
+        context_label,
+        runner.name,
+        page,
+        type(record.response).__name__,
     )
     return None
 
@@ -662,37 +760,59 @@ def get_activities(  # noqa: C901 - pagination and auth flow
     activity_types: Optional[Iterable[str]] = ("Run",),
     max_pages: Optional[int] = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    """Fetch activities for a runner in [start_date, end_date].
-
-    Uses /athlete/activities with pagination (per_page=200). Returns a list
-    (possibly empty) or ``None`` on error. Inclusive range based on
-    ``start_date_local`` and filtered to ``activity_types`` when provided.
-    """
+    """Fetch activities for a runner in [start_date, end_date] with replay tailing."""
 
     def ensure_token() -> None:
         _ensure_runner_token(runner)
 
     after_ts = int(start_date.timestamp())
     before_ts = int(end_date.timestamp())
+    url = f"{STRAVA_BASE_URL}/athlete/activities"
+    base_params = {
+        "after": after_ts,
+        "before": before_ts,
+        "per_page": ACTIVITY_PAGE_SIZE,
+    }
+
+    raw_pages: List[JSONList] = []
+    cached_pages: List[CachedPage] = []
+    used_replay = False
+    replay_allowed = STRAVA_API_REPLAY_ENABLED
 
     def fetch_page(page: int) -> JSONList:
-        url = f"{STRAVA_BASE_URL}/athlete/activities"
-        params = {
-            "after": after_ts,
-            "before": before_ts,
-            "per_page": 200,
-            "page": page,
-        }
-        cache_params = dict(params)
-        cached = _replay_list_response(
-            runner,
-            url,
-            cache_params,
-            context_label="activities",
-            page=page,
-        )
-        if cached is not None:
-            return cached
+        nonlocal used_replay, replay_allowed
+        params = dict(base_params)
+        params["page"] = page
+        cache_record: Optional[CaptureRecord] = None
+        if replay_allowed:
+            cache_record = _replay_list_response_with_meta(
+                runner,
+                url,
+                params,
+                context_label="activities",
+                page=page,
+            )
+            if cache_record is not None:
+                if not STRAVA_OFFLINE_MODE and cache_is_stale(
+                    cache_record.captured_at, REPLAY_CACHE_TTL_DAYS
+                ):
+                    logging.info(
+                        "Replay cache TTL expired for runner=%s page=%s; forcing live fetch",
+                        runner.name,
+                        page,
+                    )
+                    replay_allowed = False
+                    cache_record = None
+                else:
+                    used_replay = True
+                    cached_pages.append(
+                        CachedPage(
+                            params=dict(params),
+                            data=cache_record.response,
+                            record=cache_record,
+                        )
+                    )
+                    return cache_record.response
         result = _fetch_page_with_retries(
             runner,
             url,
@@ -701,8 +821,9 @@ def get_activities(  # noqa: C901 - pagination and auth flow
             page=page,
         )
         if isinstance(result, list):
-            _record_list_response(runner, url, cache_params, result)
-        return result
+            _record_list_response(runner, url, dict(params), result)
+            return result
+        return []
 
     try:
         ensure_token()
@@ -713,7 +834,6 @@ def get_activities(  # noqa: C901 - pagination and auth flow
                 for value in activity_types
                 if str(value).strip()
             }
-        all_acts: List[Dict[str, Any]] = []
         page = 1
         attempted_refresh = False
         while True:
@@ -726,7 +846,9 @@ def get_activities(  # noqa: C901 - pagination and auth flow
                     and not attempted_refresh
                 ):
                     logging.info(
-                        f"401 for runner {runner.name} (activities). Refreshing token and retrying page {page}."
+                        "401 for runner %s (activities). Refreshing token and retrying page %s.",
+                        runner.name,
+                        page,
                     )
                     runner.access_token = None
                     ensure_token()
@@ -734,17 +856,35 @@ def get_activities(  # noqa: C901 - pagination and auth flow
                     data = fetch_page(page)
                 else:
                     raise
+            raw_pages.append(data)
             if not data:
                 break
-            all_acts.extend(data)
-            if len(data) < 200:
+            if len(data) < ACTIVITY_PAGE_SIZE:
                 break
             if max_pages is not None and page >= max_pages:
                 break
             page += 1
-        # Local filter by time & type
+
+        raw_activities = _flatten_pages(raw_pages)
+        if used_replay and not STRAVA_OFFLINE_MODE:
+            raw_activities, refreshed = _maybe_refresh_replay_tail(
+                runner,
+                url,
+                base_params,
+                cached_pages,
+                raw_activities,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            if refreshed:
+                # Replace raw_pages with re-chunked payloads for consistent pagination downstream.
+                raw_pages = chunk_activities(
+                    raw_activities,
+                    chunk_size=ACTIVITY_PAGE_SIZE,
+                )
+
         filtered: List[Dict[str, Any]] = []
-        for act in all_acts:
+        for act in raw_activities:
             if normalized_types and not _activity_type_matches(act, normalized_types):
                 continue
             start_local = act.get("start_date_local")
@@ -794,6 +934,146 @@ def get_activity_with_efforts(
     raise StravaAPIError(
         f"{context} returned non-object payload for runner {runner.name} activity={activity_id}"
     )
+
+
+def _maybe_refresh_replay_tail(
+    runner: Runner,
+    url: str,
+    base_params: Dict[str, Any],
+    cached_pages: List[CachedPage],
+    raw_activities: List[Dict[str, Any]],
+    *,
+    start_date: datetime,
+    end_date: datetime,
+) -> tuple[List[Dict[str, Any]], bool]:
+    if not cached_pages:
+        return raw_activities, False
+    cached_payloads = _flatten_pages([page.data for page in cached_pages])
+    stats = summarize_activities(cached_payloads)
+    if stats.latest is None:
+        return raw_activities, False
+    start_utc, end_utc = clamp_window(_to_utc(start_date), _to_utc(end_date))
+    if stats.latest >= end_utc:
+        return raw_activities, False
+    if exceeds_lookback(stats.latest, REPLAY_MAX_LOOKBACK_DAYS):
+        logging.info(
+            "Replay cache for runner=%s exceeds max lookback; skipping tail refresh",
+            runner.name,
+        )
+        return raw_activities, False
+    runner_id = _runner_identity(runner)
+    refreshed_until = _runner_refresh_deadline(runner_id)
+    if refreshed_until and refreshed_until >= end_utc:
+        return raw_activities, False
+    tail_pages = _fetch_tail_pages(
+        runner, url, base_params, stats.latest, start_utc, end_utc
+    )
+    if not tail_pages:
+        return raw_activities, False
+    tail_flat = _flatten_pages(tail_pages)
+    merged = merge_activity_lists(tail_flat, raw_activities)
+    paged = chunk_activities(merged, chunk_size=ACTIVITY_PAGE_SIZE)
+    _persist_enriched_pages(runner, url, base_params, paged)
+    _mark_runner_refreshed(runner_id, end_utc)
+    logging.info(
+        "Replay tail refresh runner=%s cached_latest=%s tail_end=%s live_pages=%s",
+        runner.name,
+        stats.latest,
+        end_utc,
+        len(tail_pages),
+    )
+    return merged, True
+
+
+def _fetch_tail_pages(
+    runner: Runner,
+    url: str,
+    base_params: Dict[str, Any],
+    latest_cached: datetime,
+    window_start: datetime,
+    window_end: datetime,
+) -> List[JSONList]:
+    per_page = int(base_params.get("per_page", ACTIVITY_PAGE_SIZE))
+    base_after = max(int(base_params.get("after", 0)), 0)
+    base_after_dt = datetime.fromtimestamp(base_after, tz=timezone.utc)
+    after_dt = max(
+        base_after_dt, latest_cached - timedelta(seconds=REPLAY_EPSILON_SECONDS)
+    )
+    after_dt = max(after_dt, window_start)
+    if after_dt >= window_end:
+        return []
+    after_ts = int(after_dt.timestamp())
+    before_ts = int(window_end.timestamp())
+    tail_pages: List[JSONList] = []
+    page = 1
+    while True:
+        params = {
+            "after": after_ts,
+            "before": before_ts,
+            "per_page": per_page,
+            "page": page,
+        }
+        data = _fetch_page_with_retries(
+            runner,
+            url,
+            params,
+            context_label="activities_tail",
+            page=page,
+        )
+        if not data:
+            break
+        if isinstance(data, list):
+            tail_pages.append(data)
+            _record_list_response(runner, url, dict(params), data)
+        if len(data) < per_page:
+            break
+        page += 1
+    return tail_pages
+
+
+def _persist_enriched_pages(
+    runner: Runner,
+    url: str,
+    base_params: Dict[str, Any],
+    page_payloads: List[JSONList],
+) -> None:
+    if not STRAVA_API_CAPTURE_ENABLED:
+        logging.warning(
+            "Capture disabled; cannot persist enriched replay data for runner=%s",
+            runner.name,
+        )
+        return
+    identity = _runner_identity(runner)
+    template = {
+        "after": base_params.get("after"),
+        "before": base_params.get("before"),
+        "per_page": base_params.get("per_page", ACTIVITY_PAGE_SIZE),
+    }
+    if not page_payloads:
+        params = dict(template)
+        params["page"] = 1
+        _write_page_overlay(identity, url, params, [])
+        return
+    for idx, payload in enumerate(page_payloads, start=1):
+        params = dict(template)
+        params["page"] = idx
+        _write_page_overlay(identity, url, params, payload)
+    # Ensure the next page is empty so replay pagination stops consistently.
+    params = dict(template)
+    params["page"] = len(page_payloads) + 1
+    _write_page_overlay(identity, url, params, [])
+
+
+def _write_page_overlay(
+    identity: str,
+    url: str,
+    params: Dict[str, Any],
+    payload: JSONList,
+) -> None:
+    if STRAVA_API_CAPTURE_OVERWRITE:
+        record_response("GET", url, identity, payload, params=params)
+    else:
+        record_overlay_response("GET", url, identity, payload, params=params)
 
 
 def _get_resource_json(

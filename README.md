@@ -81,6 +81,24 @@ ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true
 
 The app loads `.env` automatically when it starts.
 
+#### Replay-tail refresh knobs
+
+When `STRAVA_API_REPLAY_ENABLED` is on, the tool automatically tops up cached
+`/athlete/activities` pages with live data. You can tune the behaviour via
+environment variables:
+
+| Variable                   | Default | Description                                                                                                                     |
+| -------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `REPLAY_CACHE_TTL_DAYS`    | `7`     | Maximum age for cached pages before they are discarded and fully refetched. Set to `0` to disable the TTL.                      |
+| `REPLAY_MAX_LOOKBACK_DAYS` | `30`    | Guard that prevents replaying extremely old captures. When exceeded, the process logs a warning and performs a full live fetch. |
+| `REPLAY_EPSILON_SECONDS`   | `60`    | Small overlap injected into the tail window so activities near the cached boundary are never skipped.                           |
+| `REPLAY_MAX_PARALLELISM`   | `4`     | Caps how many runners are refreshed in parallel inside the distance service orchestration layer.                                |
+
+The hybrid replay-tail workflow automatically persists enriched pages back to
+the capture directory. When `STRAVA_API_CAPTURE_OVERWRITE` is `False` (the
+default), enriched data is stored in lightweight overlay files so existing
+captures remain untouched.
+
 ### Workbook layout
 
 All sheet names are case sensitive.

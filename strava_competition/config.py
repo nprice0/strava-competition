@@ -92,6 +92,18 @@ STRAVA_API_CAPTURE_ENABLED = _env_bool("STRAVA_API_CAPTURE_ENABLED", True)
 # enabled; otherwise the code raises an exception.
 STRAVA_API_REPLAY_ENABLED = _env_bool("STRAVA_API_REPLAY_ENABLED", True)
 
+# Maximum age (days) before a cached activity response is considered stale and
+# automatically refreshed from the live API. Set to 0 to disable the TTL.
+REPLAY_CACHE_TTL_DAYS = _env_int("REPLAY_CACHE_TTL_DAYS", 7)
+
+# Guardrail limiting how far back a replayed cache may attempt to "tail" fill
+# before falling back to a full live fetch. Set to 0 to disable.
+REPLAY_MAX_LOOKBACK_DAYS = _env_int("REPLAY_MAX_LOOKBACK_DAYS", 30)
+
+# Small overlap (seconds) applied when requesting the live tail window to avoid
+# missing activities that start near the cached boundary.
+REPLAY_EPSILON_SECONDS = _env_int("REPLAY_EPSILON_SECONDS", 60)
+
 # Directory (absolute or relative) where captured responses are stored. The
 # recorder organises files into subfolders using the request signature hash.
 STRAVA_API_CAPTURE_DIR = os.getenv("STRAVA_API_CAPTURE_DIR", "strava_api_capture")
@@ -116,6 +128,9 @@ STRAVA_OFFLINE_MODE = _env_bool("STRAVA_OFFLINE_MODE", False)
 # ---------------------------------------------------------------------------
 # Threads used per segment when fetching efforts in parallel.
 MAX_WORKERS = 4
+
+# Maximum parallel Strava runner fetches when preloading activity windows.
+REPLAY_MAX_PARALLELISM = _env_int("REPLAY_MAX_PARALLELISM", 4)
 
 # HTTP session pool sizes for concurrent requests.
 HTTP_POOL_CONNECTIONS = 20
