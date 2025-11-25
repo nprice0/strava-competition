@@ -16,7 +16,7 @@ Environment requirements:
 
 Usage example (defaults baked in for runner 829675 and 2005-11-16):
 
-    python fetch_runner_segment_efforts.py \
+    python -m strava_competition.tools.fetch_runner_segment_efforts \
         --refresh-token 331ef40838b2e09a39ffd884585ad5ebe3700107
 
 You can override the runner, date, paging window, and verbosity via CLI flags.

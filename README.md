@@ -137,33 +137,26 @@ The response includes the refresh token. Store it securely.
 
 ---
 
-## Helper script: `fetch_runner_segment_efforts`
+## CLI tools
 
-Located in `helper/fetch_runner_segment_efforts.py`, this standalone probe lets
-you inspect every segment effort Strava reports for a single runner over a
-specific window. It is handy when you need to debug subscriber-only segment
-data, reproduce a support request, or capture `include_all_efforts` payloads
-without running the full competition pipeline.
+Two focused utilities live under `strava_competition/tools` to help with
+support and debugging tasks. Both reuse the same `.env` credentials and
+dependencies as the main app.
 
-What it does:
+### `fetch_runner_segment_efforts`
 
-- Exchanges the supplied refresh token for a short-lived access token using the
-  credentials already configured in `.env`.
-- Calls `GET /athlete/activities` with `after`/`before` filters covering either
-  a single day (`--day`) or an arbitrary ISO8601 range (`--start`/`--end`).
-- Iterates each activity and fetches the detail view with
-  `include_all_efforts=true`, printing a concise JSON line per segment effort
-  (and optionally the full payload with `--print-json`).
+- Exchanges a refresh token for an access token, then walks a given day or
+  custom window of `/athlete/activities` results.
+- Fetches `include_all_efforts=true` for every activity in that window so you
+  can see exactly what Strava returns for a subscriber.
+- Prints a compact JSON summary per segment effort, with an optional
+  `--print-json` flag to dump each raw payload.
 
-### How to run it
-
-Activate your virtual environment and invoke the script from the repo root. The
-example below fetches Helen Lawrence’s segment efforts between
-`2025-11-03T00:00:00Z` (inclusive) and `2025-11-24T00:00:00Z` (exclusive):
+Run it from the repo root once your virtual environment is active:
 
 ```bash
 source .venv/bin/activate && \
-python helper/fetch_runner_segment_efforts.py \
+python -m strava_competition.tools.fetch_runner_segment_efforts \
    --runner-id 13056193 \
    --runner-name "Helen Lawrence" \
    --refresh-token abcdef5ffe85a428b5678fafe749e3a758cc3614 \
@@ -171,9 +164,34 @@ python helper/fetch_runner_segment_efforts.py \
    --end 2025-11-24T00:00:00Z
 ```
 
-You can omit `--start/--end` and pass `--day 2025-11-03` instead for a
-single-day window. Increase `--per-page` or set `--log-level DEBUG` when
-troubleshooting.
+### `deviation_map`
+
+- Reads runners and segments from the workbook, fetches the matching activity
+  stream plus segment geometry, and renders an interactive Folium map showing
+  where the athlete left the official course.
+- Highlights gate crossings, coverage diagnostics, and large offsets so you can
+  sanity-check matcher decisions or explain unusual leaderboard results.
+- Saves the output HTML wherever you choose (`maps/<slug>.html` by default, or
+  a custom path when you pass `--output`).
+
+Example invocation:
+
+```bash
+source .venv/bin/activate && \
+python -m strava_competition.tools.deviation_map \
+   --runner-name "Helen Lawrence" \
+   --segment-name "WS25 - Fancy A Tipple After Mass" \
+   --activity-id 1234567890 \
+  --threshold-m 40 \
+  --output maps/helen-ws25.html
+
+The generated HTML will appear under the path you specified (or the default
+`maps/` folder) so you can open it directly in a browser.
+```
+
+The legacy `helper/fetch_runner_segment_efforts.py` entry point now just calls
+into the new `tools` module so older docs keep working, but future updates will
+land under `strava_competition/tools/*`.
 
 ---
 
