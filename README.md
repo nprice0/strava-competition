@@ -21,6 +21,45 @@ You get:
 
 Optional sheets such as team summaries or distance summaries appear only when the source data is present. Blank team cells in the input automatically exclude a runner from that competition.
 
+### Architecture at a glance
+
+The data journeys below show how each run flows from the Excel workbook through the services layer and back out to the results workbook. Segment and distance competitions share common plumbing while fanning out into their respective aggregation paths.
+
+```mermaid
+flowchart LR
+  subgraph Input
+    Excel[(Excel workbook)]
+    Config[Config & .env]
+  end
+
+  Reader[excel_reader.py]
+  SegmentSvc[SegmentService]
+  DistanceSvc[DistanceService]
+  StravaAPI["strava_api.py<br/>(capture / replay / live)"]
+  ActivityScan[Activity scan & matcher fallbacks]
+  Aggregation["segment_aggregation.py<br/>& distance_aggregation.py"]
+  Writer[excel_writer.py]
+  Output[("Results workbook<br/>+ refreshed tokens")]
+
+  Excel --> Reader --> SegmentSvc
+  Excel --> Reader --> DistanceSvc
+  Config --> Reader
+  Config --> SegmentSvc
+  Config --> DistanceSvc
+
+  SegmentSvc -->|segment efforts| StravaAPI
+  DistanceSvc -->|athlete activities| StravaAPI
+  SegmentSvc --> ActivityScan --> StravaAPI
+
+  StravaAPI -->|live fetch| StravaCloud[(Strava API)]
+  StravaAPI -->|capture / replay| Capture[(Capture store)]
+  Capture --> StravaAPI
+
+  SegmentSvc --> Aggregation
+  DistanceSvc --> Aggregation
+  Aggregation --> Writer --> Output
+```
+
 ---
 
 ## Requirements
