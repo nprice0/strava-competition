@@ -602,13 +602,18 @@ def get_segment_efforts(  # noqa: C901 - pagination and auth flow
       * One retry on first 401 (refresh + reattempt same page)
       * Paginates (per_page=200) until fewer than 200 returned
       * Applies timeout / retries from the configured Session
+      * Applies REPLAY_CACHE_TTL_DAYS to cached segment efforts
     Returns a list (possibly empty) or None on unrecoverable error.
     """
 
     def ensure_token() -> None:
         _ensure_runner_token(runner)
 
+    # Track whether replay is allowed (disabled once TTL expires)
+    replay_allowed = STRAVA_API_REPLAY_ENABLED
+
     def fetch_page(page: int) -> JSONList:
+        nonlocal replay_allowed
         url = f"{STRAVA_BASE_URL}/segment_efforts"
         params = {
             "segment_id": segment_id,
@@ -618,15 +623,30 @@ def get_segment_efforts(  # noqa: C901 - pagination and auth flow
             "page": page,
         }
         cache_params = dict(params)
-        cached = _replay_list_response(
-            runner,
-            url,
-            cache_params,
-            context_label="segment efforts",
-            page=page,
-        )
-        if cached is not None:
-            return cached
+
+        # Check cache with TTL support
+        if replay_allowed:
+            cache_record = _replay_list_response_with_meta(
+                runner,
+                url,
+                cache_params,
+                context_label="segment efforts",
+                page=page,
+            )
+            if cache_record is not None:
+                if not STRAVA_OFFLINE_MODE and cache_is_stale(
+                    cache_record.captured_at, REPLAY_CACHE_TTL_DAYS
+                ):
+                    logging.info(
+                        "Segment efforts cache TTL expired for runner=%s segment=%s page=%s; forcing live fetch",
+                        runner.name,
+                        segment_id,
+                        page,
+                    )
+                    replay_allowed = False
+                else:
+                    return cache_record.response
+
         result = _fetch_page_with_retries(
             runner,
             url,

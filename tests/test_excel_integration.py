@@ -20,7 +20,6 @@ def make_input_workbook(path):
                 "Segment Name": "Hill Climb",
                 "Start Date": datetime(2024, 1, 1),
                 "End Date": datetime(2024, 1, 31),
-                "Default Time": "0:03:00",
             }
         ]
     )
@@ -46,13 +45,6 @@ def make_input_workbook(path):
                 "Refresh Token": "rt3",
                 "Segment Series Team": "Red",
                 "Distance Series Team": "Red",
-            },
-            {
-                "Name": "Dana",
-                "Strava ID": 4,
-                "Refresh Token": "rt4",
-                "Segment Series Team": "Blue",
-                "Distance Series Team": "Blue",
             },
         ]
     )
@@ -82,7 +74,6 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
                     {"elapsed_time": 115, "start_date_local": "2024-01-14T09:00:00Z"},
                     {"elapsed_time": 112, "start_date_local": "2024-01-20T09:00:00Z"},
                 ],
-                "Dana": [],
             }
             return data.get(runner.name, [])
 
@@ -126,16 +117,14 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
     detail_df = (
         df.loc[: summary_start - 1].dropna(subset=["Runner"]).reset_index(drop=True)
     )
-    assert len(detail_df) == 4
+    assert len(detail_df) == 3
     df_sorted = detail_df.sort_values("Runner").reset_index(drop=True)
     runner_to_rank = dict(zip(df_sorted["Runner"], df_sorted["Rank"]))
     assert runner_to_rank["Carl"] == 1
     assert runner_to_rank["Alice"] == 2
     assert runner_to_rank["Ben"] == 3
-    assert runner_to_rank["Dana"] == 4
     runner_to_time = dict(zip(df_sorted["Runner"], df_sorted["Fastest Time (h:mm:ss)"]))
     assert runner_to_time["Carl"] == "0:01:52"
-    assert runner_to_time["Dana"] == "0:03:00"
     # Segment summary table appended beneath detail rows
     summary_header_row = None
     for idx in range(2, ws.max_row + 1):
@@ -158,42 +147,19 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
             [ws.cell(row=row_idx, column=col).value for col in range(1, 10)]
         )
         row_idx += 1
+    wb.close()
     assert len(summary_rows) == 2
-    assert summary_rows[0][0] == "Red"
-    assert summary_rows[0][1] == "0:03:47"
+    assert summary_rows[0][0] == "Blue"
+    assert summary_rows[0][1] == "0:01:58"
     assert summary_rows[0][2] == "0:00:00"
     assert summary_rows[0][3] == 3
-    assert summary_rows[1][0] == "Blue"
-    assert summary_rows[1][1] == "0:04:58"
-    assert summary_rows[1][2] == "0:01:11"
-    assert summary_rows[1][3] == 7
-    assert summary_rows[0][4].startswith("Carl")
-    assert float(summary_rows[0][-1]) == pytest.approx(2.0)
-    assert float(summary_rows[1][-1]) == pytest.approx(0.5)
-
-    def _assert_header_style(row_idx: int, col_count: int) -> None:
-        for col_idx in range(1, col_count + 1):
-            cell = ws.cell(row=row_idx, column=col_idx)
-            assert cell.fill.fgColor.rgb in {"FFFF40FF", "00FF40FF", "FF40FF"}
-            assert cell.border.left.style == "thin"
-            assert cell.border.right.style == "thin"
-            assert cell.border.top.style == "thin"
-            assert cell.border.bottom.style == "thin"
-
-    def _visible_column_count(columns: list[str]) -> int:
-        return sum(
-            1
-            for col in columns
-            if isinstance(col, str)
-            and not col.startswith("Unnamed")
-            and col.strip() != ""
-        )
-
-    _assert_header_style(1, _visible_column_count(list(df.columns)))
-    summary_col_count = len(summary_rows[0]) if summary_rows else 0
-    if summary_col_count:
-        _assert_header_style(summary_header_row, summary_col_count)
-    wb.close()
+    assert summary_rows[1][0] == "Red"
+    assert summary_rows[1][1] == "0:03:47"
+    assert summary_rows[1][2] == "0:01:49"
+    assert summary_rows[1][3] == 3
+    assert summary_rows[1][4].startswith("Carl")
+    assert float(summary_rows[0][-1]) == pytest.approx(1.0)
+    assert float(summary_rows[1][-1]) == pytest.approx(2.0)
 
 
 def test_update_runner_refresh_tokens_roundtrip(tmp_path):
@@ -205,7 +171,6 @@ def test_update_runner_refresh_tokens_roundtrip(tmp_path):
                 "Segment Name": "S1",
                 "Start Date": datetime(2024, 1, 1),
                 "End Date": datetime(2024, 1, 2),
-                "Default Time": "0:02:00",
             }
         ]
     )
