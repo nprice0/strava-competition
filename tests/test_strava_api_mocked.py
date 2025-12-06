@@ -185,22 +185,28 @@ def test_fetch_segment_geometry_offline_requires_capture(monkeypatch):
 
 
 def test_get_segment_efforts_offline_cache_miss(monkeypatch):
+    """Verify get_segment_efforts raises StravaAPIError on cache miss in offline mode."""
     runner = Runner(
         name="Offline", strava_id=42, refresh_token="rt", segment_team="Solo"
     )
 
     monkeypatch.setattr(strava_api, "STRAVA_OFFLINE_MODE", True)
-    monkeypatch.setattr(strava_api, "replay_response", lambda *args, **kwargs: None)
+    # Mock the underlying replay function to return None (cache miss)
+    monkeypatch.setattr(
+        strava_api, "replay_response_with_meta", lambda *args, **kwargs: None
+    )
 
     def fail_get(*args, **kwargs):  # pragma: no cover - should never run
         raise AssertionError("HTTP call performed in offline mode")
 
     monkeypatch.setattr(strava_api._session, "get", fail_get)
 
-    with pytest.raises(StravaAPIError):
+    with pytest.raises(StravaAPIError) as excinfo:
         strava_api.get_segment_efforts(
             runner,
             segment_id=321,
             start_date=datetime(2024, 1, 1),
             end_date=datetime(2024, 1, 2),
         )
+
+    assert "cache miss" in str(excinfo.value)

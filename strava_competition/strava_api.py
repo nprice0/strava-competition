@@ -358,6 +358,13 @@ def _replay_list_response_with_meta(
         params=params,
     )
     if record is None:
+        if STRAVA_OFFLINE_MODE:
+            message = (
+                f"{context_label} cache miss for runner {runner.name} while "
+                "STRAVA_OFFLINE_MODE is enabled"
+            )
+            logging.error(message)
+            raise StravaAPIError(message)
         return None
     if isinstance(record.response, list):
         logging.debug(

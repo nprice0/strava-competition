@@ -12,19 +12,16 @@ import folium
 
 from ..config import (
     INPUT_FILE,
-    MATCHING_MAX_OFFSET_M,
-    MATCHING_RESAMPLE_INTERVAL_M,
-    MATCHING_SIMPLIFICATION_TOLERANCE_M,
-    MATCHING_START_TOLERANCE_M,
+    GEOMETRY_RESAMPLE_INTERVAL_M,
+    GEOMETRY_SIMPLIFICATION_TOLERANCE_M,
 )
 from ..excel_reader import ExcelFormatError, read_runners, read_segments
 from ..models import Runner, Segment
-from ..matching import _compute_coverage_diagnostics
-from ..matching.visualization import create_deviation_map
-from ..matching.fetchers import fetch_activity_stream, fetch_segment_geometry
-from ..matching.models import ActivityTrack, SegmentGeometry
-from ..matching.preprocessing import prepare_activity, prepare_geometry
-from ..matching.validation import CoverageResult
+from .geometry.visualization import create_deviation_map
+from .geometry.fetchers import fetch_activity_stream, fetch_segment_geometry
+from .geometry.models import ActivityTrack, SegmentGeometry
+from .geometry.preprocessing import prepare_activity, prepare_geometry
+from .geometry.validation import CoverageResult, compute_coverage
 
 PathLike = Union[str, Path]
 SegmentFetcher = Callable[[Runner, int], SegmentGeometry]
@@ -66,32 +63,37 @@ def build_deviation_map_for_effort(
     segment = segment_fetcher(runner, segment_id)
     prepared_segment = prepare_geometry(
         segment,
-        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
-        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+        simplification_tolerance_m=GEOMETRY_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=GEOMETRY_RESAMPLE_INTERVAL_M,
     )
 
     activity_track = activity_fetcher(runner, activity_id)
     prepared_activity = prepare_activity(
         activity_track,
         prepared_segment.transformer,
-        simplification_tolerance_m=MATCHING_SIMPLIFICATION_TOLERANCE_M,
-        resample_interval_m=MATCHING_RESAMPLE_INTERVAL_M,
+        simplification_tolerance_m=GEOMETRY_SIMPLIFICATION_TOLERANCE_M,
+        resample_interval_m=GEOMETRY_RESAMPLE_INTERVAL_M,
     )
 
-    coverage, diagnostics, _bounds, _indices, _hints = _compute_coverage_diagnostics(
-        prepared_activity,
-        prepared_segment,
-        max_offset_threshold=MATCHING_MAX_OFFSET_M,
-        start_tolerance_m=MATCHING_START_TOLERANCE_M,
+    # Compute coverage using the raw metric points
+    coverage = compute_coverage(
+        prepared_activity.metric_points,
+        prepared_segment.resampled_points,
     )
-    gate_slice = diagnostics.get("gate_slice_indices")
+
+    # Build diagnostics dict with coverage info
+    diagnostics: dict[str, object] = {
+        "coverage_ratio": coverage.coverage_ratio,
+        "coverage_bounds": coverage.coverage_bounds,
+        "max_offset_m": coverage.max_offset_m,
+    }
 
     map_object = create_deviation_map(
         prepared_activity,
         prepared_segment,
         coverage,
         threshold_m=threshold_m,
-        gate_slice=gate_slice,
+        gate_slice=None,  # Simplified: no gate refinement
         output_html_path=output_html,
     )
     return map_object, coverage, diagnostics
@@ -249,10 +251,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 1
 
     coverage_ratio = coverage.coverage_ratio
-    trimmed_max = diagnostics.get("gate_trimmed_max_offset_m")
+    max_offset = coverage.max_offset_m
     logging.info("Coverage ratio %.3f", coverage_ratio)
-    if trimmed_max is not None:
-        logging.info("Gate-trimmed max offset %.1f m", trimmed_max)
+    if max_offset is not None:
+        logging.info("Max offset %.1f m", max_offset)
     logging.info("Deviation map written to %s", output_path)
     return 0
 

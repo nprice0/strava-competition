@@ -187,10 +187,6 @@ def test_segment_service_uses_activity_scan(
         "strava_competition.services.segment_service.USE_ACTIVITY_SCAN_FALLBACK",
         True,
     )
-    monkeypatch.setattr(
-        "strava_competition.services.segment_service.MATCHING_FALLBACK_ENABLED",
-        False,
-    )
 
     scan_result = ActivityScanResult(
         segment_id=segment.id,
@@ -209,15 +205,6 @@ def test_segment_service_uses_activity_scan(
         service._activity_scanner,
     )
 
-    matcher_called = False
-
-    def fail_match(self: SegmentService, *_args, **_kwargs):
-        nonlocal matcher_called
-        matcher_called = True
-        return None
-
-    service._match_runner_segment = MethodType(fail_match, service)
-
     runner.payment_required = True  # type: ignore[attr-defined]
 
     result = service._process_runner_results(runner, segment, efforts=None)
@@ -226,7 +213,6 @@ def test_segment_service_uses_activity_scan(
     assert result.source == "activity_scan"
     assert result.fastest_time == scan_result.fastest_elapsed
     assert result.fastest_date == scan_result.fastest_start_date
-    assert matcher_called is False
 
 
 def test_segment_service_handles_activity_scan_error(
@@ -240,10 +226,6 @@ def test_segment_service_handles_activity_scan_error(
         "strava_competition.services.segment_service.USE_ACTIVITY_SCAN_FALLBACK",
         True,
     )
-    monkeypatch.setattr(
-        "strava_competition.services.segment_service.MATCHING_FALLBACK_ENABLED",
-        False,
-    )
 
     def _raise_scan(self, *_args, **_kwargs):
         raise StravaAPIError("offline miss")
@@ -252,21 +234,12 @@ def test_segment_service_handles_activity_scan_error(
         _raise_scan, service._activity_scanner
     )
 
-    matcher_called = False
-
-    def _matcher(self: SegmentService, *_args, **_kwargs):
-        nonlocal matcher_called
-        matcher_called = True
-        return None
-
-    service._match_runner_segment = MethodType(_matcher, service)
-
     runner.payment_required = True  # type: ignore[attr-defined]
 
+    # With scan error and no matcher fallback, result should be None
     result = service._process_runner_results(runner, segment, efforts=None)
 
     assert result is None
-    assert matcher_called is False
 
 
 def test_activity_scan_replay_uses_capture(

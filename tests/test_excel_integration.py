@@ -20,6 +20,7 @@ def make_input_workbook(path):
                 "Segment Name": "Hill Climb",
                 "Start Date": datetime(2024, 1, 1),
                 "End Date": datetime(2024, 1, 31),
+                "Default Time": None,
             }
         ]
     )
@@ -87,7 +88,7 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
         )
         monkeypatch.setattr(segment_service_mod, "get_activities", fake_get_activities)
         monkeypatch.setattr(
-            segment_service_mod, "MATCHING_FORCE_FALLBACK", False, raising=False
+            segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False, raising=False
         )
 
         service = SegmentService(max_workers=2)

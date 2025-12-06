@@ -6,8 +6,8 @@ from typing import Any, Dict, List
 
 import pytest
 
-from strava_competition.matching.fetchers import fetch_activity_stream
-from strava_competition.matching.models import ActivityTrack
+from strava_competition.tools.geometry.fetchers import fetch_activity_stream
+from strava_competition.tools.geometry.models import ActivityTrack
 from strava_competition.models import Runner
 
 
@@ -49,7 +49,7 @@ def test_fetch_activity_stream_uses_cache(monkeypatch: pytest.MonkeyPatch) -> No
         return _fake_payload(points, times)
 
     monkeypatch.setattr(
-        "strava_competition.matching.fetchers.api_fetch_activity_stream",
+        "strava_competition.tools.geometry.fetchers.api_fetch_activity_stream",
         fake_api_fetch_activity_stream,
     )
 
@@ -79,7 +79,7 @@ def test_fetch_activity_stream_cache_is_keyed_by_runner(
         return payload
 
     monkeypatch.setattr(
-        "strava_competition.matching.fetchers.api_fetch_activity_stream",
+        "strava_competition.tools.geometry.fetchers.api_fetch_activity_stream",
         fake_api_fetch_activity_stream,
     )
 

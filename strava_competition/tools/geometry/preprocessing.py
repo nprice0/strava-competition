@@ -12,7 +12,7 @@ from polyline import decode as polyline_decode
 from pyproj import CRS, Transformer
 from shapely.geometry import LineString
 
-from ..config import MATCHING_MAX_RESAMPLED_POINTS, MATCHING_MAX_SIMPLIFIED_POINTS
+from ...config import GEOMETRY_MAX_RESAMPLED_POINTS, GEOMETRY_MAX_SIMPLIFIED_POINTS
 from .models import ActivityTrack, LatLon, SegmentGeometry
 
 MetricArray = NDArray[np.float64]
@@ -129,12 +129,12 @@ def prepare_geometry(
     simplified, effective_simplification, simpl_capped = _simplify_with_budget(
         metric_points,
         simplification_tolerance_m,
-        MATCHING_MAX_SIMPLIFIED_POINTS,
+        GEOMETRY_MAX_SIMPLIFIED_POINTS,
     )
     resampled, effective_resample, resample_capped = _resample_with_budget(
         simplified,
         resample_interval_m,
-        MATCHING_MAX_RESAMPLED_POINTS,
+        GEOMETRY_MAX_RESAMPLED_POINTS,
     )
     return PreparedSegmentGeometry(
         segment=segment,
@@ -171,12 +171,12 @@ def prepare_activity(
     simplified, effective_simplification, simpl_capped = _simplify_with_budget(
         metric_points,
         simplification_tolerance_m,
-        MATCHING_MAX_SIMPLIFIED_POINTS,
+        GEOMETRY_MAX_SIMPLIFIED_POINTS,
     )
     resampled, effective_resample, resample_capped = _resample_with_budget(
         simplified,
         resample_interval_m,
-        MATCHING_MAX_RESAMPLED_POINTS,
+        GEOMETRY_MAX_RESAMPLED_POINTS,
     )
     return PreparedActivityTrack(
         activity=activity,

@@ -8,7 +8,7 @@ from pathlib import Path
 import folium
 
 from strava_competition.models import Runner, Segment
-from strava_competition.matching.models import ActivityTrack, SegmentGeometry
+from strava_competition.tools.geometry.models import ActivityTrack, SegmentGeometry
 from strava_competition.tools.deviation_map import build_deviation_map_for_effort
 
 

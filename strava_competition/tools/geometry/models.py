@@ -1,4 +1,4 @@
-"""Dataclasses describing the inputs and results used by the segment matcher."""
+"""Dataclasses describing GPS geometry inputs and results."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class ActivityTrack:
 
 @dataclass(slots=True)
 class Tolerances:
-    """Configuration for geometric thresholds used during matching."""
+    """Configuration for geometric thresholds used during visualization."""
 
     start_tolerance_m: float = 30.0
     frechet_tolerance_m: float = 20.0
@@ -43,7 +43,7 @@ class Tolerances:
 
 @dataclass(slots=True)
 class MatchResult:
-    """Aggregate outcome for matching an activity to a segment."""
+    """Aggregate outcome for coverage analysis of an activity against a segment."""
 
     matched: bool
     score: Optional[float] = None

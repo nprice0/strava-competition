@@ -1,4 +1,4 @@
-"""Helpers for retrieving Strava data used by the segment matcher."""
+"""Helpers for retrieving Strava GPS data for visualization."""
 
 from __future__ import annotations
 
@@ -6,12 +6,12 @@ from collections import OrderedDict
 from threading import RLock
 from typing import Sequence, Tuple
 
-from ..models import Runner
-from ..strava_api import (
+from ...models import Runner
+from ...strava_api import (
     fetch_activity_stream as api_fetch_activity_stream,
     fetch_segment_geometry as api_fetch_segment_geometry,
 )
-from ..config import MATCHING_ACTIVITY_STREAM_CACHE_SIZE
+from ...config import ACTIVITY_STREAM_CACHE_SIZE
 from .models import ActivityTrack, LatLon, SegmentGeometry
 
 
@@ -45,7 +45,7 @@ class _ActivityStreamCache:
             self._data[key] = value
 
 
-_activity_stream_cache = _ActivityStreamCache(MATCHING_ACTIVITY_STREAM_CACHE_SIZE)
+_activity_stream_cache = _ActivityStreamCache(ACTIVITY_STREAM_CACHE_SIZE)
 
 
 def fetch_segment_geometry(runner: Runner, segment_id: int) -> SegmentGeometry:

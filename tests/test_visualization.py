@@ -8,10 +8,13 @@ from typing import List
 import folium
 import pytest
 
-from strava_competition.matching.models import ActivityTrack, SegmentGeometry
-from strava_competition.matching.preprocessing import prepare_activity, prepare_geometry
-from strava_competition.matching.visualization import create_deviation_map
-from strava_competition.matching.validation import compute_coverage
+from strava_competition.tools.geometry.models import ActivityTrack, SegmentGeometry
+from strava_competition.tools.geometry.preprocessing import (
+    prepare_activity,
+    prepare_geometry,
+)
+from strava_competition.tools.geometry.visualization import create_deviation_map
+from strava_competition.tools.geometry.validation import compute_coverage
 
 
 @pytest.fixture

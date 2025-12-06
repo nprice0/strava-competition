@@ -204,42 +204,23 @@ EXCEL_AUTOSIZE_MAX_ROWS = (
 
 
 # ---------------------------------------------------------------------------
-# Segment matching tolerances
+# Segment visualization tolerances
 # ---------------------------------------------------------------------------
-# These values drive the GPS fallback matcher. Set an environment variable with
-# the same name to override any default without editing this file.
+# These values are used for GPS-based visualization and coverage analysis.
 
 # Maximum deviation (metres) allowed when simplifying segment geometry.
-MATCHING_SIMPLIFICATION_TOLERANCE_M = _env_float(
-    "MATCHING_SIMPLIFICATION_TOLERANCE_M", 7.5
+GEOMETRY_SIMPLIFICATION_TOLERANCE_M = _env_float(
+    "GEOMETRY_SIMPLIFICATION_TOLERANCE_M", 7.5
 )
 
 # Target spacing (metres) for the resampled segment polyline.
-MATCHING_RESAMPLE_INTERVAL_M = _env_float("MATCHING_RESAMPLE_INTERVAL_M", 5.0)
-
-# Distance (metres) around the start used when trimming coverage and timing.
-MATCHING_START_TOLERANCE_M = _env_float("MATCHING_START_TOLERANCE_M", 25.0)
-
-# Baseline distance (metres) for discrete Fréchet similarity checks.
-MATCHING_FRECHET_TOLERANCE_M = _env_float("MATCHING_FRECHET_TOLERANCE_M", 20.0)
-
-# Fraction of the covered segment length used to expand the Fréchet tolerance
-# for well-aligned efforts on long routes. Acts as an additive guard so the
-# matcher can accept accurate runs even when GPS projections progress at a
-# different rate along the course. Set to zero to disable the scaling.
-MATCHING_FRECHET_LENGTH_RATIO = _env_float("MATCHING_FRECHET_LENGTH_RATIO", 0.07)
-
-# Minimum portion of the segment an activity must cover to count as a match.
-MATCHING_COVERAGE_THRESHOLD = _env_float("MATCHING_COVERAGE_THRESHOLD", 0.99)
+GEOMETRY_RESAMPLE_INTERVAL_M = _env_float("GEOMETRY_RESAMPLE_INTERVAL_M", 5.0)
 
 # Safety caps on simplified and resampled point counts.
-MATCHING_MAX_SIMPLIFIED_POINTS = _env_int("MATCHING_MAX_SIMPLIFIED_POINTS", 2000)
-MATCHING_MAX_RESAMPLED_POINTS = _env_int("MATCHING_MAX_RESAMPLED_POINTS", 1200)
+GEOMETRY_MAX_SIMPLIFIED_POINTS = _env_int("GEOMETRY_MAX_SIMPLIFIED_POINTS", 2000)
+GEOMETRY_MAX_RESAMPLED_POINTS = _env_int("GEOMETRY_MAX_RESAMPLED_POINTS", 1200)
 
-# Cache size for prepared segment geometry objects.
-MATCHING_CACHE_MAX_ENTRIES = _env_int("MATCHING_CACHE_MAX_ENTRIES", 64)
-
-# Global switch for the fallback matcher.
+# Global switch for the activity scan fallback.
 USE_ACTIVITY_SCAN_FALLBACK = _env_bool("USE_ACTIVITY_SCAN_FALLBACK", True)
 
 _ACTIVITY_SCAN_MAX_PAGES_RAW = _env_int("ACTIVITY_SCAN_MAX_ACTIVITY_PAGES", 10)
@@ -251,46 +232,11 @@ ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS = _env_bool(
     "ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS", True
 )
 
-MATCHING_FALLBACK_ENABLED = _env_bool(
-    "MATCHING_FALLBACK_ENABLED", not USE_ACTIVITY_SCAN_FALLBACK
-)
+# When True, always bypass Strava efforts and use activity scan. Useful for debugging.
+FORCE_ACTIVITY_SCAN_FALLBACK = _env_bool("FORCE_ACTIVITY_SCAN_FALLBACK", False)
 
-# When True, always bypass Strava efforts and force the matcher path. Defaults to
-# True so non-subscriber runners still receive calculated segment efforts while
-# allowing subscribers to validate accuracy. Override via env var when needed.
-MATCHING_FORCE_FALLBACK = _env_bool("MATCHING_FORCE_FALLBACK", False)
+# Maximum number of activity streams to keep in the in-memory cache.
+ACTIVITY_STREAM_CACHE_SIZE = _env_int("ACTIVITY_STREAM_CACHE_SIZE", 64)
 
-# Largest allowed perpendicular offset (metres) when evaluating coverage.
-MATCHING_MAX_OFFSET_M = _env_float("MATCHING_MAX_OFFSET_M", 30.0)
-
-# Accepted activity types for matcher fallback. Provide a comma-separated list or leave
-# empty to disable filtering (e.g., "Run,Ride"). Values are normalised case-insensitively.
-_MATCHING_ACTIVITY_REQUIRED_TYPES_RAW = os.getenv(
-    "MATCHING_ACTIVITY_REQUIRED_TYPE", "Run"
-)
-MATCHING_ACTIVITY_REQUIRED_TYPES = [
-    item.strip()
-    for item in _MATCHING_ACTIVITY_REQUIRED_TYPES_RAW.split(",")
-    if item.strip()
-]
-
-# Minimum fraction of the segment distance an activity must cover before running the
-# matcher (e.g., 0.6 requires the activity distance to be at least 60% of the segment).
-MATCHING_ACTIVITY_MIN_DISTANCE_RATIO = _env_float(
-    "MATCHING_ACTIVITY_MIN_DISTANCE_RATIO", 0.6
-)
-
-# Maximum number of activity streams to keep in the in-memory matcher cache.
-MATCHING_ACTIVITY_STREAM_CACHE_SIZE = _env_int(
-    "MATCHING_ACTIVITY_STREAM_CACHE_SIZE", 64
-)
-
-# Maximum number of prepared activity tracks cached for reuse across matches.
-MATCHING_PREPARED_ACTIVITY_CACHE_SIZE = _env_int(
-    "MATCHING_PREPARED_ACTIVITY_CACHE_SIZE", 512
-)
-
-# Maximum number of runner activity windows cached during segment fallback matching.
-MATCHING_RUNNER_ACTIVITY_CACHE_SIZE = _env_int(
-    "MATCHING_RUNNER_ACTIVITY_CACHE_SIZE", 256
-)
+# Maximum number of runner activity windows cached during segment processing.
+RUNNER_ACTIVITY_CACHE_SIZE = _env_int("RUNNER_ACTIVITY_CACHE_SIZE", 256)

@@ -7,7 +7,6 @@ You get:
 - Per-segment leaderboards with attempts, fastest time, and team rankings
 - Distance competition sheets covering each window and an overall summary
 - Automatic refresh-token updates so the input workbook always stays current
-- A segment matcher fallback that rebuilds efforts with discrete Fréchet and DTW distance checks plus accurate start/finish timing
 - An activity-scan fallback that uses Strava's `include_all_efforts` payloads for runners without leaderboard access
 
 ---
@@ -36,7 +35,7 @@ flowchart LR
   SegmentSvc[SegmentService]
   DistanceSvc[DistanceService]
   StravaAPI["strava_api.py<br/>(capture / replay / live)"]
-  ActivityScan[Activity scan & matcher fallbacks]
+  ActivityScan[Activity scan fallback]
   Aggregation["segment_aggregation.py<br/>& distance_aggregation.py"]
   Writer[excel_writer.py]
   Output[("Results workbook<br/>+ refreshed tokens")]
@@ -209,7 +208,7 @@ python -m strava_competition.tools.fetch_runner_segment_efforts \
   stream plus segment geometry, and renders an interactive Folium map showing
   where the athlete left the official course.
 - Highlights gate crossings, coverage diagnostics, and large offsets so you can
-  sanity-check matcher decisions or explain unusual leaderboard results.
+  sanity-check leaderboard results or explain unusual activity coverage.
 - Saves the output HTML wherever you choose (`maps/<slug>.html` by default, or
   a custom path when you pass `--output`).
 
@@ -257,18 +256,6 @@ The app reads the workbook, fetches the required Strava data, writes the results
 - Results flow through `segment_aggregation.py`, `distance_aggregation.py`, and finally `excel_writer.py`
 - Updated refresh tokens are written back before shutdown
 
-### Segment matcher overview
-
-The fallback matcher kicks in when Strava refuses segment efforts (HTTP 402 or pre-flagged subscriptions). It rebuilds the effort from the runner’s activity stream and compares it directly to the segment geometry.
-
-- Streams pulled: lat/lng, altitude, distance, and time. Everything is projected into metres using the segment transformer so later math stays accurate.
-- Prepared geometry: `prepare_geometry` simplifies and resamples the segment, and `prepare_activity` applies the same transform to the activity so both paths share spacing and coordinate frames.
-- Coverage refinement: `compute_coverage` projects every sample onto the segment. `_refine_coverage_window` keeps points inside the offset tolerance, flags the first pre-start sample and the first post-finish sample, and drops obvious detours.
-- Gate clipping with full context: `_clip_activity_to_gate_window` re-evaluates start/finish gate crossings against the full resampled activity, then slices the trimmed window to just the on-segment samples. This mirrors Strava’s `entry/exit plane` logic and prevents post-finish jogs from inflating Frechet distance.
-- Similarity: discrete Fréchet distance is evaluated first. If it misses the adaptive threshold we fall back to windowed DTW with a narrow band. Both operate on the already clipped resampled polylines.
-- Timing: `estimate_segment_time` honours the refined bounds. `_resolve_entry_exit` interpolates timestamps for the on-segment entry and exit samples so elapsed time reflects exactly when the runner crossed the gates.
-- Diagnostics: we log coverage ratios, similarity scores, `gate_trimmed` flags, sample indices, and elapsed times for every attempt.
-
 ### Activity scan fallback
 
 Some runners only expose full Strava activities (not segment leaderboards). Enable the activity scan fallback by setting `USE_ACTIVITY_SCAN_FALLBACK=true`. When active, the service:
@@ -278,14 +265,12 @@ Some runners only expose full Strava activities (not segment leaderboards). Enab
 - Counts attempts and identifies the fastest elapsed time for the target segment using the activity payload alone
 - Emits diagnostics with inspected activity IDs so you can audit workbook results later
 
-When the flag is on, the GPS matcher stays idle unless you explicitly set `MATCHING_FALLBACK_ENABLED=true`. This makes the pipeline reliable for non-subscriber athletes while keeping the legacy matcher available for debugging.
-
 #### Operator playbook
 
 1. Toggle the feature flags:
 
 - `USE_ACTIVITY_SCAN_FALLBACK=true`
-- `MATCHING_FORCE_FALLBACK=false` (so paid runners continue using the official Strava efforts)
+- `FORCE_ACTIVITY_SCAN_FALLBACK=false` (so paid runners continue using the official Strava efforts)
 - Optionally cap pagination with `ACTIVITY_SCAN_MAX_ACTIVITY_PAGES=10` while validating
 
 2. Record captures for the current competition window by running the pipeline once with
