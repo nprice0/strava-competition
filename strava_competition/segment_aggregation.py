@@ -7,7 +7,7 @@ the distance aggregation module and keep transformation logic testable.
 
 from __future__ import annotations
 
-from typing import List, Tuple, Dict
+from typing import List, Tuple
 import math
 import statistics
 import pandas as pd

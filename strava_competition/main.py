@@ -1,6 +1,6 @@
 from datetime import datetime
 import logging
-from typing import List, Tuple
+from typing import Any, List, Sequence, Tuple
 
 from .config import (
     INPUT_FILE,
@@ -13,13 +13,19 @@ from .excel_reader import (
     read_segments,
     read_distance_windows,
     ExcelFormatError,
+    workbook_context,
 )
 from .excel_writer import (
     update_runner_refresh_tokens,
     write_results,
 )
+from .models import Runner, Segment
 from .services import SegmentService, DistanceService
-from .strava_api import _ensure_runner_token as _internal_ensure_token  # type: ignore
+from .services.segment_service import ResultsMapping
+from .strava_api import DEFAULT_STRAVA_CLIENT
+
+DistanceWindow = Tuple[datetime, datetime, float | None]
+DistanceWindowsResult = List[Tuple[str, List[dict[str, Any]]]]
 
 
 def _setup_logging() -> None:
@@ -37,11 +43,18 @@ def _resolve_output_path() -> str:
     return f"{OUTPUT_FILE}.xlsx"
 
 
-def _load_inputs():
+def _load_inputs() -> Tuple[
+    List[Segment],
+    List[Runner],
+    List[DistanceWindow],
+    List[Runner],
+    List[Runner],
+]:
     logging.info("Loading segments, runners and distance windows ...")
-    segments = read_segments(INPUT_FILE)
-    runners = read_runners(INPUT_FILE)
-    distance_windows = read_distance_windows(INPUT_FILE)
+    with workbook_context(INPUT_FILE) as workbook:
+        segments = read_segments(INPUT_FILE, workbook=workbook)
+        runners = read_runners(INPUT_FILE, workbook=workbook)
+        distance_windows = read_distance_windows(INPUT_FILE, workbook=workbook)
     segment_runners = [r for r in runners if r.segment_team]
     distance_runners = [r for r in runners if r.distance_team]
     if distance_windows:
@@ -51,12 +64,12 @@ def _load_inputs():
     return segments, runners, distance_windows, segment_runners, distance_runners
 
 
-def _ensure_tokens_early(runners) -> None:
+def _ensure_tokens_early(runners: Sequence[Runner]) -> None:
     any_token_rotated = False
     for r in runners:
         before = getattr(r, "refresh_token", None)
         try:
-            _internal_ensure_token(r)
+            DEFAULT_STRAVA_CLIENT.ensure_runner_token(r)
         except Exception as e:
             logging.warning(
                 "Initial token ensure failed for runner=%s: %s",
@@ -72,7 +85,9 @@ def _ensure_tokens_early(runners) -> None:
         logging.info("Persisted rotated refresh tokens early (pre-processing)")
 
 
-def _process_segments(segments, segment_runners):
+def _process_segments(
+    segments: Sequence[Segment], segment_runners: Sequence[Runner]
+) -> ResultsMapping:
     logging.info(
         "Processing %s segments for %s segment runners ...",
         len(segments),
@@ -91,8 +106,11 @@ def _process_segments(segments, segment_runners):
     return results
 
 
-def _process_distance(distance_runners, distance_windows):
-    distance_windows_results: List[Tuple[str, list[dict]]] = []
+def _process_distance(
+    distance_runners: Sequence[Runner],
+    distance_windows: Sequence[DistanceWindow],
+) -> DistanceWindowsResult:
+    distance_windows_results: DistanceWindowsResult = []
     if distance_windows and distance_runners:
         distance_windows_results = DistanceService().process(
             distance_runners, distance_windows
@@ -100,7 +118,7 @@ def _process_distance(distance_runners, distance_windows):
     return distance_windows_results
 
 
-def _persist_tokens_final(runners) -> None:
+def _persist_tokens_final(runners: Sequence[Runner]) -> None:
     rotated = False
     try:
         # Always write once more defensively (lightweight operation).
@@ -113,7 +131,7 @@ def _persist_tokens_final(runners) -> None:
             logging.info("Refresh tokens persisted at shutdown.")
 
 
-def main():
+def main() -> None:
     _setup_logging()
     output_file = _resolve_output_path()
 

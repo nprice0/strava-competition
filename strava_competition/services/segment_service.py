@@ -12,7 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import logging
 import threading
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Sequence, Tuple, Set, Optional
+from typing import Any, Callable, Dict, List, Sequence, Tuple, Set
 
 from ..errors import StravaAPIError
 from ..models import Segment, Runner, SegmentResult
@@ -35,7 +35,7 @@ class SegmentService:
             raise ValueError("max_workers must be positive")
         self._log = logging.getLogger(self.__class__.__name__)
         self._activity_cache_max_entries = max(0, RUNNER_ACTIVITY_CACHE_SIZE)
-        self._activity_cache: "OrderedDict[tuple[str, datetime, datetime], List[Dict[str, Any]]]" = OrderedDict()
+        self._activity_cache: "OrderedDict[tuple[int | str, datetime, datetime], List[Dict[str, Any]]]" = OrderedDict()
         self._activity_cache_lock = threading.RLock()
         self._activity_scanner = ActivityEffortScanner(
             activity_provider=self._get_runner_activities
@@ -198,8 +198,10 @@ class SegmentService:
                 cancel_event,
             )
             if seg_result:
-                bucket = segment_results.setdefault(runner.segment_team, [])
-                bucket.append(seg_result)
+                team = runner.segment_team
+                if team:
+                    bucket = segment_results.setdefault(team, [])
+                    bucket.append(seg_result)
             if (
                 seg_result is None
                 and getattr(runner, "payment_required", False)
@@ -252,7 +254,7 @@ class SegmentService:
         self, fallback_queue: Sequence[Runner]
     ) -> List[Runner]:
         unique: List[Runner] = []
-        seen: Set[int] = set()
+        seen: Set[int | str] = set()
         for runner in fallback_queue:
             if runner.strava_id in seen:
                 continue
@@ -307,8 +309,10 @@ class SegmentService:
                     exc_info=True,
                 )
             if result:
-                bucket = segment_results.setdefault(runner.segment_team, [])
-                bucket.append(result)
+                team = runner.segment_team
+                if team:
+                    bucket = segment_results.setdefault(team, [])
+                    bucket.append(result)
             completed += 1
             notify_progress(completed)
             if cancel_event and cancel_event.is_set():
@@ -435,11 +439,8 @@ class SegmentService:
             if not isinstance(effort, dict):
                 continue
             elapsed = effort.get("elapsed_time")
-            try:
-                elapsed_f = float(elapsed)
-            except (TypeError, ValueError):
-                continue
-            if elapsed_f <= 0:
+            elapsed_f = self._coerce_float(elapsed)
+            if elapsed_f is None or elapsed_f <= 0:
                 continue
             valid.append((elapsed_f, effort))
 
@@ -517,6 +518,13 @@ class SegmentService:
 
         with self._activity_cache_lock:
             self._activity_cache.clear()
+
+    @staticmethod
+    def _coerce_float(value: Any) -> float | None:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:

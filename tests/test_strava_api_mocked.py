@@ -1,5 +1,4 @@
 import json
-import logging
 from datetime import datetime
 
 import pytest
@@ -7,6 +6,8 @@ import pytest
 from strava_competition import strava_api
 from strava_competition.errors import StravaAPIError
 from strava_competition.models import Runner
+from strava_competition.strava_client import resources as resource_client
+from strava_competition.strava_client import segment_efforts as segment_client
 
 
 class FakeResp:
@@ -54,9 +55,24 @@ def no_sleep_rate_limiter(monkeypatch):
 def disable_capture(monkeypatch):
     """Force replay misses and prevent filesystem writes during unit tests."""
 
-    monkeypatch.setattr(strava_api, "STRAVA_OFFLINE_MODE", False)
-    monkeypatch.setattr(strava_api, "replay_response", lambda *args, **kwargs: None)
-    monkeypatch.setattr(strava_api, "record_response", lambda *args, **kwargs: None)
+    monkeypatch.setattr(resource_client, "STRAVA_OFFLINE_MODE", False)
+    monkeypatch.setattr(segment_client, "STRAVA_OFFLINE_MODE", False)
+    monkeypatch.setattr(
+        resource_client, "replay_response", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        resource_client, "record_response", lambda *args, **kwargs: None
+    )
+
+
+@pytest.fixture(autouse=True)
+def fake_token_refresh(monkeypatch):
+    """Avoid hitting the real OAuth token exchange during tests."""
+
+    monkeypatch.setattr(
+        "strava_competition.strava_client.base.get_access_token",
+        lambda rt, runner_name=None: ("stub_access", rt),
+    )
 
 
 def test_get_segment_efforts_pagination(monkeypatch):
@@ -90,7 +106,8 @@ def test_get_segment_efforts_pagination(monkeypatch):
 
     monkeypatch.setattr(strava_api._session, "get", fake_get)
     monkeypatch.setattr(
-        strava_api, "get_access_token", lambda rt, runner_name=None: ("at1", rt)
+        "strava_competition.strava_client.base.get_access_token",
+        lambda rt, runner_name=None: ("at1", rt),
     )
 
     runner = Runner(name="Alice", strava_id=1, refresh_token="rt1", segment_team="Red")
@@ -119,7 +136,8 @@ def test_get_segment_efforts_refresh_on_401(monkeypatch):
 
     monkeypatch.setattr(strava_api._session, "get", fake_get)
     monkeypatch.setattr(
-        strava_api, "get_access_token", lambda rt, runner_name=None: ("new_access", rt)
+        "strava_competition.strava_client.base.get_access_token",
+        lambda rt, runner_name=None: ("new_access", rt),
     )
 
     runner = Runner(name="Ben", strava_id=2, refresh_token="rt2", segment_team="Blue")
@@ -148,7 +166,8 @@ def test_get_segment_efforts_402_json_error(monkeypatch, caplog):
 
     monkeypatch.setattr(strava_api._session, "get", fake_get)
     monkeypatch.setattr(
-        strava_api, "get_access_token", lambda rt, runner_name=None: ("tok", rt)
+        "strava_competition.strava_client.base.get_access_token",
+        lambda rt, runner_name=None: ("tok", rt),
     )
 
     runner = Runner(name="Cara", strava_id=3, refresh_token="rt3", segment_team="Green")
@@ -170,8 +189,10 @@ def test_fetch_segment_geometry_offline_requires_capture(monkeypatch):
         name="Offline", strava_id=99, refresh_token="rt", segment_team="Solo"
     )
 
-    monkeypatch.setattr(strava_api, "STRAVA_OFFLINE_MODE", True)
-    monkeypatch.setattr(strava_api, "replay_response", lambda *args, **kwargs: None)
+    monkeypatch.setattr(resource_client, "STRAVA_OFFLINE_MODE", True)
+    monkeypatch.setattr(
+        resource_client, "replay_response", lambda *args, **kwargs: None
+    )
 
     def fail_get(*args, **kwargs):  # pragma: no cover - should never run
         raise AssertionError("HTTP call performed in offline mode")
@@ -190,10 +211,15 @@ def test_get_segment_efforts_offline_cache_miss(monkeypatch):
         name="Offline", strava_id=42, refresh_token="rt", segment_team="Solo"
     )
 
-    monkeypatch.setattr(strava_api, "STRAVA_OFFLINE_MODE", True)
+    monkeypatch.setattr(segment_client, "STRAVA_OFFLINE_MODE", True)
+    monkeypatch.setattr(
+        "strava_competition.strava_client.base.STRAVA_OFFLINE_MODE", True
+    )
     # Mock the underlying replay function to return None (cache miss)
     monkeypatch.setattr(
-        strava_api, "replay_response_with_meta", lambda *args, **kwargs: None
+        segment_client,
+        "replay_list_response_with_meta",
+        lambda *args, **kwargs: None,
     )
 
     def fail_get(*args, **kwargs):  # pragma: no cover - should never run

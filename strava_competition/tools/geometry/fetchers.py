@@ -15,7 +15,7 @@ from ...config import ACTIVITY_STREAM_CACHE_SIZE
 from .models import ActivityTrack, LatLon, SegmentGeometry
 
 
-_ActivityCacheKey = Tuple[str, int]
+_ActivityCacheKey = Tuple[int | str, int]
 
 
 class _ActivityStreamCache:

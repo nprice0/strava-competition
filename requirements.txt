@@ -16,3 +16,9 @@ folium>=0.15
 
 # Testing (optional for contributors)
 pytest>=8.0
+
+# Tooling
+ruff>=0.4
+mypy>=1.8
+bandit>=1.7
+types-requests>=2.31

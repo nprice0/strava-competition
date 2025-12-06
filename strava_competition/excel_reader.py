@@ -5,9 +5,11 @@ Separated from writing logic for clearer responsibilities and easier testing.
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from datetime import datetime, time, timedelta
 from pathlib import Path
-from typing import List
+from typing import Iterator, List, Optional
+
 import pandas as pd
 
 from .models import Segment, Runner
@@ -46,11 +48,11 @@ class ExcelFormatError(RuntimeError):
     pass
 
 
-def _is_blank(value) -> bool:
+def _is_blank(value: object) -> bool:
     return pd.isna(value) or str(value).strip() == ""
 
 
-def _clean_required_name(value, row_label: str) -> str:
+def _clean_required_name(value: object, row_label: str) -> str:
     if _is_blank(value):
         raise ExcelFormatError(
             f"Runner name missing in {row_label} of '{RUNNERS_SHEET}' sheet"
@@ -65,7 +67,7 @@ def _normalise_strava_id(raw: str) -> str:
     return candidate
 
 
-def _parse_strava_id(value, runner_name: str, row_label: str) -> str:
+def _parse_strava_id(value: object, runner_name: str, row_label: str) -> str:
     if _is_blank(value):
         raise ExcelFormatError(
             f"Runner '{runner_name}' in {row_label} missing Strava ID in '{RUNNERS_SHEET}' sheet"
@@ -78,7 +80,7 @@ def _parse_strava_id(value, runner_name: str, row_label: str) -> str:
     return candidate
 
 
-def _clean_refresh_token(value, runner_name: str, row_label: str) -> str:
+def _clean_refresh_token(value: object, runner_name: str, row_label: str) -> str:
     if _is_blank(value):
         raise ExcelFormatError(
             f"Runner '{runner_name}' in {row_label} missing refresh token in '{RUNNERS_SHEET}' sheet"
@@ -86,13 +88,13 @@ def _clean_refresh_token(value, runner_name: str, row_label: str) -> str:
     return str(value).strip()
 
 
-def _clean_team(value):
+def _clean_team(value: object) -> Optional[str]:
     if _is_blank(value):
         return None
     return str(value).strip()
 
 
-def _seconds_from_timedelta(value) -> float | None:
+def _seconds_from_timedelta(value: object) -> float | None:
     if isinstance(value, pd.Timedelta):
         return float(value.total_seconds())
     if isinstance(value, timedelta):
@@ -100,19 +102,19 @@ def _seconds_from_timedelta(value) -> float | None:
     return None
 
 
-def _seconds_from_datetime(value) -> float | None:
+def _seconds_from_datetime(value: object) -> float | None:
     if isinstance(value, (pd.Timestamp, datetime)):
         return float(value.hour * 3600 + value.minute * 60 + value.second)
     return None
 
 
-def _seconds_from_time(value) -> float | None:
+def _seconds_from_time(value: object) -> float | None:
     if isinstance(value, time):
         return float(value.hour * 3600 + value.minute * 60 + value.second)
     return None
 
 
-def _seconds_from_string(value) -> float | None:
+def _seconds_from_string(value: object) -> float | None:
     if not isinstance(value, str):
         return None
     candidate = value.strip()
@@ -127,7 +129,7 @@ def _seconds_from_string(value) -> float | None:
         return None
 
 
-def _seconds_from_number(value) -> float | None:
+def _seconds_from_number(value: object) -> float | None:
     if not isinstance(value, (int, float)) or pd.isna(value):
         return None
     numeric = float(value)
@@ -136,7 +138,7 @@ def _seconds_from_number(value) -> float | None:
     return numeric
 
 
-def _coerce_duration_seconds(value) -> float | None:
+def _coerce_duration_seconds(value: object) -> float | None:
     if value is None:
         return None
     for converter in (
@@ -152,7 +154,9 @@ def _coerce_duration_seconds(value) -> float | None:
     return None
 
 
-def _parse_segment_default_time(value, seg_name: str, row_label: str) -> float | None:
+def _parse_segment_default_time(
+    value: object, seg_name: str, row_label: str
+) -> float | None:
     seconds = _coerce_duration_seconds(value)
     if seconds is None:
         return None
@@ -163,13 +167,29 @@ def _parse_segment_default_time(value, seg_name: str, row_label: str) -> float |
     return float(seconds)
 
 
-def _assert_file_exists(path: str) -> None:
+def _assert_file_exists(path: str | Path) -> None:
     if not Path(path).is_file():
         raise FileNotFoundError(f"Workbook not found: {path}")
 
 
-def _coerce_path(pathlike) -> str:
+def _coerce_path(pathlike: str | Path) -> str:
     return str(Path(pathlike))
+
+
+class _WorkbookReader:
+    """Caches parsed sheets so each Excel workbook is read once."""
+
+    def __init__(self, filepath: str) -> None:
+        self._excel = pd.ExcelFile(filepath)
+        self._cache: dict[str, pd.DataFrame] = {}
+
+    def parse(self, sheet_name: str) -> pd.DataFrame:
+        if sheet_name not in self._cache:
+            self._cache[sheet_name] = self._excel.parse(sheet_name=sheet_name)
+        return self._cache[sheet_name]
+
+    def close(self) -> None:
+        self._excel.close()
 
 
 def _validate_columns(df: pd.DataFrame, required: set[str], sheet: str) -> None:
@@ -180,13 +200,36 @@ def _validate_columns(df: pd.DataFrame, required: set[str], sheet: str) -> None:
         )
 
 
-def read_segments(filepath) -> List[Segment]:
-    filepath = _coerce_path(filepath)
-    _assert_file_exists(filepath)
+def _resolve_sheet(
+    filepath: str,
+    workbook: Optional[object],
+    sheet_name: str,
+    *,
+    optional: bool = False,
+) -> Optional[pd.DataFrame]:
     try:
-        df = pd.read_excel(filepath, sheet_name=SEGMENTS_SHEET)
-    except ValueError as e:
-        raise ExcelFormatError(f"Sheet '{SEGMENTS_SHEET}' not found: {e}") from e
+        if isinstance(workbook, _WorkbookReader):
+            return workbook.parse(sheet_name)
+        if isinstance(workbook, pd.ExcelFile):  # pragma: no cover - legacy path
+            return workbook.parse(sheet_name=sheet_name)
+        return pd.read_excel(filepath, sheet_name=sheet_name)
+    except ValueError as exc:
+        if optional:
+            return None
+        raise ExcelFormatError(f"Sheet '{sheet_name}' not found: {exc}") from exc
+
+
+def read_segments(
+    filepath: str | Path, workbook: Optional[object] = None
+) -> List[Segment]:
+    filepath = _coerce_path(filepath)
+    if workbook is None:
+        _assert_file_exists(filepath)
+    df = _resolve_sheet(filepath, workbook, SEGMENTS_SHEET)
+    if df is None:
+        raise ExcelFormatError(
+            f"Sheet '{SEGMENTS_SHEET}' is required but was missing or empty"
+        )
     _validate_columns(df, _REQUIRED_SEGMENT_COLS, SEGMENTS_SHEET)
     df[_SEGMENT_START_COL] = pd.to_datetime(df[_SEGMENT_START_COL], errors="coerce")
     df[_SEGMENT_END_COL] = pd.to_datetime(df[_SEGMENT_END_COL], errors="coerce")
@@ -220,13 +263,17 @@ def read_segments(filepath) -> List[Segment]:
     return segs
 
 
-def read_runners(filepath) -> List[Runner]:
+def read_runners(
+    filepath: str | Path, workbook: Optional[object] = None
+) -> List[Runner]:
     filepath = _coerce_path(filepath)
-    _assert_file_exists(filepath)
-    try:
-        df = pd.read_excel(filepath, sheet_name=RUNNERS_SHEET)
-    except ValueError as e:
-        raise ExcelFormatError(f"Sheet '{RUNNERS_SHEET}' not found: {e}") from e
+    if workbook is None:
+        _assert_file_exists(filepath)
+    df = _resolve_sheet(filepath, workbook, RUNNERS_SHEET)
+    if df is None:
+        raise ExcelFormatError(
+            f"Sheet '{RUNNERS_SHEET}' is required but was missing or empty"
+        )
     _validate_columns(df, _REQUIRED_RUNNER_COLS, RUNNERS_SHEET)
     runners: List[Runner] = []
     columns = [
@@ -263,13 +310,14 @@ def read_runners(filepath) -> List[Runner]:
 
 
 def read_distance_windows(
-    filepath,
+    filepath: str | Path,
+    workbook: Optional[object] = None,
 ) -> List[tuple[pd.Timestamp, pd.Timestamp, float | None]]:
     filepath = _coerce_path(filepath)
-    _assert_file_exists(filepath)
-    try:
-        df = pd.read_excel(filepath, sheet_name=DISTANCE_SHEET)
-    except ValueError:
+    if workbook is None:
+        _assert_file_exists(filepath)
+    df = _resolve_sheet(filepath, workbook, DISTANCE_SHEET, optional=True)
+    if df is None:
         return []
     _validate_columns(df, _REQUIRED_DISTANCE_COLS, DISTANCE_SHEET)
     df[_SEGMENT_START_COL] = pd.to_datetime(df[_SEGMENT_START_COL], errors="coerce")
@@ -295,4 +343,18 @@ __all__ = [
     "read_segments",
     "read_runners",
     "read_distance_windows",
+    "workbook_context",
 ]
+
+
+@contextmanager
+def workbook_context(filepath: str | Path) -> Iterator[_WorkbookReader]:
+    """Yield a caching workbook reader so callers reuse a single file handle."""
+
+    file_path = _coerce_path(filepath)
+    _assert_file_exists(file_path)
+    reader = _WorkbookReader(file_path)
+    try:
+        yield reader
+    finally:
+        reader.close()

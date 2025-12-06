@@ -167,7 +167,7 @@ def _project_onto_polyline(
             nearest = seg_start + t_clamped * seg_vec
             offset = np.linalg.norm(point - nearest)
             if offset < best_offset:
-                best_offset = offset
+                best_offset = float(offset)
                 best_distance = cumulative[i] + t_clamped * seg_len
         if not np.isfinite(best_offset):
             # Fallback to the closest vertex when projection lies outside both endpoints.

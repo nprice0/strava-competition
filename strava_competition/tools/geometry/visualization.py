@@ -8,12 +8,15 @@ from typing import Iterable, List, Optional, Sequence, Tuple, Union
 
 import folium  # Using folium to build an interactive Leaflet map.
 import numpy as np
+from numpy.typing import NDArray
 
 from .preprocessing import PreparedActivityTrack, PreparedSegmentGeometry
 from .validation import CoverageResult
 
 LatLon = Tuple[float, float]
 PathLike = Union[str, Path]
+FloatArray = NDArray[np.float64]
+FloatSequence = Union[Sequence[float], FloatArray]
 
 _ACTIVITY_COLOR = "#2c7bb6"
 _SEGMENT_COLOR = "#1a9641"
@@ -47,7 +50,7 @@ def _contiguous_runs(indices: np.ndarray) -> List[Tuple[int, int]]:
 
 
 def _extract_divergence_indices(
-    offsets: Sequence[float],
+    offsets: FloatSequence,
     gate_slice: Optional[Tuple[int, int]],
     threshold_m: float,
 ) -> np.ndarray:
@@ -67,7 +70,7 @@ def _extract_divergence_indices(
 
 
 def _build_deviation_summary(
-    offsets: Sequence[float],
+    offsets: FloatSequence,
     coordinates: Sequence[LatLon],
     gate_slice: Optional[Tuple[int, int]],
 ) -> Optional[DeviationSummary]:

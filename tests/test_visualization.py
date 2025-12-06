@@ -41,7 +41,7 @@ def deviating_activity() -> ActivityTrack:
         (51.4808, -3.1815),
         (51.4810, -3.1800),
     ]
-    timestamps = list(range(len(base_points)))
+    timestamps = [float(idx) for idx in range(len(base_points))]
     return ActivityTrack(activity_id=321, points=base_points, timestamps_s=timestamps)
 
 

@@ -76,7 +76,7 @@ def _iso8601(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _window_from_args(args) -> Tuple[int, int]:
+def _window_from_args(args: argparse.Namespace) -> Tuple[int, int]:
     if args.start or args.end:
         if not args.start or not args.end:
             raise SystemExit("Both --start and --end must be supplied together")

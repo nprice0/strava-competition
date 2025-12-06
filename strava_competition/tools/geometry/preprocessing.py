@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import math
-from typing import Iterable, List, Optional, Sequence, Tuple
+from typing import Iterable, List, Optional, Sequence, Tuple, cast
 
 import numpy as np
 from numpy.typing import NDArray
@@ -99,13 +99,14 @@ def resample_by_distance(
     if count == 0:
         return array
     if count == 1:
-        return array.copy()
+        return cast(MetricArray, array.copy())
     deltas = np.diff(array, axis=0)
     segment_lengths = np.linalg.norm(deltas, axis=1)
     cumulative = np.concatenate(([0.0], np.cumsum(segment_lengths)))
     total_length = cumulative[-1]
     if total_length == 0:
-        return np.repeat(array[:1], repeats=max(int(np.ceil(1)), 1), axis=0)
+        repeated = np.repeat(array[:1], repeats=max(int(np.ceil(1)), 1), axis=0)
+        return repeated
     target = _build_target_distances(total_length, interval_m)
     x = np.interp(target, cumulative, array[:, 0])
     y = np.interp(target, cumulative, array[:, 1])

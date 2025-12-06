@@ -103,6 +103,11 @@ STRAVA_CLIENT_SECRET=<your_secret>
 USE_ACTIVITY_SCAN_FALLBACK=false
 ACTIVITY_SCAN_MAX_ACTIVITY_PAGES=10
 ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true
+STRAVA_API_CAPTURE_ENABLED=false
+STRAVA_CAPTURE_HASH_IDENTIFIERS=true
+STRAVA_CAPTURE_ID_SALT=please_change_me
+STRAVA_CAPTURE_REDACT_PII=true
+STRAVA_CAPTURE_REDACT_FIELDS=name,email,athlete.firstname,athlete.lastname
 ```
 
 The app loads `.env` automatically when it starts.
@@ -124,6 +129,19 @@ The hybrid replay-tail workflow automatically persists enriched pages back to
 the capture directory. When `STRAVA_API_CAPTURE_OVERWRITE` is `False` (the
 default), enriched data is stored in lightweight overlay files so existing
 captures remain untouched.
+
+#### Capture hygiene & retention
+
+- **Hash runner identifiers** via `STRAVA_CAPTURE_HASH_IDENTIFIERS=true` and set a
+  unique `STRAVA_CAPTURE_ID_SALT` so capture filenames do not leak Strava IDs.
+- **Redact payload fields** (names, emails, GPS metadata, etc.) by enabling
+  `STRAVA_CAPTURE_REDACT_PII` and listing comma-separated JSON paths in
+  `STRAVA_CAPTURE_REDACT_FIELDS`.
+- **Prune stale captures** with the helper documented in the [CLI tools](#cli-tools)
+  section to keep disk usage predictable.
+- **Automate retention** via `STRAVA_CAPTURE_AUTO_PRUNE_DAYS=30` (or any
+  positive integer) to delete aged capture files when the app starts. Set to `0`
+  to disable automatic pruning.
 
 ### Workbook layout
 
@@ -147,7 +165,7 @@ The first time you add a runner you need a refresh token. Run the helper:
 python -m strava_competition.oauth
 ```
 
-It spins up a small web server, opens Strava’s OAuth screen, and prints the tokens once the runner approves. Copy the refresh token into the `Runners` sheet. You can change `OAUTH_PORT` or `PRINT_TOKENS` in `oauth.py` if needed.
+It spins up a small web server, opens Strava’s OAuth screen, and logs masked token metadata once the runner approves. Pass `--print-tokens` if you explicitly need the plaintext values. Copy the refresh token into the `Runners` sheet. You can change `OAUTH_PORT` inside `oauth.py` if needed.
 
 Already have an authorisation code? Swap it via curl:
 
@@ -176,6 +194,9 @@ configuration as the main app:
   crossings and large deviations for a runner/segment pair. Launch it via
   `python -m strava_competition.tools.deviation_map --help` and point the
   output wherever you need.
+- `capture_gc`: deletes capture responses older than a retention window. Run
+  `python -m strava_competition.tools.capture_gc --max-age 30d` to prune files
+  older than 30 days (supports `d`, `h`, or raw seconds).
 
 The legacy `helper/fetch_runner_segment_efforts.py` shim now imports these
 modules so existing scripts keep working.

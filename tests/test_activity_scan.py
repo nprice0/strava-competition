@@ -2,23 +2,19 @@
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import List
 
 import pytest
 
-TEST_CAPTURE_DIR = Path(__file__).resolve().parent / "strava_api_capture"
-os.environ.setdefault("STRAVA_API_CAPTURE_DIR", str(TEST_CAPTURE_DIR))
-os.environ.setdefault("STRAVA_API_REPLAY_ENABLED", "true")
-os.environ.setdefault("STRAVA_API_CAPTURE_ENABLED", "false")
-
 from strava_competition.activity_scan.scanner import ActivityEffortScanner
 from strava_competition.activity_scan.models import ActivityScanResult
 from strava_competition.errors import StravaAPIError
 from strava_competition.models import Runner, Segment
 from strava_competition.services.segment_service import SegmentService
+
+TEST_CAPTURE_DIR = Path(__file__).resolve().parent / "strava_api_capture"
 
 
 @pytest.fixture
@@ -47,13 +43,23 @@ def capture_replay_env(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(config, "STRAVA_API_REPLAY_ENABLED", True, raising=False)
     monkeypatch.setattr(config, "STRAVA_API_CAPTURE_ENABLED", False, raising=False)
+    monkeypatch.setattr(config, "STRAVA_CAPTURE_HASH_IDENTIFIERS", False, raising=False)
 
     monkeypatch.setenv("STRAVA_API_CAPTURE_DIR", str(TEST_CAPTURE_DIR))
     monkeypatch.setenv("STRAVA_API_REPLAY_ENABLED", "true")
     monkeypatch.setenv("STRAVA_API_CAPTURE_ENABLED", "false")
+    monkeypatch.setenv("STRAVA_CAPTURE_HASH_IDENTIFIERS", "false")
 
+    monkeypatch.setattr(
+        api_capture, "STRAVA_API_CAPTURE_DIR", str(TEST_CAPTURE_DIR), raising=False
+    )
+    monkeypatch.setattr(api_capture, "STRAVA_API_REPLAY_ENABLED", True, raising=False)
+    monkeypatch.setattr(api_capture, "STRAVA_API_CAPTURE_ENABLED", False, raising=False)
     monkeypatch.setattr(api_capture, "_CAPTURE", api_capture.APICapture())
     monkeypatch.setattr(strava_api, "STRAVA_OFFLINE_MODE", True, raising=False)
+    monkeypatch.setattr(
+        strava_api, "STRAVA_CAPTURE_HASH_IDENTIFIERS", False, raising=False
+    )
 
 
 def test_activity_scanner_finds_fastest_effort(

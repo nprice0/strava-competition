@@ -1,10 +1,11 @@
 import threading
-import time
 
 from strava_competition.strava_api import RateLimiter
 
 
-def worker(limiter: RateLimiter, started_evt: threading.Event, release_evt: threading.Event):
+def worker(
+    limiter: RateLimiter, started_evt: threading.Event, release_evt: threading.Event
+):
     """Acquire a slot, signal start, wait until release, then free slot."""
     limiter.before_request()
     started_evt.set()
@@ -32,7 +33,9 @@ def test_rate_limiter_resize_behavior():
     c_started, c_release = threading.Event(), threading.Event()
     c_thread = threading.Thread(target=worker, args=(limiter, c_started, c_release))
     c_thread.start()
-    assert not c_started.wait(0.07), "Third worker should have been blocked before resize"
+    assert not c_started.wait(0.07), (
+        "Third worker should have been blocked before resize"
+    )
 
     # Grow limit -> unblock waiting worker
     limiter.resize(3)
@@ -42,7 +45,9 @@ def test_rate_limiter_resize_behavior():
     d_started, d_release = threading.Event(), threading.Event()
     d_thread = threading.Thread(target=worker, args=(limiter, d_started, d_release))
     d_thread.start()
-    assert not d_started.wait(0.07), "Fourth worker should be blocked until a slot frees"
+    assert not d_started.wait(0.07), (
+        "Fourth worker should be blocked until a slot frees"
+    )
 
     # Release first worker -> fourth should start
     workers[0][1].set()  # release A
@@ -51,7 +56,7 @@ def test_rate_limiter_resize_behavior():
 
     # Release remaining blocked workers
     workers[1][1].set()  # release B
-    c_release.set()      # release C
+    c_release.set()  # release C
     workers[1][2].join(timeout=0.6)
     c_thread.join(timeout=0.6)
 
@@ -74,7 +79,9 @@ def test_rate_limiter_resize_behavior():
     # Free e -> f should proceed
     e_release.set()
     e_thread.join(timeout=0.6)
-    assert f_started.wait(0.3), "Second worker did not start after first released under shrunken limit"
+    assert f_started.wait(0.3), (
+        "Second worker did not start after first released under shrunken limit"
+    )
     f_release.set()
     f_thread.join(timeout=0.6)
 

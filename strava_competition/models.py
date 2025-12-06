@@ -15,7 +15,7 @@ class Segment:
 @dataclass
 class Runner:
     name: str
-    strava_id: str
+    strava_id: int | str
     refresh_token: str
     # Separate optional teams for segment and distance series
     segment_team: str | None = None

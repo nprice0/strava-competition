@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from threading import RLock
-from typing import Any, Dict, Hashable, MutableMapping, Tuple
+from typing import Any, Dict, Hashable, Tuple
 
 
 class ActivityDetailCache:
@@ -13,7 +13,7 @@ class ActivityDetailCache:
     def __init__(self, max_entries: int = 128) -> None:
         self._max_entries = max(0, max_entries)
         self._lock = RLock()
-        self._store: MutableMapping[Tuple[Hashable, Hashable], Dict[str, Any]] = (
+        self._store: OrderedDict[Tuple[Hashable, Hashable], Dict[str, Any]] = (
             OrderedDict()
         )
 

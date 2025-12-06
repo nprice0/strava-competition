@@ -1,5 +1,4 @@
 from strava_competition.segment_aggregation import build_segment_outputs
-from strava_competition.models import SegmentResult
 
 
 def test_build_segment_outputs_includes_summary_and_ranking(segment_results):

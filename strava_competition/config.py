@@ -85,7 +85,7 @@ CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
 # Enable writing Strava API responses to disk for offline replay. This should
 # only be used in trusted environments because payloads include personal data
 # such as activity names and potentially tokens.
-STRAVA_API_CAPTURE_ENABLED = _env_bool("STRAVA_API_CAPTURE_ENABLED", True)
+STRAVA_API_CAPTURE_ENABLED = _env_bool("STRAVA_API_CAPTURE_ENABLED", False)
 
 # Enable serving responses from disk instead of calling Strava. When enabled,
 # missing files result in a cache miss and a live request when capture is also
@@ -112,6 +112,23 @@ STRAVA_API_CAPTURE_DIR = os.getenv("STRAVA_API_CAPTURE_DIR", "strava_api_capture
 # False to keep the first successful response unless behaviour is explicitly
 # requested otherwise.
 STRAVA_API_CAPTURE_OVERWRITE = _env_bool("STRAVA_API_CAPTURE_OVERWRITE", False)
+
+# Hash capture identifiers (runner IDs, etc.) before writing file paths.
+STRAVA_CAPTURE_HASH_IDENTIFIERS = _env_bool("STRAVA_CAPTURE_HASH_IDENTIFIERS", True)
+STRAVA_CAPTURE_ID_SALT = os.getenv("STRAVA_CAPTURE_ID_SALT", "")
+
+# Redact sensitive fields before persisting payloads to disk.
+STRAVA_CAPTURE_REDACT_PII = _env_bool("STRAVA_CAPTURE_REDACT_PII", True)
+_redact_defaults = "access_token,refresh_token,token,athlete,email"
+STRAVA_CAPTURE_REDACT_FIELDS = {
+    field.strip().lower()
+    for field in os.getenv("STRAVA_CAPTURE_REDACT_FIELDS", _redact_defaults).split(",")
+    if field.strip()
+}
+
+# Automatically prune capture files older than this many days. Set to 0 to
+# disable automatic retention (manual pruning via capture_gc remains available).
+STRAVA_CAPTURE_AUTO_PRUNE_DAYS = _env_int("STRAVA_CAPTURE_AUTO_PRUNE_DAYS", 0)
 
 # Token responses include highly sensitive data and typically do not need to
 # be captured for offline analysis. Disable capture/replay for the OAuth token

@@ -58,10 +58,12 @@ def dedupe_activities(activities: Iterable[dict]) -> List[dict]:
     seen: set[int] = set()
     for act in activities:
         act_id = act.get("id")
-        try:
-            normalized = int(act_id)
-        except (TypeError, ValueError):
-            normalized = None
+        normalized: int | None = None
+        if act_id is not None:
+            try:
+                normalized = int(act_id)
+            except (TypeError, ValueError):
+                normalized = None
         if normalized is not None:
             if normalized in seen:
                 continue
@@ -78,10 +80,12 @@ def merge_activity_lists(*lists: Sequence[dict]) -> List[dict]:
     for block in lists:
         for act in block:
             act_id = act.get("id")
-            try:
-                normalized = int(act_id)
-            except (TypeError, ValueError):
-                normalized = None
+            normalized: int | None = None
+            if act_id is not None:
+                try:
+                    normalized = int(act_id)
+                except (TypeError, ValueError):
+                    normalized = None
             if normalized is not None and normalized in seen:
                 continue
             if normalized is not None:

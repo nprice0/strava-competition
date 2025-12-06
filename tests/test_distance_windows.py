@@ -4,7 +4,6 @@ import os
 import tempfile
 
 from strava_competition.excel_reader import read_distance_windows
-from strava_competition.excel_writer import write_results
 
 
 def test_read_distance_windows_basic():

@@ -50,7 +50,7 @@ def _mask_tail(value: str | None, visible: int = 4) -> str:
 
 def get_access_token(
     refresh_token: str, runner_name: str | None = None
-) -> Tuple[str | None, str | None]:
+) -> Tuple[str, str | None]:
     """Exchange a refresh token for a new access (and possibly new refresh) token.
 
     Args:
@@ -154,16 +154,16 @@ def get_access_token(
                                 if detail
                                 else " ".join(joined)
                             )
-            except Exception:
+            except ValueError as exc:
                 detail = None
+                logger.debug("Failed to parse token error response: %s", exc)
             snippet = None
             if not detail:
-                try:
-                    text = resp.text.strip()
+                text = getattr(resp, "text", "")
+                if isinstance(text, str):
+                    text = text.strip()
                     if text:
                         snippet = (text[:197] + "...") if len(text) > 200 else text
-                except Exception:
-                    pass
             logger.error(
                 "Token refresh failed status=%s%s%s",
                 status,
@@ -192,16 +192,29 @@ def get_access_token(
                 body=capture_body,
             )
 
-    access_token = data.get("access_token") if isinstance(data, dict) else None
-    new_refresh_token = data.get("refresh_token") if isinstance(data, dict) else None
+    access_token_raw = data.get("access_token") if isinstance(data, dict) else None
+    new_refresh_token_raw = (
+        data.get("refresh_token") if isinstance(data, dict) else None
+    )
+    access_len = len(access_token_raw) if isinstance(access_token_raw, str) else 0
+    refresh_changed = (
+        isinstance(new_refresh_token_raw, str)
+        and new_refresh_token_raw
+        and new_refresh_token_raw != refresh_token
+    )
     logger.info(
         "Token refresh %s access_token_len=%s refresh_token_changed=%s",
         response_source,
-        len(access_token) if access_token else 0,
-        bool(new_refresh_token and new_refresh_token != refresh_token),
+        access_len,
+        bool(refresh_changed),
     )
-    if not access_token:
+    if not isinstance(access_token_raw, str) or not access_token_raw:
         # Treat missing access token as error for downstream certainty
         logger.error("No access_token in token response")
         raise TokenError("No access_token in response")
-    return access_token, new_refresh_token
+    new_refresh_token: str | None
+    if isinstance(new_refresh_token_raw, str) and new_refresh_token_raw:
+        new_refresh_token = new_refresh_token_raw
+    else:
+        new_refresh_token = None
+    return access_token_raw, new_refresh_token

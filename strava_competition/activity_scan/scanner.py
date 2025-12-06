@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from threading import Event
-from typing import Callable, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
 
 from ..config import ACTIVITY_SCAN_MAX_ACTIVITY_PAGES
 from ..errors import StravaAPIError
@@ -14,7 +14,7 @@ from ..strava_api import get_activities, get_activity_with_efforts
 from .cache import ActivityDetailCache
 from .models import ActivityScanResult
 
-ActivityProvider = Callable[[Runner, datetime, datetime], Sequence[Dict[str, object]]]
+ActivityProvider = Callable[[Runner, datetime, datetime], Sequence[Dict[str, Any]]]
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:
@@ -24,7 +24,10 @@ def _parse_iso_datetime(value: str | None) -> datetime | None:
         if value.endswith("Z"):
             value = value.replace("Z", "+00:00")
         return datetime.fromisoformat(value)
-    except Exception:
+    except (TypeError, ValueError) as exc:
+        logging.getLogger(__name__).debug(
+            "Failed to parse ISO datetime '%s': %s", value, exc
+        )
         return None
 
 
@@ -66,7 +69,7 @@ class ActivityEffortScanner:
         effort_ids: List[int | str] = []
         inspected: List[Dict[str, object]] = []
         best_elapsed: float | None = None
-        best_effort: Dict[str, object] | None = None
+        best_effort: Dict[str, Any] | None = None
         best_activity_id: int | None = None
         best_moving_time: float | None = None
         best_start: datetime | None = None
@@ -81,16 +84,23 @@ class ActivityEffortScanner:
             detail = self._get_activity_detail(runner, activity_id, cancel_event)
             if not detail:
                 continue
-            efforts = detail.get("segment_efforts") or []
-            for effort in efforts:
-                segment_obj = effort.get("segment") or {}
+            efforts_payload = detail.get("segment_efforts")
+            if not isinstance(efforts_payload, list):
+                continue
+            for effort_obj in efforts_payload:
+                if not isinstance(effort_obj, dict):
+                    continue
+                effort: Dict[str, Any] = effort_obj
+                segment_obj = effort.get("segment")
+                if not isinstance(segment_obj, Mapping):
+                    continue
                 if segment_obj.get("id") != segment.id:
                     continue
                 elapsed = self._coerce_float(effort.get("elapsed_time"))
                 if elapsed is None or elapsed <= 0:
                     continue
                 attempts += 1
-                effort_id = effort.get("id")
+                effort_id = self._coerce_effort_id(effort.get("id"))
                 if effort_id is not None:
                     effort_ids.append(effort_id)
                 if best_elapsed is None or elapsed < best_elapsed:
@@ -103,7 +113,9 @@ class ActivityEffortScanner:
                     )
         if attempts == 0 or best_elapsed is None:
             return None
-        fastest_effort_id = best_effort.get("id") if best_effort else None
+        fastest_effort_id = (
+            self._coerce_effort_id(best_effort.get("id")) if best_effort else None
+        )
         return ActivityScanResult(
             segment_id=segment.id,
             attempts=attempts,
@@ -121,28 +133,42 @@ class ActivityEffortScanner:
         runner: Runner,
         segment: Segment,
         cancel_event: Event | None,
-    ) -> List[Dict[str, object]]:
+    ) -> List[Dict[str, Any]]:
         if cancel_event and cancel_event.is_set():
             return []
         provider = self._activity_provider or self._default_activity_provider
         try:
             data = provider(runner, segment.start_date, segment.end_date)
-        except Exception:
+        except Exception as exc:
             self._log.warning(
-                "Activity provider failed runner=%s segment=%s",
+                "Activity provider failed runner=%s segment=%s: %s",
                 runner.name,
                 segment.id,
+                exc,
                 exc_info=True,
             )
             return []
-        return list(data or [])
+        if data is None:
+            return []
+        if not isinstance(data, Sequence):
+            self._log.warning(
+                (
+                    "Activity provider returned unexpected type %s "
+                    "for runner=%s segment=%s"
+                ),
+                type(data).__name__,
+                runner.name,
+                segment.id,
+            )
+            return []
+        return list(data)
 
     def _default_activity_provider(
         self,
         runner: Runner,
         start_date: datetime,
         end_date: datetime,
-    ) -> Sequence[Dict[str, object]]:
+    ) -> Sequence[Dict[str, Any]]:
         return (
             get_activities(
                 runner,
@@ -159,7 +185,7 @@ class ActivityEffortScanner:
         runner: Runner,
         activity_id: int,
         cancel_event: Event | None,
-    ) -> Dict[str, object] | None:
+    ) -> Dict[str, Any] | None:
         if cancel_event and cancel_event.is_set():
             return None
         key = (runner.strava_id, activity_id)
@@ -192,15 +218,21 @@ class ActivityEffortScanner:
         return detail
 
     @staticmethod
-    def _coerce_int(value) -> int | None:
+    def _coerce_int(value: Any) -> int | None:
         try:
             return int(value)
         except (TypeError, ValueError):
             return None
 
     @staticmethod
-    def _coerce_float(value) -> float | None:
+    def _coerce_float(value: Any) -> float | None:
         try:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    @staticmethod
+    def _coerce_effort_id(value: Any) -> int | str | None:
+        if isinstance(value, (int, str)):
+            return value
+        return None

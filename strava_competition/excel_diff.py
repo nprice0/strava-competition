@@ -12,7 +12,7 @@ import argparse
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence, cast
 
 import pandas as pd
 
@@ -51,7 +51,8 @@ class TimingDiff:
 
 def _load_workbook(path: Path) -> Dict[str, pd.DataFrame]:
     """Load every sheet from an Excel workbook into pandas DataFrames."""
-    return pd.read_excel(path, sheet_name=None, engine="openpyxl")
+    sheets = pd.read_excel(path, sheet_name=None, engine="openpyxl")
+    return cast(Dict[str, pd.DataFrame], sheets)
 
 
 def _align_frames(left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
@@ -308,11 +309,17 @@ def _coerce_seconds(value: object) -> Optional[float]:
     """Convert a cell value into seconds when possible."""
     if pd.isna(value):
         return None
-    try:
-        numeric = float(value)
-    except (TypeError, ValueError):
-        return None
-    return numeric
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        candidate = value.strip()
+        if not candidate:
+            return None
+        try:
+            return float(candidate)
+        except ValueError:
+            return None
+    return None
 
 
 def _format_diff(diff: WorkbookDiff, max_rows: Optional[int]) -> str:

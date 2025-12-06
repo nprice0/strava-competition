@@ -23,7 +23,11 @@ from .config import (
     STRAVA_API_CAPTURE_ENABLED,
     STRAVA_API_CAPTURE_OVERWRITE,
     STRAVA_API_REPLAY_ENABLED,
+    STRAVA_CAPTURE_REDACT_PII,
+    STRAVA_CAPTURE_REDACT_FIELDS,
+    STRAVA_CAPTURE_AUTO_PRUNE_DAYS,
 )
+from .tools.capture_gc import prune_directory
 from .utils import json_dumps_sorted
 
 _LOGGER = logging.getLogger(__name__)
@@ -60,6 +64,7 @@ class APICapture:
         self._replay_enabled = STRAVA_API_REPLAY_ENABLED
         self._overwrite = STRAVA_API_CAPTURE_OVERWRITE
         self._lock = threading.Lock()
+        self._apply_retention_policy()
         if self._record_enabled or self._replay_enabled:
             self._base_dir.mkdir(parents=True, exist_ok=True)
             _LOGGER.info(
@@ -101,14 +106,23 @@ class APICapture:
         return sha256(payload.encode("utf-8")).hexdigest()
 
     def _read_file(self, path: Path) -> Optional[Dict[str, Any]]:
+        payload: Any
         try:
             with path.open("r", encoding="utf-8") as handle:
-                return json.load(handle)
+                payload = json.load(handle)
         except FileNotFoundError:
             return None
         except Exception as exc:  # pragma: no cover - defensive logging
             _LOGGER.error("Failed reading capture file %s: %s", path, exc)
             return None
+        if isinstance(payload, dict):
+            return payload
+        _LOGGER.error(
+            "Capture file %s contained unexpected payload type %s",
+            path,
+            type(payload).__name__,
+        )
+        return None
 
     def _write_file(self, path: Path, payload: Dict[str, Any]) -> None:
         self._ensure_parent(path)
@@ -197,8 +211,44 @@ class APICapture:
             self._write_file(path, payload)
         _LOGGER.debug("Overlay stored signature=%s path=%s", signature, path)
 
+    def _apply_retention_policy(self) -> None:
+        days = STRAVA_CAPTURE_AUTO_PRUNE_DAYS
+        if days <= 0:
+            return
+        try:
+            stats = prune_directory(
+                base=self._base_dir,
+                max_age_days=days,
+                dry_run=False,
+            )
+            _LOGGER.info(
+                "Capture retention pruned deleted=%s skipped=%s window_days=%s",
+                stats.get("deleted", 0),
+                stats.get("skipped", 0),
+                days,
+            )
+        except Exception as exc:  # pragma: no cover - retention best-effort
+            _LOGGER.warning("Capture retention pruning failed: %s", exc)
+
 
 _CAPTURE = APICapture()
+
+
+def _redact_payload(value: Any) -> Any:
+    if not STRAVA_CAPTURE_REDACT_PII:
+        return value
+    if isinstance(value, dict):
+        redacted: Dict[str, Any] = {}
+        for key, item in value.items():
+            lowered = key.lower() if isinstance(key, str) else key
+            if isinstance(lowered, str) and lowered in STRAVA_CAPTURE_REDACT_FIELDS:
+                redacted[key] = "***redacted***"
+            else:
+                redacted[key] = _redact_payload(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_payload(item) for item in value]
+    return value
 
 
 def replay_response(
@@ -254,7 +304,7 @@ def record_response(
 
     _CAPTURE.store(
         CaptureKey(method=method, url=url, identity=identity, params=params, body=body),
-        response,
+        _redact_payload(response),
     )
 
 
@@ -271,7 +321,7 @@ def record_overlay_response(
 
     _CAPTURE.store_overlay(
         CaptureKey(method=method, url=url, identity=identity, params=params, body=body),
-        response,
+        _redact_payload(response),
     )
 
 
