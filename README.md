@@ -22,7 +22,7 @@ Optional sheets such as team summaries or distance summaries appear only when th
 
 ### Architecture at a glance
 
-The data journeys below show how each run flows from the Excel workbook through the services layer and back out to the results workbook. Segment and distance competitions share common plumbing while fanning out into their respective aggregation paths.
+The diagram below shows the workbook-to-results path shared by segment and distance flows.
 
 ```mermaid
 flowchart LR
@@ -67,27 +67,15 @@ flowchart LR
 - A Strava API application (Client ID and Client Secret)
 - Strava subscriptions for any athletes whose segment efforts you need to view (Strava enforces this)
 
-Install the Python packages listed in `requirements.txt`. Key libraries include pandas, openpyxl, requests, Flask, urllib3, and python-dotenv.
-
-### macOS quick start (zsh)
+Install the dependencies from `requirements.txt` inside a virtual environment. Example (macOS/Linux):
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
+pip install -U pip -r requirements.txt
 ```
 
-### Windows quick start (PowerShell)
-
-```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-If execution policy blocks activation, run `Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass`. On Command Prompt use `\.venv\Scripts\activate.bat` instead.
+On Windows, use `py -3 -m venv .venv` and `.venv\Scripts\activate` instead of `source`.
 
 ---
 
@@ -177,59 +165,20 @@ The response includes the refresh token. Store it securely.
 
 ## CLI tools
 
-Two focused utilities live under `strava_competition/tools` to help with
-support and debugging tasks. Both reuse the same `.env` credentials and
-dependencies as the main app.
+Two small helpers live under `strava_competition/tools` and share the same
+configuration as the main app:
 
-### `fetch_runner_segment_efforts`
+- `fetch_runner_segment_efforts`: dumps `/athlete/activities` windows with
+  `include_all_efforts=true` so you can inspect raw Strava payloads for a
+  runner. Use `python -m strava_competition.tools.fetch_runner_segment_efforts --help`
+  for the argument list.
+- `deviation_map`: builds an interactive Folium map that highlights gate
+  crossings and large deviations for a runner/segment pair. Launch it via
+  `python -m strava_competition.tools.deviation_map --help` and point the
+  output wherever you need.
 
-- Exchanges a refresh token for an access token, then walks a given day or
-  custom window of `/athlete/activities` results.
-- Fetches `include_all_efforts=true` for every activity in that window so you
-  can see exactly what Strava returns for a subscriber.
-- Prints a compact JSON summary per segment effort, with an optional
-  `--print-json` flag to dump each raw payload.
-
-Run it from the repo root once your virtual environment is active:
-
-```bash
-source .venv/bin/activate && \
-python -m strava_competition.tools.fetch_runner_segment_efforts \
-   --runner-id 13056193 \
-   --runner-name "Helen Lawrence" \
-   --refresh-token abcdef5ffe85a428b5678fafe749e3a758cc3614 \
-   --start 2025-11-03T00:00:00Z \
-   --end 2025-11-24T00:00:00Z
-```
-
-### `deviation_map`
-
-- Reads runners and segments from the workbook, fetches the matching activity
-  stream plus segment geometry, and renders an interactive Folium map showing
-  where the athlete left the official course.
-- Highlights gate crossings, coverage diagnostics, and large offsets so you can
-  sanity-check leaderboard results or explain unusual activity coverage.
-- Saves the output HTML wherever you choose (`maps/<slug>.html` by default, or
-  a custom path when you pass `--output`).
-
-Example invocation:
-
-```bash
-source .venv/bin/activate && \
-python -m strava_competition.tools.deviation_map \
-   --runner-name "Helen Lawrence" \
-   --segment-name "WS25 - Fancy A Tipple After Mass" \
-   --activity-id 1234567890 \
-  --threshold-m 40 \
-  --output maps/helen-ws25.html
-
-The generated HTML will appear under the path you specified (or the default
-`maps/` folder) so you can open it directly in a browser.
-```
-
-The legacy `helper/fetch_runner_segment_efforts.py` entry point now just calls
-into the new `tools` module so older docs keep working, but future updates will
-land under `strava_competition/tools/*`.
+The legacy `helper/fetch_runner_segment_efforts.py` shim now imports these
+modules so existing scripts keep working.
 
 ---
 
@@ -258,33 +207,24 @@ The app reads the workbook, fetches the required Strava data, writes the results
 
 ### Activity scan fallback
 
-Some runners only expose full Strava activities (not segment leaderboards). Enable the activity scan fallback by setting `USE_ACTIVITY_SCAN_FALLBACK=true`. When active, the service:
+Some runners only expose full Strava activities. Set `USE_ACTIVITY_SCAN_FALLBACK=true`
+to rebuild results from `include_all_efforts` payloads. The scanner fetches each
+activity window once, reuses cached pages, and logs the inspected activity IDs
+for auditing.
 
-- Fetches every run activity inside the competition window (respecting `ACTIVITY_SCAN_MAX_ACTIVITY_PAGES` if set)
-- Calls `GET /activities/{id}?include_all_efforts=true` once per activity with rate limiting, optional capture via `ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS`, and in-memory caching
-- Counts attempts and identifies the fastest elapsed time for the target segment using the activity payload alone
-- Emits diagnostics with inspected activity IDs so you can audit workbook results later
+**Playbook:**
 
-#### Operator playbook
+1. Enable `USE_ACTIVITY_SCAN_FALLBACK` (and keep `FORCE_ACTIVITY_SCAN_FALLBACK=false`
+   so paid athletes still use official efforts). Optionally limit pagination via
+   `ACTIVITY_SCAN_MAX_ACTIVITY_PAGES`.
+2. Prime captures with `STRAVA_API_CAPTURE_ENABLED=true` / `STRAVA_API_REPLAY_ENABLED=false`.
+3. Switch to deterministic runs using replay (and `STRAVA_OFFLINE_MODE=true` if you
+   want to ban live calls). Watch for `source=activity_scan` in the logs.
 
-1. Toggle the feature flags:
-
-- `USE_ACTIVITY_SCAN_FALLBACK=true`
-- `FORCE_ACTIVITY_SCAN_FALLBACK=false` (so paid runners continue using the official Strava efforts)
-- Optionally cap pagination with `ACTIVITY_SCAN_MAX_ACTIVITY_PAGES=10` while validating
-
-2. Record captures for the current competition window by running the pipeline once with
-   `STRAVA_API_CAPTURE_ENABLED=true` and `STRAVA_API_REPLAY_ENABLED=false`.
-3. Switch to deterministic mode for day-to-day runs: set `STRAVA_API_CAPTURE_ENABLED=false`,
-   `STRAVA_API_REPLAY_ENABLED=true`, and (if you want to block live calls) `STRAVA_OFFLINE_MODE=true`.
-4. Monitor logs for entries tagged `source=activity_scan` and spot-check the emitted
-   `inspected_activities` list when validating workbook outputs.
-
-#### Capture and replay tips
-
-- Include `ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true` so the activity detail payloads match what the scanner expects.
-- When `STRAVA_OFFLINE_MODE=true`, a missing capture now raises `StravaAPIError`; the runner is skipped and the log will point at the exact request signature you need to record.
-- Captures live under `strava_api_capture/` by default. Vendored regression fixtures live in `tests/strava_api_capture/` and power the pytest suite.
+Keep `ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true` so cached payloads match the
+scanner. Missing captures in offline mode raise `StravaAPIError`. Files live under
+`strava_api_capture/`; the `tests/strava_api_capture/` folder holds the fixtures
+used by pytest.
 
 ---
 
@@ -301,8 +241,6 @@ Some runners only expose full Strava activities (not segment leaderboards). Enab
 ## Tests
 
 ```bash
-pip install -r requirements.txt
-pip install pytest
 pytest -q
 ```
 
