@@ -265,7 +265,21 @@ used by pytest.
 pytest -q
 ```
 
-Run tests from the repo root so `tests/conftest.py` loads correctly. Key files include `test_excel_summary.py`, `test_rate_limiter.py`, `test_auth.py`, `test_integration_api_auth.py`, and `test_strava_api_mocked.py`.
+Run tests from the repo root so `tests/conftest.py` loads correctly. Key files include `test_excel_summary.py`, `test_rate_limiter.py`, `test_auth.py`, `test_integration_api_auth.py`, `test_strava_api_mocked.py`, and the load/smoke suite in `tests/test_load_smoke.py` for concurrency and capture replay coverage.
+
+### Quality checks
+
+Before opening a pull request, run the same tooling wired into CI:
+
+```bash
+ruff check
+mypy
+bandit -q -r strava_competition
+pytest
+python -m strava_competition.tools.capture_gc --dry-run --max-age-days 45
+```
+
+These commands ensure lint, typing, security scanning, unit tests, and capture retention checks stay green locally.
 
 ---
 
