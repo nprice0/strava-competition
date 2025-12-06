@@ -85,7 +85,7 @@ CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
 # Enable writing Strava API responses to disk for offline replay. This should
 # only be used in trusted environments because payloads include personal data
 # such as activity names and potentially tokens.
-STRAVA_API_CAPTURE_ENABLED = _env_bool("STRAVA_API_CAPTURE_ENABLED", False)
+STRAVA_API_CAPTURE_ENABLED = _env_bool("STRAVA_API_CAPTURE_ENABLED", True)
 
 # Enable serving responses from disk instead of calling Strava. When enabled,
 # missing files result in a cache miss and a live request when capture is also

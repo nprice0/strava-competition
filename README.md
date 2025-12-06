@@ -100,10 +100,10 @@ Create a `.env` file in the project root so credentials stay out of source contr
 ```dotenv
 STRAVA_CLIENT_ID=<your_id>
 STRAVA_CLIENT_SECRET=<your_secret>
-USE_ACTIVITY_SCAN_FALLBACK=false
+USE_ACTIVITY_SCAN_FALLBACK=true
 ACTIVITY_SCAN_MAX_ACTIVITY_PAGES=10
 ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true
-STRAVA_API_CAPTURE_ENABLED=false
+STRAVA_API_CAPTURE_ENABLED=true
 STRAVA_CAPTURE_HASH_IDENTIFIERS=true
 STRAVA_CAPTURE_ID_SALT=please_change_me
 STRAVA_CAPTURE_REDACT_PII=true
@@ -183,7 +183,7 @@ The response includes the refresh token. Store it securely.
 
 ## CLI tools
 
-Two small helpers live under `strava_competition/tools` and share the same
+Helper scripts live under `strava_competition/tools` and share the same
 configuration as the main app:
 
 - `fetch_runner_segment_efforts`: dumps `/athlete/activities` windows with
@@ -214,6 +214,53 @@ python run.py
 ```
 
 The app reads the workbook, fetches the required Strava data, writes the results workbook named after `OUTPUT_FILE`, and updates the runner tokens inline. Status logs print to stdout with minimal secrets.
+
+### Docker usage
+
+To run inside Docker, build the image once and mount your host files into `/app` so inputs, captures, and results stay on your main drive:
+
+```bash
+docker build -t strava-competition .
+```
+
+#### macOS / Linux run command
+
+```bash
+docker run --rm \
+  -v "$(pwd)":/app \
+  -w /app \
+  strava-competition
+```
+
+- `$(pwd)` should point at the folder containing `competition_input.xlsx` and `strava_api_capture/`.
+- Outputs such as `competition_results_*.xlsx` and refreshed captures are written straight to the host directory because of the bind mount.
+- Override paths by changing the `-v host_dir:/app` portion.
+
+#### Windows run commands
+
+PowerShell:
+
+```powershell
+docker run --rm `
+  -v "${PWD}:/app" `
+  -w /app `
+  strava-competition
+```
+
+Command Prompt:
+
+```cmd
+docker run --rm ^
+  -v %CD%:/app ^
+  -w /app ^
+  strava-competition
+```
+
+Tips:
+
+- Ensure Docker Desktop has file-sharing access to the drive you mount (Settings ▸ Resources ▸ File Sharing on Windows).
+- Quote host paths that contain spaces.
+- The container image sets `STRAVA_API_CAPTURE_ENABLED=1`, so capture files will populate under the mounted directory’s `strava_api_capture/` folder.
 
 ---
 
