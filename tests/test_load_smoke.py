@@ -17,7 +17,7 @@ class RecordingLimiter(RateLimiter):
     """Rate limiter that records observed concurrency for assertions."""
 
     def __init__(self, max_concurrent: int) -> None:
-        super().__init__(max_concurrent=max_concurrent)
+        super().__init__(max_concurrent=max_concurrent, jitter_range=(0.0, 0.0))
         self._observed_lock = threading.Lock()
         self._current = 0
         self.max_observed = 0

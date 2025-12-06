@@ -70,28 +70,43 @@ def test_update_single_runner_refresh_token_is_thread_safe(tmp_path):
         [
             _runner_row("Carol", "201", "old-c"),
             _runner_row("Dave", "202", "old-d"),
+            _runner_row("Eve", "203", "old-e"),
         ],
     )
 
-    carol = Runner(name="Carol", strava_id="201", refresh_token="new-c")
-    dave = Runner(name="Dave", strava_id="202", refresh_token="new-d")
-
-    barrier = threading.Barrier(3)
-
-    def _worker(runner: Runner) -> None:
-        barrier.wait()
-        update_single_runner_refresh_token(workbook, runner)
-
-    threads = [
-        threading.Thread(target=_worker, args=(carol,)),
-        threading.Thread(target=_worker, args=(dave,)),
+    runners = [
+        Runner(name="Carol", strava_id="201", refresh_token="base-c"),
+        Runner(name="Dave", strava_id="202", refresh_token="base-d"),
+        Runner(name="Eve", strava_id="203", refresh_token="base-e"),
     ]
-    for thread in threads:
+
+    barrier = threading.Barrier(len(runners) + 1)
+
+    def _worker(runner: Runner, suffix: str) -> None:
+        barrier.wait()
+        update_single_runner_refresh_token(
+            workbook,
+            Runner(
+                name=runner.name,
+                strava_id=runner.strava_id,
+                refresh_token=f"{runner.refresh_token}:{suffix}",
+            ),
+        )
+
+    threads = []
+    for idx, runner in enumerate(runners):
+        thread = threading.Thread(
+            target=_worker,
+            args=(runner, f"thread-{idx}"),
+        )
+        threads.append(thread)
         thread.start()
+
     barrier.wait()
     for thread in threads:
         thread.join()
 
     tokens = _read_tokens(workbook)
-    assert tokens["201"] == "new-c"
-    assert tokens["202"] == "new-d"
+    for idx, runner in enumerate(runners):
+        expected = f"{runner.refresh_token}:thread-{idx}"
+        assert tokens[runner.strava_id] == expected

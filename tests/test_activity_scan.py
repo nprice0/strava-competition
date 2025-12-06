@@ -44,11 +44,13 @@ def capture_replay_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(config, "STRAVA_API_REPLAY_ENABLED", True, raising=False)
     monkeypatch.setattr(config, "STRAVA_API_CAPTURE_ENABLED", False, raising=False)
     monkeypatch.setattr(config, "STRAVA_CAPTURE_HASH_IDENTIFIERS", False, raising=False)
+    monkeypatch.setattr(config, "STRAVA_OFFLINE_MODE", True, raising=False)
 
     monkeypatch.setenv("STRAVA_API_CAPTURE_DIR", str(TEST_CAPTURE_DIR))
     monkeypatch.setenv("STRAVA_API_REPLAY_ENABLED", "true")
     monkeypatch.setenv("STRAVA_API_CAPTURE_ENABLED", "false")
     monkeypatch.setenv("STRAVA_CAPTURE_HASH_IDENTIFIERS", "false")
+    monkeypatch.setenv("STRAVA_OFFLINE_MODE", "true")
 
     monkeypatch.setattr(
         api_capture, "STRAVA_API_CAPTURE_DIR", str(TEST_CAPTURE_DIR), raising=False
@@ -59,6 +61,18 @@ def capture_replay_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(strava_api, "STRAVA_OFFLINE_MODE", True, raising=False)
     monkeypatch.setattr(
         strava_api, "STRAVA_CAPTURE_HASH_IDENTIFIERS", False, raising=False
+    )
+
+    import strava_competition.strava_client.activities as activities_client
+    import strava_competition.strava_client.capture as capture_client
+
+    monkeypatch.setattr(activities_client, "STRAVA_OFFLINE_MODE", True, raising=False)
+    monkeypatch.setattr(
+        activities_client, "STRAVA_CAPTURE_HASH_IDENTIFIERS", False, raising=False
+    )
+    monkeypatch.setattr(capture_client, "STRAVA_OFFLINE_MODE", True, raising=False)
+    monkeypatch.setattr(
+        capture_client, "STRAVA_CAPTURE_HASH_IDENTIFIERS", False, raising=False
     )
 
 

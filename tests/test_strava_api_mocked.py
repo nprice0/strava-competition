@@ -3,7 +3,7 @@ from datetime import datetime
 
 import pytest
 
-from strava_competition import strava_api
+from strava_competition import config, strava_api
 from strava_competition.errors import StravaAPIError
 from strava_competition.models import Runner
 from strava_competition.strava_client import resources as resource_client
@@ -212,9 +212,7 @@ def test_get_segment_efforts_offline_cache_miss(monkeypatch):
     )
 
     monkeypatch.setattr(segment_client, "STRAVA_OFFLINE_MODE", True)
-    monkeypatch.setattr(
-        "strava_competition.strava_client.base.STRAVA_OFFLINE_MODE", True
-    )
+    monkeypatch.setattr(config, "STRAVA_OFFLINE_MODE", True, raising=False)
     # Mock the underlying replay function to return None (cache miss)
     monkeypatch.setattr(
         segment_client,

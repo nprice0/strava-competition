@@ -6,7 +6,7 @@ import logging
 from typing import Dict
 
 from ..auth import get_access_token
-from ..config import STRAVA_OFFLINE_MODE
+from .. import config
 from ..models import Runner
 
 LOGGER = logging.getLogger(__name__)
@@ -15,7 +15,7 @@ LOGGER = logging.getLogger(__name__)
 def ensure_runner_token(runner: Runner) -> None:
     """Ensure the runner has a valid access token, refreshing when needed."""
 
-    if STRAVA_OFFLINE_MODE:
+    if config.STRAVA_OFFLINE_MODE:
         if not getattr(runner, "access_token", None) and not getattr(
             runner, "_skip_token_logged", False
         ):
