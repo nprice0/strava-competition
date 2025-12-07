@@ -98,7 +98,6 @@ class ActivitiesAPI:
         *,
         session: requests.Session | None = None,
         limiter: RateLimiter | None = None,
-        *,
         resources: ResourceAPI | None = None,
     ) -> None:
         self._session = session or get_default_session()
