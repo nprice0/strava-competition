@@ -7,12 +7,13 @@ than a free function implementation.
 
 from __future__ import annotations
 
-from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import logging
 import threading
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Sequence, Tuple, Set
+
+from cachetools import TTLCache
 
 from ..errors import StravaAPIError
 from ..models import Segment, Runner, SegmentResult
@@ -27,6 +28,8 @@ from ..strava_api import get_segment_efforts, get_activities
 
 ResultsMapping = Dict[str, Dict[str, List[SegmentResult]]]
 
+_ActivityCacheKey = Tuple[int | str, datetime, datetime]
+
 
 class SegmentService:
     def __init__(self, max_workers: int | None = None):
@@ -34,8 +37,9 @@ class SegmentService:
         if self.max_workers <= 0:
             raise ValueError("max_workers must be positive")
         self._log = logging.getLogger(self.__class__.__name__)
-        self._activity_cache_max_entries = max(0, RUNNER_ACTIVITY_CACHE_SIZE)
-        self._activity_cache: "OrderedDict[tuple[int | str, datetime, datetime], List[Dict[str, Any]]]" = OrderedDict()
+        self._activity_cache: TTLCache[_ActivityCacheKey, List[Dict[str, Any]]] = (
+            TTLCache(maxsize=max(1, RUNNER_ACTIVITY_CACHE_SIZE), ttl=3600)
+        )
         self._activity_cache_lock = threading.RLock()
         self._activity_scanner = ActivityEffortScanner(
             activity_provider=self._get_runner_activities
@@ -491,8 +495,6 @@ class SegmentService:
         cache_key = (runner.strava_id, start_date, end_date)
         with self._activity_cache_lock:
             cached = self._activity_cache.get(cache_key)
-            if cached is not None:
-                self._activity_cache.move_to_end(cache_key)
         if cached is not None:
             self._log.debug(
                 "Using cached activities runner=%s window=%s->%s",
@@ -503,14 +505,8 @@ class SegmentService:
             return cached
 
         activities = get_activities(runner, start_date, end_date) or []
-        if self._activity_cache_max_entries > 0:
-            with self._activity_cache_lock:
-                if cache_key in self._activity_cache:
-                    self._activity_cache.move_to_end(cache_key)
-                else:
-                    while len(self._activity_cache) >= self._activity_cache_max_entries:
-                        self._activity_cache.popitem(last=False)
-                self._activity_cache[cache_key] = activities
+        with self._activity_cache_lock:
+            self._activity_cache[cache_key] = activities
         return activities
 
     def _clear_runner_activity_cache(self) -> None:

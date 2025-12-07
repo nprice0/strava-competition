@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
 from threading import RLock
 from typing import Sequence, Tuple
+
+from cachetools import TTLCache
 
 from ...models import Runner
 from ...strava_api import (
@@ -17,35 +18,11 @@ from .models import ActivityTrack, LatLon, SegmentGeometry
 
 _ActivityCacheKey = Tuple[int | str, int]
 
-
-class _ActivityStreamCache:
-    """Simple LRU cache for activity streams scoped to the current process."""
-
-    def __init__(self, max_entries: int) -> None:
-        self._data: "OrderedDict[_ActivityCacheKey, ActivityTrack]" = OrderedDict()
-        self._max_entries = max(0, max_entries)
-        self._lock = RLock()
-
-    def get(self, key: _ActivityCacheKey) -> ActivityTrack | None:
-        with self._lock:
-            if key not in self._data:
-                return None
-            value = self._data.pop(key)
-            self._data[key] = value
-            return value
-
-    def put(self, key: _ActivityCacheKey, value: ActivityTrack) -> None:
-        if self._max_entries <= 0:
-            return
-        with self._lock:
-            if key in self._data:
-                self._data.pop(key)
-            elif len(self._data) >= self._max_entries:
-                self._data.popitem(last=False)
-            self._data[key] = value
-
-
-_activity_stream_cache = _ActivityStreamCache(ACTIVITY_STREAM_CACHE_SIZE)
+# Module-level TTL+LRU cache for activity streams (1-hour TTL).
+_activity_stream_cache: TTLCache[_ActivityCacheKey, ActivityTrack] = TTLCache(
+    maxsize=max(1, ACTIVITY_STREAM_CACHE_SIZE), ttl=3600
+)
+_activity_stream_cache_lock = RLock()
 
 
 def fetch_segment_geometry(runner: Runner, segment_id: int) -> SegmentGeometry:
@@ -77,7 +54,8 @@ def fetch_activity_stream(runner: Runner, activity_id: int) -> ActivityTrack:
     """Fetch activity stream data (lat/lon + timestamps) from the Strava API."""
 
     cache_key: _ActivityCacheKey = (runner.strava_id, int(activity_id))
-    cached = _activity_stream_cache.get(cache_key)
+    with _activity_stream_cache_lock:
+        cached = _activity_stream_cache.get(cache_key)
     if cached is not None:
         return cached
 
@@ -93,7 +71,8 @@ def fetch_activity_stream(runner: Runner, activity_id: int) -> ActivityTrack:
         timestamps_s=timestamps,
         metadata=metadata,
     )
-    _activity_stream_cache.put(cache_key, track)
+    with _activity_stream_cache_lock:
+        _activity_stream_cache[cache_key] = track
     return track
 
 

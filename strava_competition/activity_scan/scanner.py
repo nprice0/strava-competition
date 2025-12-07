@@ -4,17 +4,19 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from threading import Event
+from threading import Event, RLock
 from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+
+from cachetools import TTLCache
 
 from ..config import ACTIVITY_SCAN_MAX_ACTIVITY_PAGES
 from ..errors import StravaAPIError
 from ..models import Runner, Segment
 from ..strava_api import get_activities, get_activity_with_efforts
-from .cache import ActivityDetailCache
 from .models import ActivityScanResult
 
 ActivityProvider = Callable[[Runner, datetime, datetime], Sequence[Dict[str, Any]]]
+_DetailCacheKey = tuple[int | str, int]
 
 
 def _parse_iso_datetime(value: str | None) -> datetime | None:
@@ -44,7 +46,10 @@ class ActivityEffortScanner:
     ) -> None:
         self._log = logging.getLogger(self.__class__.__name__)
         self._activity_provider = activity_provider
-        self._detail_cache = ActivityDetailCache(detail_cache_size)
+        self._detail_cache: TTLCache[_DetailCacheKey, Dict[str, Any]] = TTLCache(
+            maxsize=max(1, detail_cache_size), ttl=3600
+        )
+        self._detail_cache_lock = RLock()
         if activity_types is None:
             activity_types = ("Run",)
         self._activity_types = tuple(activity_types)
@@ -188,8 +193,9 @@ class ActivityEffortScanner:
     ) -> Dict[str, Any] | None:
         if cancel_event and cancel_event.is_set():
             return None
-        key = (runner.strava_id, activity_id)
-        cached = self._detail_cache.get(key)
+        key: _DetailCacheKey = (runner.strava_id, activity_id)
+        with self._detail_cache_lock:
+            cached = self._detail_cache.get(key)
         if cached is not None:
             return cached
         try:
@@ -214,7 +220,8 @@ class ActivityEffortScanner:
                 exc_info=True,
             )
             return None
-        self._detail_cache.put(key, detail)
+        with self._detail_cache_lock:
+            self._detail_cache[key] = detail
         return detail
 
     @staticmethod
