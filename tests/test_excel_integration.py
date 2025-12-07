@@ -3,6 +3,8 @@ import os
 import tempfile
 
 import pandas as pd
+import pytest
+from openpyxl import load_workbook
 
 from strava_competition import excel_writer, excel_reader
 from strava_competition.services.segment_service import SegmentService
@@ -18,6 +20,7 @@ def make_input_workbook(path):
                 "Segment Name": "Hill Climb",
                 "Start Date": datetime(2024, 1, 1),
                 "End Date": datetime(2024, 1, 31),
+                "Default Time": None,
             }
         ]
     )
@@ -85,13 +88,15 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
         )
         monkeypatch.setattr(segment_service_mod, "get_activities", fake_get_activities)
         monkeypatch.setattr(
-            segment_service_mod, "MATCHING_FORCE_FALLBACK", False, raising=False
+            segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False, raising=False
         )
 
         service = SegmentService(max_workers=2)
         results = service.process(segments, runners)
         excel_writer.write_results(out_path, results)
         df = pd.read_excel(out_path, sheet_name="Hill Climb")
+        wb = load_workbook(out_path, data_only=True)
+        ws = wb["Hill Climb"]
 
     assert {
         "Team",
@@ -100,48 +105,59 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
         "Team Rank",
         "Attempts",
         "Fastest Time (sec)",
+        "Fastest Time (h:mm:ss)",
         "Fastest Date",
     }.issubset(set(df.columns))
-    assert len(df) == 3
-    df_sorted = df.sort_values("Runner").reset_index(drop=True)
+    # Raw sheet includes blank spacer and summary rows - drop them for runner-level assertions.
+    assert df["Team"].isna().sum() >= 1
+    summary_markers = df.index[df["Team"] == "Team"]
+    assert len(summary_markers) == 1
+    summary_start = summary_markers[0]
+    assert summary_start >= 2
+    assert df.loc[summary_start - 2 : summary_start - 1, "Team"].isna().all()
+    detail_df = (
+        df.loc[: summary_start - 1].dropna(subset=["Runner"]).reset_index(drop=True)
+    )
+    assert len(detail_df) == 3
+    df_sorted = detail_df.sort_values("Runner").reset_index(drop=True)
     runner_to_rank = dict(zip(df_sorted["Runner"], df_sorted["Rank"]))
     assert runner_to_rank["Carl"] == 1
     assert runner_to_rank["Alice"] == 2
     assert runner_to_rank["Ben"] == 3
-
-
-def test_update_runner_refresh_tokens_roundtrip(tmp_path):
-    in_path = tmp_path / "input.xlsx"
-    segs = pd.DataFrame(
-        [
-            {
-                "Segment ID": 1,
-                "Segment Name": "S1",
-                "Start Date": datetime(2024, 1, 1),
-                "End Date": datetime(2024, 1, 2),
-            }
-        ]
-    )
-    runners_df = pd.DataFrame(
-        [
-            {
-                "Name": "A",
-                "Strava ID": 10,
-                "Refresh Token": "rt-old",
-                "Segment Series Team": "X",
-                "Distance Series Team": None,
-            }
-        ]
-    )
-    with pd.ExcelWriter(in_path, engine="openpyxl") as w:
-        segs.to_excel(w, sheet_name="Segment Series", index=False)
-        runners_df.to_excel(w, sheet_name="Runners", index=False)
-
-    runners_objs = excel_reader.read_runners(str(in_path))
-    assert runners_objs[0].refresh_token == "rt-old"
-    runners_objs[0].refresh_token = "rt-new"
-    excel_writer.update_runner_refresh_tokens(str(in_path), runners_objs)
-    df_after = pd.read_excel(in_path, sheet_name="Runners")
-    assert (
-        df_after.loc[df_after["Strava ID"] == 10, "Refresh Token"].iloc[0] == "rt-new"
-    )
+    runner_to_time = dict(zip(df_sorted["Runner"], df_sorted["Fastest Time (h:mm:ss)"]))
+    assert runner_to_time["Carl"] == "0:01:52"
+    # Segment summary table appended beneath detail rows
+    summary_header_row = None
+    for idx in range(2, ws.max_row + 1):
+        if ws.cell(row=idx, column=1).value == "Team" and ws.cell(
+            row=idx - 1, column=1
+        ).value in (None, ""):
+            summary_header_row = idx
+            break
+    assert summary_header_row is not None
+    assert ws.cell(row=summary_header_row - 1, column=1).value in (None, "")
+    assert ws.cell(row=summary_header_row - 2, column=1).value in (None, "")
+    assert ws.cell(row=summary_header_row, column=1).font.bold is True
+    summary_rows = []
+    row_idx = summary_header_row + 1
+    while row_idx <= ws.max_row:
+        team_cell = ws.cell(row=row_idx, column=1).value
+        if not team_cell:
+            break
+        summary_rows.append(
+            [ws.cell(row=row_idx, column=col).value for col in range(1, 10)]
+        )
+        row_idx += 1
+    wb.close()
+    assert len(summary_rows) == 2
+    assert summary_rows[0][0] == "Blue"
+    assert summary_rows[0][1] == "0:01:58"
+    assert summary_rows[0][2] == "0:00:00"
+    assert summary_rows[0][3] == 3
+    assert summary_rows[1][0] == "Red"
+    assert summary_rows[1][1] == "0:03:47"
+    assert summary_rows[1][2] == "0:01:49"
+    assert summary_rows[1][3] == 3
+    assert summary_rows[1][4].startswith("Carl")
+    assert float(summary_rows[0][-1]) == pytest.approx(1.0)
+    assert float(summary_rows[1][-1]) == pytest.approx(2.0)

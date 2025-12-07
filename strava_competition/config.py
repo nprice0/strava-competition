@@ -80,10 +80,74 @@ CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
 
 
 # ---------------------------------------------------------------------------
+# API capture / replay settings
+# ---------------------------------------------------------------------------
+# Enable writing Strava API responses to disk for offline replay. This should
+# only be used in trusted environments because payloads include personal data
+# such as activity names and potentially tokens.
+STRAVA_API_CAPTURE_ENABLED = _env_bool("STRAVA_API_CAPTURE_ENABLED", True)
+
+# Enable serving responses from disk instead of calling Strava. When enabled,
+# missing files result in a cache miss and a live request when capture is also
+# enabled; otherwise the code raises an exception.
+STRAVA_API_REPLAY_ENABLED = _env_bool("STRAVA_API_REPLAY_ENABLED", True)
+
+# Maximum age (days) before a cached activity response is considered stale and
+# automatically refreshed from the live API. Set to 0 to disable the TTL.
+REPLAY_CACHE_TTL_DAYS = _env_int("REPLAY_CACHE_TTL_DAYS", 7)
+
+# Guardrail limiting how far back a replayed cache may attempt to "tail" fill
+# before falling back to a full live fetch. Set to 0 to disable.
+REPLAY_MAX_LOOKBACK_DAYS = _env_int("REPLAY_MAX_LOOKBACK_DAYS", 30)
+
+# Small overlap (seconds) applied when requesting the live tail window to avoid
+# missing activities that start near the cached boundary.
+REPLAY_EPSILON_SECONDS = _env_int("REPLAY_EPSILON_SECONDS", 60)
+
+# Directory (absolute or relative) where captured responses are stored. The
+# recorder organises files into subfolders using the request signature hash.
+STRAVA_API_CAPTURE_DIR = os.getenv("STRAVA_API_CAPTURE_DIR", "strava_api_capture")
+
+# Overwrite an existing capture file when recording new data. Defaults to
+# False to keep the first successful response unless behaviour is explicitly
+# requested otherwise.
+STRAVA_API_CAPTURE_OVERWRITE = _env_bool("STRAVA_API_CAPTURE_OVERWRITE", False)
+
+# Hash capture identifiers (runner IDs, etc.) before writing file paths.
+STRAVA_CAPTURE_HASH_IDENTIFIERS = _env_bool("STRAVA_CAPTURE_HASH_IDENTIFIERS", True)
+STRAVA_CAPTURE_ID_SALT = os.getenv("STRAVA_CAPTURE_ID_SALT", "")
+
+# Redact sensitive fields before persisting payloads to disk.
+STRAVA_CAPTURE_REDACT_PII = _env_bool("STRAVA_CAPTURE_REDACT_PII", True)
+_redact_defaults = "access_token,refresh_token,token,athlete,email"
+STRAVA_CAPTURE_REDACT_FIELDS = {
+    field.strip().lower()
+    for field in os.getenv("STRAVA_CAPTURE_REDACT_FIELDS", _redact_defaults).split(",")
+    if field.strip()
+}
+
+# Automatically prune capture files older than this many days. Set to 0 to
+# disable automatic retention (manual pruning via capture_gc remains available).
+STRAVA_CAPTURE_AUTO_PRUNE_DAYS = _env_int("STRAVA_CAPTURE_AUTO_PRUNE_DAYS", 0)
+
+# Token responses include highly sensitive data and typically do not need to
+# be captured for offline analysis. Disable capture/replay for the OAuth token
+# exchange unless explicitly opted in.
+STRAVA_TOKEN_CAPTURE_ENABLED = _env_bool("STRAVA_TOKEN_CAPTURE_ENABLED", False)
+
+# When enabled, the tool never makes live Strava requests; a cache miss raises
+# an error instead of falling back to HTTP. Useful for deterministic offline
+# runs.
+STRAVA_OFFLINE_MODE = _env_bool("STRAVA_OFFLINE_MODE", False)
+
+# ---------------------------------------------------------------------------
 # Performance tuning
 # ---------------------------------------------------------------------------
 # Threads used per segment when fetching efforts in parallel.
 MAX_WORKERS = 4
+
+# Maximum parallel Strava runner fetches when preloading activity windows.
+REPLAY_MAX_PARALLELISM = _env_int("REPLAY_MAX_PARALLELISM", 4)
 
 # HTTP session pool sizes for concurrent requests.
 HTTP_POOL_CONNECTIONS = 20
@@ -142,6 +206,7 @@ SEGMENT_COLUMN_ORDER = [
     "Team Rank",
     "Attempts",
     "Fastest Time (sec)",
+    "Fastest Time (h:mm:ss)",
     "Fastest Date",
 ]
 
@@ -156,68 +221,39 @@ EXCEL_AUTOSIZE_MAX_ROWS = (
 
 
 # ---------------------------------------------------------------------------
-# Segment matching tolerances
+# Segment visualization tolerances
 # ---------------------------------------------------------------------------
-# These values drive the GPS fallback matcher. Set an environment variable with
-# the same name to override any default without editing this file.
+# These values are used for GPS-based visualization and coverage analysis.
 
 # Maximum deviation (metres) allowed when simplifying segment geometry.
-MATCHING_SIMPLIFICATION_TOLERANCE_M = _env_float(
-    "MATCHING_SIMPLIFICATION_TOLERANCE_M", 7.5
+GEOMETRY_SIMPLIFICATION_TOLERANCE_M = _env_float(
+    "GEOMETRY_SIMPLIFICATION_TOLERANCE_M", 7.5
 )
 
 # Target spacing (metres) for the resampled segment polyline.
-MATCHING_RESAMPLE_INTERVAL_M = _env_float("MATCHING_RESAMPLE_INTERVAL_M", 5.0)
-
-# Distance (metres) around the start used when trimming coverage and timing.
-MATCHING_START_TOLERANCE_M = _env_float("MATCHING_START_TOLERANCE_M", 25.0)
-
-# Baseline distance (metres) for discrete Fréchet similarity checks.
-MATCHING_FRECHET_TOLERANCE_M = _env_float("MATCHING_FRECHET_TOLERANCE_M", 20.0)
-
-# Minimum portion of the segment an activity must cover to count as a match.
-MATCHING_COVERAGE_THRESHOLD = _env_float("MATCHING_COVERAGE_THRESHOLD", 0.99)
+GEOMETRY_RESAMPLE_INTERVAL_M = _env_float("GEOMETRY_RESAMPLE_INTERVAL_M", 5.0)
 
 # Safety caps on simplified and resampled point counts.
-MATCHING_MAX_SIMPLIFIED_POINTS = _env_int("MATCHING_MAX_SIMPLIFIED_POINTS", 2000)
-MATCHING_MAX_RESAMPLED_POINTS = _env_int("MATCHING_MAX_RESAMPLED_POINTS", 1200)
+GEOMETRY_MAX_SIMPLIFIED_POINTS = _env_int("GEOMETRY_MAX_SIMPLIFIED_POINTS", 2000)
+GEOMETRY_MAX_RESAMPLED_POINTS = _env_int("GEOMETRY_MAX_RESAMPLED_POINTS", 1200)
 
-# Cache size for prepared segment geometry objects.
-MATCHING_CACHE_MAX_ENTRIES = _env_int("MATCHING_CACHE_MAX_ENTRIES", 64)
+# Global switch for the activity scan fallback.
+USE_ACTIVITY_SCAN_FALLBACK = _env_bool("USE_ACTIVITY_SCAN_FALLBACK", True)
 
-# Global switch for the fallback matcher.
-MATCHING_FALLBACK_ENABLED = _env_bool("MATCHING_FALLBACK_ENABLED", True)
-
-# When True, always bypass Strava efforts and force the matcher path. Useful for
-# exercising fallback behaviour in isolation during testing.
-MATCHING_FORCE_FALLBACK = _env_bool("MATCHING_FORCE_FALLBACK", True)
-
-# Largest allowed perpendicular offset (metres) when evaluating coverage.
-MATCHING_MAX_OFFSET_M = _env_float("MATCHING_MAX_OFFSET_M", 30.0)
-
-# Accepted activity types for matcher fallback. Provide a comma-separated list or leave
-# empty to disable filtering (e.g., "Run,Ride"). Values are normalised case-insensitively.
-_MATCHING_ACTIVITY_REQUIRED_TYPES_RAW = os.getenv(
-    "MATCHING_ACTIVITY_REQUIRED_TYPE", "Run"
-)
-MATCHING_ACTIVITY_REQUIRED_TYPES = [
-    item.strip()
-    for item in _MATCHING_ACTIVITY_REQUIRED_TYPES_RAW.split(",")
-    if item.strip()
-]
-
-# Minimum fraction of the segment distance an activity must cover before running the
-# matcher (e.g., 0.6 requires the activity distance to be at least 60% of the segment).
-MATCHING_ACTIVITY_MIN_DISTANCE_RATIO = _env_float(
-    "MATCHING_ACTIVITY_MIN_DISTANCE_RATIO", 0.6
+_ACTIVITY_SCAN_MAX_PAGES_RAW = _env_int("ACTIVITY_SCAN_MAX_ACTIVITY_PAGES", 10)
+ACTIVITY_SCAN_MAX_ACTIVITY_PAGES = (
+    _ACTIVITY_SCAN_MAX_PAGES_RAW if _ACTIVITY_SCAN_MAX_PAGES_RAW > 0 else None
 )
 
-# Maximum number of activity streams to keep in the in-memory matcher cache.
-MATCHING_ACTIVITY_STREAM_CACHE_SIZE = _env_int(
-    "MATCHING_ACTIVITY_STREAM_CACHE_SIZE", 64
+ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS = _env_bool(
+    "ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS", True
 )
 
-# Maximum number of runner activity windows cached during segment fallback matching.
-MATCHING_RUNNER_ACTIVITY_CACHE_SIZE = _env_int(
-    "MATCHING_RUNNER_ACTIVITY_CACHE_SIZE", 256
-)
+# When True, always bypass Strava efforts and use activity scan. Useful for debugging.
+FORCE_ACTIVITY_SCAN_FALLBACK = _env_bool("FORCE_ACTIVITY_SCAN_FALLBACK", False)
+
+# Maximum number of activity streams to keep in the in-memory cache.
+ACTIVITY_STREAM_CACHE_SIZE = _env_int("ACTIVITY_STREAM_CACHE_SIZE", 64)
+
+# Maximum number of runner activity windows cached during segment processing.
+RUNNER_ACTIVITY_CACHE_SIZE = _env_int("RUNNER_ACTIVITY_CACHE_SIZE", 256)

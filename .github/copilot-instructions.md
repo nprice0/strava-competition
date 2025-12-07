@@ -3,146 +3,96 @@ description: "Python coding conventions and guidelines"
 applyTo: "**/*.py"
 ---
 
-# Python Coding Conventions
+## Python Coding Conventions
 
-## Python Instructions
+- Follow PEP 8 and keep functions focused, descriptive, and well documented.
+- Always include type hints (`typing`/`collections.abc`) and docstrings that explain
+  inputs, outputs, side effects, and raised exceptions.
+- Provide explanatory comments when behaviour is non-obvious or design
+  trade-offs require justification.
+- Keep lines ≤ 79 characters, use 4-space indentation, and separate logical
+  blocks with blank lines.
 
-- Write clear and concise comments for each function.
-- Ensure functions have descriptive names and include type hints.
-- Provide docstrings following PEP 257 conventions.
-- Use the `typing` module for type annotations (e.g., `List[str]`, `Dict[str, int]`).
-- Break down complex functions into smaller, more manageable functions.
+## General development guidance
 
-## General Instructions
+- Optimize for readability and maintainability. Extract helpers when a block of
+  code can be named and tested in isolation.
+- Prefer explicit data structures and control flow over clever or implicit
+  constructs.
+- Keep modules cohesive. Split large modules into smaller ones with clear
+  responsibilities when they grow unwieldy.
 
-- Always prioritize readability and clarity.
-- For algorithm-related code, include explanations of the approach used.
-- Write code with good maintainability practices, including comments on why certain design decisions were made.
-- Handle edge cases and write clear exception handling.
-- For libraries or external dependencies, mention their usage and purpose in comments.
-- Use consistent naming conventions and follow language-specific best practices.
-- Write concise, efficient, and idiomatic code that is also easily understandable.
+## Testing expectations
 
-## Code Style and Formatting
+- Add or update pytest coverage for every change that affects logic, including
+  edge cases (empty inputs, invalid data, boundary conditions) and happy paths.
+- Keep tests deterministic by controlling randomness, external services, and
+  timing. Use fixtures and mocks liberally.
+- Run the standard quality gates (`pytest`, `ruff`, `mypy`, `bandit`, etc.)
+  before committing. Document any temporary skips or xfails and link to a
+  follow-up issue when possible.
 
-- Follow the **PEP 8** style guide for Python.
-- Maintain proper indentation (use 4 spaces for each level of indentation).
-- Ensure lines do not exceed 79 characters.
-- Place function and class docstrings immediately after the `def` or `class` keyword.
-- Use blank lines to separate functions, classes, and code blocks where appropriate.
+## Error handling & resilience
 
-## Edge Cases and Testing
+- Raise explicit exceptions with helpful context. Avoid bare `except` blocks
+  and always clean up resources using context managers or `try/finally`.
+- Log enough information to debug issues without leaking secrets or sensitive
+  data. Keep logging consistent with the existing project style.
 
-- Always include test cases for critical paths of the application.
-- Account for common edge cases like empty inputs, invalid data types, and large datasets.
-- Include comments for edge cases and the expected behavior in those cases.
-- Write unit tests for functions and document them with docstrings explaining the test cases.
+## Contribution workflow
 
-## Example of Proper Documentation
+- Keep commits small and focused. Mention related issues and the tests you ran
+  in commit messages or pull requests.
+- Document new environment variables, configuration knobs, CLI flags, or file
+  formats in both code comments and user-facing docs.
+- If a change affects user-visible behaviour, update relevant documentation in
+  the same pull request.
+- Flag TODOs with context (`TODO(name): reason`) and create follow-up tickets
+  for deferred work.
+
+## Example of proper documentation
+
+Follow Google or NumPy docstring style, whichever the project already uses.
 
 ```python
+import math
+
+
 def calculate_area(radius: float) -> float:
     """
     Calculate the area of a circle given the radius.
 
     Parameters:
-    radius (float): The radius of the circle.
+        radius (float): The radius of the circle.
 
     Returns:
-    float: The area of the circle, calculated as π * radius^2.
+        float: The area of the circle, calculated as π * radius^2.
     """
-    import math
     return math.pi * radius ** 2
 ```
 
-# Copilot Instructions for Python Development
+## Naming, imports, and structure
 
-This document outlines the standards and best practices for writing professional, production-ready Python code. All code must adhere to the Google Python Style Guide: A comprehensive set of rules and recommendations for writing Python code that is readable, maintainable, and consistent..
+- Use `snake_case` for functions/variables, `CapWords` for classes, and
+  `UPPER_CASE` for module-level constants.
+- Group imports as standard library, third-party, and local modules—each group
+  separated by a blank line. Prefer absolute imports.
+- Keep helper functions private unless they are intended entry points. Aim for
+  cohesive modules with minimal cross-dependencies.
 
-## General Principles
+## Version control & reviews
 
-- Write clean, readable, and maintainable code.
-- Keep methods small and focused.
-- Avoid duplication and unnecessary complexity.
-- Use meaningful names for variables, functions, and classes.
+- Write descriptive commit messages (e.g., `Fix cache eviction race`). Mention
+  the tests or tooling executed.
+- Keep pull requests focused on a single change set that includes code, tests,
+  and docs.
+- During reviews, check for adherence to these guidelines and request follow-up
+  issues for known gaps instead of silently accepting them.
 
-## Naming Conventions
+## Tooling reminders
 
-- Use `snake_case` for functions and variables.
-- Use `CapWords` for class names.
-- Constants should be `UPPER_CASE`.
-
-## Imports
-
-- Use absolute imports.
-- Group imports in the following order: standard libraries, third-party libraries, local application imports.
-- Separate each group with a blank line.
-
-## Functions and Methods
-
-- Keep functions small and focused.
-- Each function should do one thing and do it well.
-- Use type hints for function arguments and return values.
-
-```python
-def calculate_area(length: float, width: float) -> float:
-    return length * width
-```
-
-## Documentation
-
-- Use docstrings for all public modules, classes, and functions.
-- Follow the PEP 257: Python Enhancement Proposal that describes conventions for Python docstrings, including formatting and usage guidelines. conventions.
-
-```python
-def add(a: int, b: int) -> int:
-    """
-    Add two integers and return the result.
-
-    Args:
-        a: First integer.
-        b: Second integer.
-
-    Returns:
-        The sum of a and b.
-    """
-    return a + b
-```
-
-## Error Handling
-
-- Use exceptions for error handling.
-- Avoid using bare `except` clauses.
-- Always clean up resources using `with` statements or `try/finally` blocks.
-
-```python
-try:
-    with open('file.txt', 'r') as file:
-        data = file.read()
-except FileNotFoundError as e:
-    print(f"Error: {e}")
-```
-
-## Testing
-
-- Write unit tests for all functions and classes.
-- Use `unittest` or `pytest` frameworks.
-- Ensure tests are isolated and repeatable.
-
-## Code Style
-
-- Limit lines to 80 characters.
-- Use 4 spaces per indentation level.
-- Avoid trailing whitespace.
-- Use blank lines to separate functions and classes.
-
-## Version Control
-
-- Use meaningful commit messages.
-- Commit small, logically grouped changes.
-
-## Final Notes
-
-- Always review code before committing.
-- Use linters and formatters (e.g., `flake8`, `black`) to enforce style.
-- Document any deviations from the style guide.
+- Run the project's required linters, type checkers, security scanners, and
+  tests before pushing. Capture the output in CI when possible.
+- Use `pre-commit` hooks (or equivalent) to keep formatting and linting
+  consistent across contributors. If the repo provides a hooks config, run
+  `pre-commit install` after cloning.

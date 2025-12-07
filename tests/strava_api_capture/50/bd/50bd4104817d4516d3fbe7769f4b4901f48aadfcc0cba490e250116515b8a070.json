@@ -1,0 +1,71 @@
+{
+  "captured_at": "2025-11-22T17:04:06.495805+00:00",
+  "request": {
+    "method": "GET",
+    "url": "https://www.strava.com/api/v3/segments/38955187",
+    "identity": "19923466",
+    "params": {},
+    "body": {}
+  },
+  "response": {
+    "id": 38955187,
+    "resource_state": 3,
+    "name": "It's a ball that comes out a cannon\u00a0",
+    "activity_type": "Run",
+    "distance": 2606.4,
+    "average_grade": 3.0,
+    "maximum_grade": 26.8,
+    "elevation_high": 93.6,
+    "elevation_low": 7.6,
+    "start_latlng": [
+      51.463343,
+      -3.640292
+    ],
+    "end_latlng": [
+      51.467755,
+      -3.624151
+    ],
+    "elevation_profile": "https://d3o5xota0a1fcr.cloudfront.net/v6/charts/RB5RD373LEUDYTQVMEGJTZ3WYUOYSS7FWG57GE4OVRXJ2H2E6UGYMGJJR4QTXFIUJN3OI77544IBOTCVW2DC77AF",
+    "elevation_profiles": {
+      "light_url": "https://d3o5xota0a1fcr.cloudfront.net/v6/charts/RB5RD373LEUDYTQVMEGJTZ3WYUOYSS7FWG57GE4OVRXJ2H2E6UGYMGJJR4QTXFIUJN3OI77544IBOTCVW2DC77AF",
+      "dark_url": "https://d3o5xota0a1fcr.cloudfront.net/v6/charts/EMPH4GTRAB2W4VDUISS6NR2A5VFN45WM6BMKXHDETJWNGVLPWGV3HMJVSFYTK6LONEOT67DP3MQB3PUG37RHBUHP"
+    },
+    "climb_category": 0,
+    "city": null,
+    "state": "Wales",
+    "country": "United Kingdom",
+    "private": false,
+    "hazardous": false,
+    "starred": false,
+    "created_at": "2025-04-15T08:13:53Z",
+    "updated_at": "2025-04-24T15:35:57Z",
+    "total_elevation_gain": 92.0,
+    "map": {
+      "id": "s38955187",
+      "polyline": "{lbyHz~eUt@]xB}Bh@y@|@iCf@}B^kAl@sADSJU\\_@PY\\c@ZY`@s@Z]HGXIx@g@ZMVWNYTsABw@E]w@yD_@y@[oAMSm@q@UOC?CCEAw@`@e@L]NUN_@NQB[N_APQ?w@Ja@@YFOL[FOJe@l@_@Jq@`A_@X_@l@m@l@]JeARaAHWFUJi@`@KPi@^c@Li@FiAb@_@JOJODs@`@u@Va@XE@GCb@cATiAZgAPYr@k@FM@OCkAIgAm@oDS{AGi@I]SyBm@aIKaCDoBH_A@sAHkAR}@Hq@`@uARYf@k@LSDMGWm@{@aAyBaA}AUgA",
+      "resource_state": 3
+    },
+    "effort_count": 120,
+    "athlete_count": 60,
+    "star_count": 28,
+    "athlete_segment_stats": {
+      "pr_elapsed_time": 619,
+      "pr_date": "2025-06-13",
+      "pr_visibility": "everyone",
+      "pr_activity_id": 14783453586,
+      "pr_activity_visibility": "everyone",
+      "effort_count": 4
+    },
+    "xoms": {
+      "kom": "10:07",
+      "qom": "11:58",
+      "overall": "10:07",
+      "destination": {
+        "href": "strava://segments/38955187/leaderboard",
+        "type": "overall",
+        "name": "All-Time"
+      }
+    },
+    "local_legend": null
+  }
+}

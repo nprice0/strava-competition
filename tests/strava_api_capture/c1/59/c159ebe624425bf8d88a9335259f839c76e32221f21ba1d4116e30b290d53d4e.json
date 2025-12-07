@@ -1,0 +1,146 @@
+{
+  "captured_at": "2025-11-22T16:33:41.855010+00:00",
+  "request": {
+    "method": "GET",
+    "url": "https://www.strava.com/api/v3/segment_efforts",
+    "identity": "19923466",
+    "params": {
+      "segment_id": 38955187,
+      "start_date_local": "2025-06-01T00:00:00+00:00",
+      "end_date_local": "2025-06-16T00:00:00+00:00",
+      "per_page": 200,
+      "page": 1
+    },
+    "body": {}
+  },
+  "response": [
+    {
+      "id": 3368485295186959120,
+      "resource_state": 2,
+      "name": "It's a ball that comes out a cannon\u00a0",
+      "activity": {
+        "id": 14783453586,
+        "visibility": "everyone",
+        "resource_state": 1
+      },
+      "athlete": {
+        "id": 19923466,
+        "resource_state": 1
+      },
+      "elapsed_time": 619,
+      "moving_time": 619,
+      "start_date": "2025-06-13T05:07:09Z",
+      "start_date_local": "2025-06-13T06:07:09Z",
+      "distance": 2606.4,
+      "start_index": 2192,
+      "end_index": 2811,
+      "average_cadence": 89.8,
+      "device_watts": true,
+      "average_watts": 449.2,
+      "average_heartrate": 134.6,
+      "max_heartrate": 147.0,
+      "segment": {
+        "id": 38955187,
+        "resource_state": 2,
+        "name": "It's a ball that comes out a cannon\u00a0",
+        "activity_type": "Run",
+        "distance": 2606.4,
+        "average_grade": 3.0,
+        "maximum_grade": 26.8,
+        "elevation_high": 93.6,
+        "elevation_low": 7.6,
+        "start_latlng": [
+          51.463343,
+          -3.640292
+        ],
+        "end_latlng": [
+          51.467755,
+          -3.624151
+        ],
+        "elevation_profile": null,
+        "elevation_profiles": null,
+        "climb_category": 0,
+        "city": null,
+        "state": "Wales",
+        "country": "United Kingdom",
+        "private": false,
+        "hazardous": false,
+        "starred": false
+      },
+      "pr_rank": null,
+      "achievements": [
+        {
+          "type_id": 2,
+          "type": "overall",
+          "rank": 2
+        }
+      ],
+      "visibility": "everyone",
+      "kom_rank": 2
+    },
+    {
+      "id": 3367036556143496530,
+      "resource_state": 2,
+      "name": "It's a ball that comes out a cannon\u00a0",
+      "activity": {
+        "id": 14740651511,
+        "visibility": "everyone",
+        "resource_state": 1
+      },
+      "athlete": {
+        "id": 19923466,
+        "resource_state": 1
+      },
+      "elapsed_time": 636,
+      "moving_time": 636,
+      "start_date": "2025-06-09T05:18:26Z",
+      "start_date_local": "2025-06-09T06:18:26Z",
+      "distance": 2606.4,
+      "start_index": 4985,
+      "end_index": 5621,
+      "average_cadence": 89.1,
+      "device_watts": true,
+      "average_watts": 398.1,
+      "average_heartrate": 172.7,
+      "max_heartrate": 182.0,
+      "segment": {
+        "id": 38955187,
+        "resource_state": 2,
+        "name": "It's a ball that comes out a cannon\u00a0",
+        "activity_type": "Run",
+        "distance": 2606.4,
+        "average_grade": 3.0,
+        "maximum_grade": 26.8,
+        "elevation_high": 93.6,
+        "elevation_low": 7.6,
+        "start_latlng": [
+          51.463343,
+          -3.640292
+        ],
+        "end_latlng": [
+          51.467755,
+          -3.624151
+        ],
+        "elevation_profile": null,
+        "elevation_profiles": null,
+        "climb_category": 0,
+        "city": null,
+        "state": "Wales",
+        "country": "United Kingdom",
+        "private": false,
+        "hazardous": false,
+        "starred": false
+      },
+      "pr_rank": null,
+      "achievements": [
+        {
+          "type_id": 2,
+          "type": "overall",
+          "rank": 2
+        }
+      ],
+      "visibility": "everyone",
+      "kom_rank": 2
+    }
+  ]
+}

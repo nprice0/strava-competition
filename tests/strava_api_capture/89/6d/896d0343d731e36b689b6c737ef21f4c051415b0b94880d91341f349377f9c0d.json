@@ -1,0 +1,132 @@
+{
+  "captured_at": "2025-11-22T16:33:42.509082+00:00",
+  "request": {
+    "method": "GET",
+    "url": "https://www.strava.com/api/v3/segment_efforts",
+    "identity": "21144580",
+    "params": {
+      "segment_id": 25947126,
+      "start_date_local": "2025-07-01T00:00:00+00:00",
+      "end_date_local": "2025-07-14T00:00:00+00:00",
+      "per_page": 200,
+      "page": 1
+    },
+    "body": {}
+  },
+  "response": [
+    {
+      "id": 3379014089839297404,
+      "resource_state": 2,
+      "name": "WS20 - 01 - The Sword in the Stepping Stone",
+      "activity": {
+        "id": 15085691139,
+        "visibility": "everyone",
+        "resource_state": 1
+      },
+      "athlete": {
+        "id": 21144580,
+        "resource_state": 1
+      },
+      "elapsed_time": 1271,
+      "moving_time": 1268,
+      "start_date": "2025-07-12T06:40:26Z",
+      "start_date_local": "2025-07-12T07:40:26Z",
+      "distance": 3737.2,
+      "start_index": 8,
+      "end_index": 486,
+      "average_cadence": 79.6,
+      "device_watts": false,
+      "average_heartrate": 144.7,
+      "max_heartrate": 161.0,
+      "segment": {
+        "id": 25947126,
+        "resource_state": 2,
+        "name": "WS20 - 01 - The Sword in the Stepping Stone",
+        "activity_type": "Run",
+        "distance": 3737.2,
+        "average_grade": 2.7,
+        "maximum_grade": 44.1,
+        "elevation_high": 109.3,
+        "elevation_low": 6.8,
+        "start_latlng": [
+          51.480244,
+          -3.612262
+        ],
+        "end_latlng": [
+          51.46912,
+          -3.58555
+        ],
+        "elevation_profile": null,
+        "elevation_profiles": null,
+        "climb_category": 0,
+        "city": "Bridgend",
+        "state": "Wales",
+        "country": "United Kingdom",
+        "private": false,
+        "hazardous": false,
+        "starred": false
+      },
+      "pr_rank": null,
+      "achievements": [],
+      "visibility": "everyone",
+      "kom_rank": null
+    },
+    {
+      "id": 3377915568102956300,
+      "resource_state": 2,
+      "name": "WS20 - 01 - The Sword in the Stepping Stone",
+      "activity": {
+        "id": 15053677684,
+        "visibility": "everyone",
+        "resource_state": 1
+      },
+      "athlete": {
+        "id": 21144580,
+        "resource_state": 1
+      },
+      "elapsed_time": 1272,
+      "moving_time": 1251,
+      "start_date": "2025-07-09T05:38:42Z",
+      "start_date_local": "2025-07-09T06:38:42Z",
+      "distance": 3737.2,
+      "start_index": 6,
+      "end_index": 503,
+      "average_cadence": 77.4,
+      "device_watts": false,
+      "average_heartrate": 147.1,
+      "max_heartrate": 180.0,
+      "segment": {
+        "id": 25947126,
+        "resource_state": 2,
+        "name": "WS20 - 01 - The Sword in the Stepping Stone",
+        "activity_type": "Run",
+        "distance": 3737.2,
+        "average_grade": 2.7,
+        "maximum_grade": 44.1,
+        "elevation_high": 109.3,
+        "elevation_low": 6.8,
+        "start_latlng": [
+          51.480244,
+          -3.612262
+        ],
+        "end_latlng": [
+          51.46912,
+          -3.58555
+        ],
+        "elevation_profile": null,
+        "elevation_profiles": null,
+        "climb_category": 0,
+        "city": "Bridgend",
+        "state": "Wales",
+        "country": "United Kingdom",
+        "private": false,
+        "hazardous": false,
+        "starred": false
+      },
+      "pr_rank": null,
+      "achievements": [],
+      "visibility": "everyone",
+      "kom_rank": null
+    }
+  ]
+}

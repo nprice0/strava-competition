@@ -217,3 +217,7 @@ competition_input.xlsx
 competition_results.xlsx
 competition_results_*.xlsx
 .DS_Store
+strava_api_capture/
+maps/
+!tests/strava_api_capture/
+!tests/strava_api_capture/**

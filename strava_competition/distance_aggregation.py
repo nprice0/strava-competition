@@ -5,49 +5,57 @@ it produces a list of (sheet_name, rows) including a final summary sheet.
 Formerly ``distance_competition.py`` – renamed for clarity (separates
 aggregation from orchestration in ``DistanceService``).
 """
+
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, List, Tuple
 
 from .models import Runner
+from .utils import parse_iso_datetime, to_utc_aware
 
-Activity = dict  # minimal structure expected: distance, total_elevation_gain, start_date_local
+Activity = (
+    dict  # minimal structure expected: distance, total_elevation_gain, start_date_local
+)
 
 
-def _to_utc_aware(dt: datetime) -> datetime:
-    """Return a UTC-aware datetime regardless of input (naive => assume UTC).
+def _activity_start_utc(act: Activity) -> datetime | None:
+    """Return cached UTC start datetime for an activity."""
 
-    Accepts pandas Timestamps (via to_pydatetime) transparently. We treat all
-    competition window boundaries as UTC for comparison purposes. This avoids
-    TypeError when mixing naive & aware datetimes and provides deterministic
-    ordering.
-    """
-    # Pandas Timestamp compatibility
-    if hasattr(dt, "to_pydatetime"):
-        dt = dt.to_pydatetime()
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
+    raw: str | None = None
+    start_date = act.get("start_date")
+    start_local = act.get("start_date_local")
+    if isinstance(start_date, str) and start_date:
+        raw = start_date
+    elif isinstance(start_local, str) and start_local:
+        raw = start_local
+    if not raw:
+        return None
+    dt = parse_iso_datetime(raw)
+    if dt is None:
+        return None
+    return to_utc_aware(dt)
 
 
 def _activity_in_window(act: Activity, start_dt: datetime, end_dt: datetime) -> bool:
-    start_local = act.get("start_date_local")
-    if not start_local:
+    start_utc = act.get("_start_utc")
+    if start_utc is None:
+        start_utc = _activity_start_utc(act)
+        if start_utc is not None:
+            act["_start_utc"] = start_utc
+    if start_utc is None:
         return False
-    try:
-        dt = datetime.fromisoformat(str(start_local).replace("Z", "+00:00"))
-    except Exception:
-        return False
-    dt_utc = _to_utc_aware(dt)
-    return start_dt <= dt_utc <= end_dt
+    return start_dt <= start_utc <= end_dt
 
 
 def _normalize_windows(
-    distance_windows: List[Tuple[datetime, datetime, float | None]]
+    distance_windows: List[Tuple[datetime, datetime, float | None]],
 ) -> List[Tuple[datetime, datetime, float | None]]:
     """Normalize all window boundaries to UTC-aware once up front."""
-    return [(_to_utc_aware(s), _to_utc_aware(e), threshold) for s, e, threshold in distance_windows]
+    return [
+        (to_utc_aware(s), to_utc_aware(e), threshold)
+        for s, e, threshold in distance_windows
+    ]
 
 
 def _sheet_name_for_window(start_dt: datetime, end_dt: datetime) -> str:
@@ -110,14 +118,16 @@ def _summary_row(runner: Runner, acts: List[Activity]) -> dict:
         "Total Runs": run_count,
         "Total Distance (km)": round(km_total, 2),
         "Total Elev Gain (m)": round(total_elev, 1),
-        "Avg Distance per Run (km)": round(km_total / run_count, 2) if run_count else 0.0,
+        "Avg Distance per Run (km)": round(km_total / run_count, 2)
+        if run_count
+        else 0.0,
     }
 
 
 def build_distance_outputs(
     runners: List[Runner],
     distance_windows: List[Tuple[datetime, datetime, float | None]],
-    runner_activity_cache: Dict[int, List[Activity]],
+    runner_activity_cache: Dict[int | str, List[Activity]],
 ) -> List[Tuple[str, List[dict]]]:
     """Return list of (sheet_name, rows) including Distance_Summary last.
 
@@ -161,5 +171,6 @@ def build_distance_outputs(
     )
     outputs.append(("Distance_Summary", summary_rows))
     return outputs
+
 
 __all__ = ["build_distance_outputs"]

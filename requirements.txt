@@ -12,6 +12,15 @@ pyproj>=3.6
 shapely>=2.0
 geopy>=2.4
 polyline>=2.0
+folium>=0.15
+cachetools>=5.3
 
 # Testing (optional for contributors)
 pytest>=8.0
+
+# Tooling
+ruff>=0.4
+mypy>=1.8
+bandit>=1.7
+types-cachetools>=5.3
+types-requests>=2.31
