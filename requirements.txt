@@ -22,4 +22,5 @@ pytest>=8.0
 ruff>=0.4
 mypy>=1.8
 bandit>=1.7
+types-cachetools>=5.3
 types-requests>=2.31

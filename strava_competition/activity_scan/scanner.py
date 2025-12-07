@@ -195,7 +195,7 @@ class ActivityEffortScanner:
             return None
         key: _DetailCacheKey = (runner.strava_id, activity_id)
         with self._detail_cache_lock:
-            cached = self._detail_cache.get(key)
+            cached: Dict[str, Any] | None = self._detail_cache.get(key)
         if cached is not None:
             return cached
         try:

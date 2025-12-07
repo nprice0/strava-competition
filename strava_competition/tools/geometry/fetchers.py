@@ -55,7 +55,7 @@ def fetch_activity_stream(runner: Runner, activity_id: int) -> ActivityTrack:
 
     cache_key: _ActivityCacheKey = (runner.strava_id, int(activity_id))
     with _activity_stream_cache_lock:
-        cached = _activity_stream_cache.get(cache_key)
+        cached: ActivityTrack | None = _activity_stream_cache.get(cache_key)
     if cached is not None:
         return cached
 

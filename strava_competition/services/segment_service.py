@@ -494,7 +494,7 @@ class SegmentService:
             return []
         cache_key = (runner.strava_id, start_date, end_date)
         with self._activity_cache_lock:
-            cached = self._activity_cache.get(cache_key)
+            cached: List[Dict[str, Any]] | None = self._activity_cache.get(cache_key)
         if cached is not None:
             self._log.debug(
                 "Using cached activities runner=%s window=%s->%s",
