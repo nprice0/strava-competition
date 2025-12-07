@@ -12,23 +12,40 @@ from datetime import datetime
 from typing import Dict, List, Tuple
 
 from .models import Runner
-from .utils import to_utc_aware
+from .utils import parse_iso_datetime, to_utc_aware
 
 Activity = (
     dict  # minimal structure expected: distance, total_elevation_gain, start_date_local
 )
 
 
-def _activity_in_window(act: Activity, start_dt: datetime, end_dt: datetime) -> bool:
+def _activity_start_utc(act: Activity) -> datetime | None:
+    """Return cached UTC start datetime for an activity."""
+
+    raw: str | None = None
+    start_date = act.get("start_date")
     start_local = act.get("start_date_local")
-    if not start_local:
+    if isinstance(start_date, str) and start_date:
+        raw = start_date
+    elif isinstance(start_local, str) and start_local:
+        raw = start_local
+    if not raw:
+        return None
+    dt = parse_iso_datetime(raw)
+    if dt is None:
+        return None
+    return to_utc_aware(dt)
+
+
+def _activity_in_window(act: Activity, start_dt: datetime, end_dt: datetime) -> bool:
+    start_utc = act.get("_start_utc")
+    if start_utc is None:
+        start_utc = _activity_start_utc(act)
+        if start_utc is not None:
+            act["_start_utc"] = start_utc
+    if start_utc is None:
         return False
-    try:
-        dt = datetime.fromisoformat(str(start_local).replace("Z", "+00:00"))
-    except Exception:
-        return False
-    dt_utc = to_utc_aware(dt)
-    return start_dt <= dt_utc <= end_dt
+    return start_dt <= start_utc <= end_dt
 
 
 def _normalize_windows(

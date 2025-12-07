@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, TypeAlias, cast
@@ -16,8 +15,6 @@ from ..activity_types import activity_type_matches, normalize_activity_type
 from ..api_capture import record_overlay_response, record_response, CaptureRecord
 from ..config import (
     ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS,
-    STRAVA_BACKOFF_MAX_SECONDS,
-    STRAVA_MAX_RETRIES,
     REPLAY_CACHE_TTL_DAYS,
     REPLAY_EPSILON_SECONDS,
     REPLAY_MAX_LOOKBACK_DAYS,
@@ -47,8 +44,9 @@ from .capture import (
     runner_identity,
 )
 from .pagination import fetch_page_with_retries
-from .response_handling import classify_response_status, extract_error
+from .response_handling import extract_error
 from .rate_limiter import RateLimiter
+from .resources import ResourceAPI
 from .session import get_default_session
 
 JSONList: TypeAlias = List[Dict[str, Any]]
@@ -100,9 +98,15 @@ class ActivitiesAPI:
         *,
         session: requests.Session | None = None,
         limiter: RateLimiter | None = None,
+        *,
+        resources: ResourceAPI | None = None,
     ) -> None:
         self._session = session or get_default_session()
         self._limiter = limiter or RateLimiter()
+        self._resources = resources or ResourceAPI(
+            session=self._session,
+            limiter=self._limiter,
+        )
 
     def get_activities(
         self,
@@ -300,151 +304,24 @@ class ActivitiesAPI:
         url = f"{STRAVA_BASE_URL}/activities/{activity_id}"
         context = "activity_detail"
         if include_all_efforts and ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS:
-            payload = self._fetch_resource_with_capture(runner, url, params, context)
+            payload = self._resources.fetch_with_capture(
+                runner,
+                url,
+                params,
+                context,
+            )
         else:
-            payload = self._get_resource_json(runner, url, params, context)
+            payload = self._resources.fetch_json(
+                runner,
+                url,
+                params,
+                context,
+            )
         if isinstance(payload, dict):
             return payload
         raise StravaAPIError(
             f"{context} returned non-object payload for runner {runner.name} activity={activity_id}"
         )
-
-    def _fetch_resource_with_capture(
-        self,
-        runner: Runner,
-        url: str,
-        params: Optional[Dict[str, Any]],
-        context: str,
-    ) -> Any:
-        from ..api_capture import replay_response
-
-        params_for_capture = dict(params) if params else None
-        identity = runner_identity(
-            runner,
-            hash_identifiers=STRAVA_CAPTURE_HASH_IDENTIFIERS,
-            salt=STRAVA_CAPTURE_ID_SALT,
-        )
-        cached = replay_response(
-            "GET",
-            url,
-            identity,
-            params=params_for_capture,
-        )
-        if cached is not None:
-            LOGGER.debug(
-                "Replay hit for %s runner=%s type=%s",
-                context,
-                runner.name,
-                type(cached).__name__,
-            )
-            return cached
-        if STRAVA_OFFLINE_MODE:
-            message = (
-                f"{context} cache miss for runner {runner.name} while "
-                "STRAVA_OFFLINE_MODE is enabled"
-            )
-            LOGGER.error(message)
-            raise StravaAPIError(message)
-
-        data = self._get_resource_json(runner, url, params, context)
-        record_response(
-            "GET",
-            url,
-            identity,
-            response=data,
-            params=params_for_capture,
-        )
-        return data
-
-    def _get_resource_json(
-        self,
-        runner: Runner,
-        url: str,
-        params: Optional[Dict[str, Any]],
-        context: str,
-    ) -> Any:
-        backoff = 1.0
-        attempt = 0
-        attempted_refresh = False
-        while True:
-            attempt += 1
-            can_retry = attempt < STRAVA_MAX_RETRIES
-            ensure_runner_token(runner)
-            self._limiter.before_request()
-            response: Optional[requests.Response] = None
-            try:
-                response = self._session.get(
-                    url,
-                    headers=auth_headers(runner),
-                    params=params,
-                    timeout=self._session.timeout
-                    if hasattr(self._session, "timeout")
-                    else None,
-                )
-            except requests.RequestException as exc:
-                self._limiter.after_response(None, None)
-                if can_retry:
-                    LOGGER.warning(
-                        "%s network error runner=%s attempt=%s err=%s; retrying in %.1fs",
-                        context,
-                        runner.name,
-                        attempt,
-                        exc.__class__.__name__,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                    continue
-                message = f"{context} network error for runner={runner.name}: {exc.__class__.__name__}"
-                LOGGER.error(message)
-                raise StravaAPIError(message) from exc
-            else:
-                self._limiter.after_response(response.headers, response.status_code)
-
-            if response.status_code == 401 and not attempted_refresh:
-                LOGGER.info(
-                    "%s 401 for runner %s; refreshing token and retrying.",
-                    context,
-                    runner.name,
-                )
-                runner.access_token = None
-                attempted_refresh = True
-                continue
-
-            action, error = classify_response_status(
-                runner,
-                response,
-                context,
-                attempt=attempt,
-                backoff=backoff,
-                can_retry=can_retry,
-            )
-            if action == "retry":
-                time.sleep(backoff)
-                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                continue
-            if action == "raise" and error is not None:
-                raise error
-
-            try:
-                return response.json()
-            except ValueError as exc:
-                if can_retry:
-                    LOGGER.warning(
-                        "Non-JSON response for %s runner=%s attempt=%s; retrying in %.1fs",
-                        context,
-                        runner.name,
-                        attempt,
-                        backoff,
-                    )
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                    continue
-                message = (
-                    f"{context} returned non-JSON payload for runner {runner.name}"
-                )
-                LOGGER.error(message)
-                raise StravaAPIError(message) from exc
 
 
 def _maybe_refresh_replay_tail(

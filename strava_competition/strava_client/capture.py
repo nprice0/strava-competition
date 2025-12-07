@@ -52,6 +52,10 @@ def runner_identity(
     if not hashed:
         return raw
     salt_value = STRAVA_CAPTURE_ID_SALT if salt is None else salt
+    if not salt_value:
+        raise RuntimeError(
+            "STRAVA_CAPTURE_HASH_IDENTIFIERS requires STRAVA_CAPTURE_ID_SALT to be set"
+        )
     digest = sha256(f"{raw}:{salt_value}".encode("utf-8")).hexdigest()
     return digest
 

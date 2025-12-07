@@ -1,13 +1,13 @@
 # Strava Segment & Distance Competition Tool
 
-This app reads an Excel workbook, fetches fresh Strava data, and writes a results workbook ready to share. It is aimed at club admins who want accurate segment leaderboards and distance summaries without touching the Strava UI.
+This app reads an Excel workbook, fetches fresh Strava data, and writes a results workbook ready to share. It's built for club admins who want accurate segment leaderboards and distance summaries without living inside the Strava UI.
 
 You get:
 
-- Per-segment leaderboards with attempts, fastest time, and team rankings
-- Distance competition sheets covering each window and an overall summary
+- Per-segment leaderboards showing attempts, fastest times, and team rankings
+- Distance competition sheets for every window plus an overall summary
 - Automatic refresh-token updates so the input workbook always stays current
-- An activity-scan fallback that uses Strava's `include_all_efforts` payloads for runners without leaderboard access
+- An activity-scan fallback that taps Strava's `include_all_efforts` payloads for runners without leaderboard access
 
 ---
 
@@ -18,11 +18,11 @@ You get:
 - Fetches each distance runner’s activities once and reuses them across windows
 - Writes segment sheets, team/distance summaries, and persists refreshed tokens back to the workbook
 
-Optional sheets such as team summaries or distance summaries appear only when the source data is present. Blank team cells in the input automatically exclude a runner from that competition.
+Optional sheets like team or distance summaries only appear when you feed in the right data. Leave a team cell blank and that runner simply sits out that competition.
 
 ### Architecture at a glance
 
-The diagram below shows the workbook-to-results path shared by segment and distance flows.
+Here’s the workbook-to-results path that both the segment and distance flows follow.
 
 ```mermaid
 flowchart LR
@@ -67,7 +67,7 @@ flowchart LR
 - A Strava API application (Client ID and Client Secret)
 - Strava subscriptions for any athletes whose segment efforts you need to view (Strava enforces this)
 
-Install the dependencies from `requirements.txt` inside a virtual environment. Example (macOS/Linux):
+Install the dependencies from `requirements.txt` inside a virtual environment. On macOS or Linux:
 
 ```bash
 python3 -m venv .venv
@@ -75,7 +75,7 @@ source .venv/bin/activate
 pip install -U pip -r requirements.txt
 ```
 
-On Windows, use `py -3 -m venv .venv` and `.venv\Scripts\activate` instead of `source`.
+On Windows use `py -3 -m venv .venv` and `.venv\Scripts\activate` instead of `source`.
 
 ---
 
@@ -93,7 +93,7 @@ CLIENT_ID = os.getenv("STRAVA_CLIENT_ID", "")
 CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
 ```
 
-Performance tuning values such as worker counts, HTTP pool sizes, rate-limit settings, and retry strategy also live in this file. Adjust them only if you know you need to.
+Performance tuning knobs—worker counts, HTTP pools, rate limits, retry strategy, and so on—also live in this file. Tweak them only when you have a concrete reason.
 
 Create a `.env` file in the project root so credentials stay out of source control:
 
@@ -110,7 +110,7 @@ STRAVA_CAPTURE_REDACT_PII=true
 STRAVA_CAPTURE_REDACT_FIELDS=name,email,athlete.firstname,athlete.lastname
 ```
 
-The app loads `.env` automatically when it starts.
+The app pulls in `.env` automatically at startup.
 
 #### Replay-tail refresh knobs
 
@@ -132,30 +132,31 @@ captures remain untouched.
 
 #### Capture hygiene & retention
 
-- **Hash runner identifiers** via `STRAVA_CAPTURE_HASH_IDENTIFIERS=true` and set a
-  unique `STRAVA_CAPTURE_ID_SALT` so capture filenames do not leak Strava IDs.
-- **Redact payload fields** (names, emails, GPS metadata, etc.) by enabling
-  `STRAVA_CAPTURE_REDACT_PII` and listing comma-separated JSON paths in
-  `STRAVA_CAPTURE_REDACT_FIELDS`.
-- **Prune stale captures** with the helper documented in the [CLI tools](#cli-tools)
-  section to keep disk usage predictable.
-- **Automate retention** via `STRAVA_CAPTURE_AUTO_PRUNE_DAYS=30` (or any
-  positive integer) to delete aged capture files when the app starts. Set to `0`
-  to disable automatic pruning.
+- **Hash runner identifiers.** Turn on `STRAVA_CAPTURE_HASH_IDENTIFIERS=true` and give it a
+  unique, non-empty `STRAVA_CAPTURE_ID_SALT` so capture filenames don't leak Strava IDs.
+  When hashing is enabled without a salt the app simply bows out instead of producing
+  predictable hashes.
+- **Redact payload fields.** Enable `STRAVA_CAPTURE_REDACT_PII` and list comma-separated
+  JSON paths in `STRAVA_CAPTURE_REDACT_FIELDS` to strip names, emails, GPS details, and any
+  other sensitive bits before writing to disk.
+- **Prune stale captures.** Use the helper in the [CLI tools](#cli-tools) section whenever
+  you want to free disk space without touching fresh data.
+- **Automate retention.** Set `STRAVA_CAPTURE_AUTO_PRUNE_DAYS=30` (or whatever window you
+  prefer) to delete old capture files on startup. Pick `0` to leave files alone.
 
 #### Security considerations for token capture
 
-⚠️ **Warning:** Token capture is disabled by default for good reason.
+⚠️ **Heads-up:** Token capture stays off by default for good reason.
 
-The `STRAVA_TOKEN_CAPTURE_ENABLED` setting controls whether OAuth token
-responses are written to disk. Token payloads contain:
+The `STRAVA_TOKEN_CAPTURE_ENABLED` flag decides whether OAuth token responses hit disk.
+Those payloads include:
 
 - Access tokens (short-lived but grants full API access)
 - Refresh tokens (long-lived credentials that can generate new access tokens)
 - Athlete identifiers and profile metadata
 
-**Only enable token capture in controlled debugging environments.** Never commit
-captured token files to version control. If you enable this setting:
+**Only enable token capture in a controlled debugging session.** Never commit captured
+token files to version control. If you flip the flag on:
 
 1. Ensure the capture directory is excluded from git (already covered by `.gitignore`)
 2. Delete captured token files immediately after debugging
@@ -164,29 +165,29 @@ captured token files to version control. If you enable this setting:
 
 ### Workbook layout
 
-All sheet names are case sensitive.
+All sheet names are case-sensitive.
 
 - `Segment Series`: segment ID, segment name, start date, end date, default time
 - `Runners`: name, Strava ID, refresh token, segment team, distance team
 - Optional `Distance Series`: start date, end date, distance threshold (km)
 
-Leave a team column blank to skip that runner for the related competition. Dates can be Excel dates or ISO strings; pandas handles both.
+Leave a team column blank and that runner quietly skips the related competition. Dates can be Excel dates or ISO strings—pandas is happy with either.
 
-`Default Time` accepts `HH:MM:SS`, Excel time values, or raw seconds. Every runner without a recorded effort for a segment is assigned this fallback so rankings and summaries always include every participant.
+`Default Time` accepts `HH:MM:SS`, Excel time values, or raw seconds. Every runner with no recorded effort picks up this fallback so rankings always account for the full roster.
 
 ---
 
 ## Getting refresh tokens
 
-The first time you add a runner you need a refresh token. Run the helper:
+The first time you add a runner you’ll need a refresh token. Run the helper:
 
 ```bash
 python -m strava_competition.oauth
 ```
 
-It spins up a small web server, opens Strava’s OAuth screen, and logs masked token metadata once the runner approves. Pass `--print-tokens` if you explicitly need the plaintext values. Copy the refresh token into the `Runners` sheet. You can change `OAUTH_PORT` inside `oauth.py` if needed.
+It spins up a tiny web server, opens Strava’s OAuth screen, and logs masked token metadata once the runner approves. Pass `--print-tokens` if you need the plaintext values. Copy the refresh token into the `Runners` sheet. Change `OAUTH_PORT` inside `oauth.py` if you need a different port.
 
-Already have an authorisation code? Swap it via curl:
+Already have an authorisation code? Trade it for tokens with curl:
 
 ```bash
 curl -X POST https://www.strava.com/oauth/token \
@@ -196,23 +197,23 @@ curl -X POST https://www.strava.com/oauth/token \
   -d grant_type=authorization_code
 ```
 
-The response includes the refresh token. Store it securely.
+The response includes the refresh token—stash it somewhere safe.
 
 ---
 
 ## CLI tools
 
-Helper scripts live under `strava_competition/tools` and share the same
-configuration as the main app:
+You’ll find the helper scripts under `strava_competition/tools`, and they pull from the
+same configuration as the main app:
 
 - `fetch_runner_segment_efforts`: dumps `/athlete/activities` windows with
-  `include_all_efforts=true` so you can inspect raw Strava payloads for a
-  runner. Use `python -m strava_competition.tools.fetch_runner_segment_efforts --help`
-  for the argument list.
-- `deviation_map`: builds an interactive Folium map that highlights gate
-  crossings and large deviations for a runner/segment pair. Launch it via
-  `python -m strava_competition.tools.deviation_map --help` and point the
-  output wherever you need.
+  `include_all_efforts=true` so you can poke through the raw Strava payloads for
+  a runner. Run `python -m strava_competition.tools.fetch_runner_segment_efforts --help`
+  to check the flags.
+- `deviation_map`: builds an interactive Folium map that highlights gate crossings
+  and large deviations for a runner/segment pair. Launch it via
+  `python -m strava_competition.tools.deviation_map --help` and drop the output
+  wherever you need.
 - `capture_gc`: deletes capture responses older than a retention window. Run
   `python -m strava_competition.tools.capture_gc --max-age 30d` to prune files
   older than 30 days (supports `d`, `h`, or raw seconds).
@@ -224,7 +225,7 @@ modules so existing scripts keep working.
 
 ## Run it
 
-Activate your virtual environment, then run either command from the repo root:
+With your virtual environment active, run either command from the repo root:
 
 ```bash
 python -m strava_competition
@@ -232,7 +233,7 @@ python -m strava_competition
 python run.py
 ```
 
-The app reads the workbook, fetches the required Strava data, writes the results workbook named after `OUTPUT_FILE`, and updates the runner tokens inline. Status logs print to stdout with minimal secrets.
+The app reads the workbook, pulls the Strava data it needs, writes the results workbook named after `OUTPUT_FILE`, and updates runner tokens before it exits. Status logs stream to stdout and keep the sensitive bits redacted.
 
 ### Docker usage
 
@@ -277,9 +278,9 @@ docker run --rm ^
 
 Tips:
 
-- Ensure Docker Desktop has file-sharing access to the drive you mount (Settings ▸ Resources ▸ File Sharing on Windows).
-- Quote host paths that contain spaces.
-- The container image sets `STRAVA_API_CAPTURE_ENABLED=1`, so capture files will populate under the mounted directory’s `strava_api_capture/` folder.
+- Make sure Docker Desktop can see the drive you’re mounting (Settings ▸ Resources ▸ File Sharing on Windows).
+- Quote host paths that include spaces so the shell doesn’t split them.
+- The container image ships with `STRAVA_API_CAPTURE_ENABLED=1`, so capture files will show up under the mounted directory’s `strava_api_capture/` folder.
 
 ---
 
@@ -287,17 +288,16 @@ Tips:
 
 ### Data flow
 
-- `excel_reader.py` loads the workbook and validates each sheet
-- `services/segment_service.py` and `services/distance_service.py` orchestrate Strava API calls via `strava_api.py`
-- Results flow through `segment_aggregation.py`, `distance_aggregation.py`, and finally `excel_writer.py`
-- Updated refresh tokens are written back before shutdown
+- `excel_reader.py` loads the workbook and validates each sheet.
+- `services/segment_service.py` and `services/distance_service.py` orchestrate Strava API calls via `strava_api.py`.
+- Results flow through `segment_aggregation.py`, `distance_aggregation.py`, and finally `excel_writer.py`.
+- Updated refresh tokens are written back before shutdown.
 
 ### Activity scan fallback
 
 Some runners only expose full Strava activities. Set `USE_ACTIVITY_SCAN_FALLBACK=true`
-to rebuild results from `include_all_efforts` payloads. The scanner fetches each
-activity window once, reuses cached pages, and logs the inspected activity IDs
-for auditing.
+to rebuild results from `include_all_efforts` payloads. The scanner fetches each activity window once,
+leans on cached pages when possible, and logs the inspected activity IDs for easy auditing.
 
 **Playbook:**
 
@@ -305,23 +305,22 @@ for auditing.
    so paid athletes still use official efforts). Optionally limit pagination via
    `ACTIVITY_SCAN_MAX_ACTIVITY_PAGES`.
 2. Prime captures with `STRAVA_API_CAPTURE_ENABLED=true` / `STRAVA_API_REPLAY_ENABLED=false`.
-3. Switch to deterministic runs using replay (and `STRAVA_OFFLINE_MODE=true` if you
-   want to ban live calls). Watch for `source=activity_scan` in the logs.
+3. Switch to deterministic runs using replay (and flip `STRAVA_OFFLINE_MODE=true` if you
+   want to forbid live calls). Watch for `source=activity_scan` in the logs.
 
-Keep `ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true` so cached payloads match the
-scanner. Missing captures in offline mode raise `StravaAPIError`. Files live under
-`strava_api_capture/`; the `tests/strava_api_capture/` folder holds the fixtures
-used by pytest.
+Keep `ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true` so cached payloads match the scanner; otherwise
+offline runs throw a `StravaAPIError` when captures are missing. Files live under
+`strava_api_capture/`, and `tests/strava_api_capture/` holds the fixtures used by pytest.
 
 ---
 
 ## Troubleshooting
 
-- 401 when refreshing tokens: the refresh token or client credentials are wrong; rerun the OAuth helper
-- 402 Payment Required: the athlete needs a paid Strava subscription for segment efforts
-- 429 Too Many Requests: wait for the rate limit window; the app already backs off
-- Excel opens without visible sheets: the app writes placeholder sheets when a segment has no data
-- Port 5000 in use for OAuth: change `OAUTH_PORT` or free the port (AirPlay often uses it on macOS)
+- 401 when refreshing tokens: the refresh token or client credentials are wrong—rerun the OAuth helper.
+- 402 Payment Required: the athlete needs a paid Strava subscription for segment efforts.
+- 429 Too Many Requests: wait for the rate-limit window; the app already backs off.
+- Excel opens without visible sheets: the app writes placeholder sheets when a segment has no data.
+- Port 5000 in use for OAuth: change `OAUTH_PORT` or free the port (AirPlay often uses it on macOS).
 
 ---
 
@@ -331,7 +330,7 @@ used by pytest.
 pytest -q
 ```
 
-Run tests from the repo root so `tests/conftest.py` loads correctly. Key files include `test_excel_summary.py`, `test_rate_limiter.py`, `test_auth.py`, `test_integration_api_auth.py`, `test_strava_api_mocked.py`, and the load/smoke suite in `tests/test_load_smoke.py` for concurrency and capture replay coverage.
+Run tests from the repo root so `tests/conftest.py` wires itself up correctly. Highlights include `test_excel_summary.py`, `test_rate_limiter.py`, `test_auth.py`, `test_integration_api_auth.py`, `test_strava_api_mocked.py`, and the load/smoke suite in `tests/test_load_smoke.py` that exercises concurrency plus capture replay.
 
 ### Quality checks
 
@@ -345,13 +344,13 @@ pytest
 python -m strava_competition.tools.capture_gc --dry-run --max-age-days 45
 ```
 
-These commands ensure lint, typing, security scanning, unit tests, and capture retention checks stay green locally.
+Those commands keep lint, typing, security scanning, tests, and capture-retention checks green before you ship anything.
 
 ---
 
 ## Development tips
 
-- Work in a virtual environment and keep secrets out of source control
-- Use `python -m strava_competition.oauth` for new tokens
-- Use `python -m strava_competition` for production runs
-- Adjust configuration values via environment variables rather than editing code when possible
+- Work in a virtual environment and keep secrets out of source control.
+- Reach for `python -m strava_competition.oauth` whenever you need fresh tokens.
+- Use `python -m strava_competition` for real runs; `run.py` is just a thin wrapper.
+- Prefer environment variables over code edits when you need to tweak configuration.
