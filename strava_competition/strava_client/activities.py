@@ -37,7 +37,7 @@ from ..replay_tail import (
     summarize_activities,
 )
 from ..utils import to_utc_aware
-from .base import auth_headers, ensure_runner_token
+from .base import ensure_runner_token
 from .capture import (
     record_list_response,
     replay_list_response_with_meta,
