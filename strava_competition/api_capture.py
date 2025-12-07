@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -31,6 +32,8 @@ from .tools.capture_gc import prune_directory
 from .utils import json_dumps_sorted
 
 _LOGGER = logging.getLogger(__name__)
+# Validate that signatures contain only lowercase hex characters (SHA256 output)
+_SAFE_SIGNATURE = re.compile(r"^[a-f0-9]+$")
 
 
 @dataclass(frozen=True)
@@ -85,10 +88,17 @@ class APICapture:
 
         return self._replay_enabled
 
+    def _validate_signature(self, signature: str) -> None:
+        """Validate signature contains only safe hex characters."""
+        if not _SAFE_SIGNATURE.match(signature):
+            raise ValueError(f"Invalid capture signature format: {signature!r}")
+
     def _file_path(self, signature: str) -> Path:
+        self._validate_signature(signature)
         return self._base_dir / signature[0:2] / signature[2:4] / f"{signature}.json"
 
     def _overlay_path(self, signature: str) -> Path:
+        self._validate_signature(signature)
         return (
             self._base_dir
             / signature[0:2]

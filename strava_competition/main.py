@@ -1,7 +1,8 @@
-from datetime import datetime
+from datetime import datetime, timezone
 import logging
 from typing import Any, List, Sequence, Tuple
 
+from .auth import TokenError
 from .config import (
     INPUT_FILE,
     OUTPUT_FILE,
@@ -19,6 +20,7 @@ from .excel_writer import (
     update_runner_refresh_tokens,
     write_results,
 )
+from .errors import StravaAPIError
 from .models import Runner, Segment
 from .services import SegmentService, DistanceService
 from .services.segment_service import ResultsMapping
@@ -38,7 +40,7 @@ def _setup_logging() -> None:
 
 def _resolve_output_path() -> str:
     if OUTPUT_FILE_TIMESTAMP_ENABLED:
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         return f"{OUTPUT_FILE}_{timestamp}.xlsx"
     return f"{OUTPUT_FILE}.xlsx"
 
@@ -70,11 +72,17 @@ def _ensure_tokens_early(runners: Sequence[Runner]) -> None:
         before = getattr(r, "refresh_token", None)
         try:
             DEFAULT_STRAVA_CLIENT.ensure_runner_token(r)
-        except Exception as e:
+        except (TokenError, StravaAPIError) as e:
             logging.warning(
                 "Initial token ensure failed for runner=%s: %s",
                 getattr(r, "name", "?"),
                 e,
+            )
+            continue
+        except Exception:
+            logging.exception(
+                "Unexpected error ensuring token for runner=%s",
+                getattr(r, "name", "?"),
             )
             continue
         after = getattr(r, "refresh_token", None)
@@ -124,8 +132,10 @@ def _persist_tokens_final(runners: Sequence[Runner]) -> None:
         # Always write once more defensively (lightweight operation).
         update_runner_refresh_tokens(INPUT_FILE, runners)
         rotated = True
-    except Exception as e:
+    except (OSError, PermissionError) as e:
         logging.warning("Failed to persist refresh tokens at shutdown: %s", e)
+    except Exception:
+        logging.exception("Unexpected error persisting refresh tokens at shutdown")
     else:
         if rotated:
             logging.info("Refresh tokens persisted at shutdown.")

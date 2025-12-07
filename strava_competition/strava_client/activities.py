@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, Iterable, List, Optional, TypeAlias, cast
 
 import requests
+from cachetools import TTLCache
 
 from ..activity_types import activity_type_matches, normalize_activity_type
 from ..api_capture import record_overlay_response, record_response, CaptureRecord
@@ -38,6 +39,7 @@ from ..replay_tail import (
     merge_activity_lists,
     summarize_activities,
 )
+from ..utils import to_utc_aware
 from .base import auth_headers, ensure_runner_token
 from .capture import (
     record_list_response,
@@ -63,7 +65,8 @@ class CachedPage:
 
 
 _runner_tail_lock = threading.Lock()
-_runner_tail_refreshed_until: Dict[str, datetime] = {}
+# Use TTLCache to prevent unbounded growth - entries expire after 1 hour
+_runner_tail_refreshed_until: TTLCache[str, datetime] = TTLCache(maxsize=1000, ttl=3600)
 
 
 def _to_utc(value: datetime) -> datetime:
@@ -249,6 +252,8 @@ class ActivitiesAPI:
                     )
 
             filtered: List[Dict[str, Any]] = []
+            start_utc = to_utc_aware(start_date)
+            end_utc = to_utc_aware(end_date)
             for act in raw_activities:
                 if normalized_types and not activity_type_matches(
                     act, normalized_types
@@ -258,10 +263,12 @@ class ActivitiesAPI:
                 if not start_local:
                     continue
                 try:
-                    dt = datetime.fromisoformat(start_local.replace("Z", "+00:00"))
+                    dt = to_utc_aware(
+                        datetime.fromisoformat(start_local.replace("Z", "+00:00"))
+                    )
                 except ValueError:
                     continue
-                if start_date <= dt <= end_date:
+                if start_utc <= dt <= end_utc:
                     filtered.append(act)
             return filtered
         except requests.exceptions.HTTPError as exc:  # pragma: no cover

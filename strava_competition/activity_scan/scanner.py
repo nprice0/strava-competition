@@ -13,24 +13,11 @@ from ..config import ACTIVITY_SCAN_MAX_ACTIVITY_PAGES
 from ..errors import StravaAPIError
 from ..models import Runner, Segment
 from ..strava_api import get_activities, get_activity_with_efforts
+from ..utils import parse_iso_datetime
 from .models import ActivityScanResult
 
 ActivityProvider = Callable[[Runner, datetime, datetime], Sequence[Dict[str, Any]]]
 _DetailCacheKey = tuple[int | str, int]
-
-
-def _parse_iso_datetime(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        if value.endswith("Z"):
-            value = value.replace("Z", "+00:00")
-        return datetime.fromisoformat(value)
-    except (TypeError, ValueError) as exc:
-        logging.getLogger(__name__).debug(
-            "Failed to parse ISO datetime '%s': %s", value, exc
-        )
-        return None
 
 
 class ActivityEffortScanner:
@@ -113,7 +100,7 @@ class ActivityEffortScanner:
                     best_effort = effort
                     best_activity_id = activity_id
                     best_moving_time = self._coerce_float(effort.get("moving_time"))
-                    best_start = _parse_iso_datetime(
+                    best_start = parse_iso_datetime(
                         effort.get("start_date_local") or effort.get("start_date")
                     )
         if attempts == 0 or best_elapsed is None:

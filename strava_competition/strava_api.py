@@ -321,7 +321,21 @@ class StravaClient:
         self._limiter.resize(max_concurrent)
 
 
-DEFAULT_STRAVA_CLIENT = StravaClient()
+# Lazy-initialized default client to avoid configuration issues during testing
+_default_client: Optional[StravaClient] = None
+
+
+def get_default_client() -> StravaClient:
+    """Get or create the default StravaClient instance."""
+    global _default_client
+    if _default_client is None:
+        _default_client = StravaClient()
+    return _default_client
+
+
+# For backwards compatibility, DEFAULT_STRAVA_CLIENT is now a property-like access
+# that lazily initializes the client on first use.
+DEFAULT_STRAVA_CLIENT = get_default_client()
 
 
 def get_segment_efforts(

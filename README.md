@@ -143,6 +143,25 @@ captures remain untouched.
   positive integer) to delete aged capture files when the app starts. Set to `0`
   to disable automatic pruning.
 
+#### Security considerations for token capture
+
+⚠️ **Warning:** Token capture is disabled by default for good reason.
+
+The `STRAVA_TOKEN_CAPTURE_ENABLED` setting controls whether OAuth token
+responses are written to disk. Token payloads contain:
+
+- Access tokens (short-lived but grants full API access)
+- Refresh tokens (long-lived credentials that can generate new access tokens)
+- Athlete identifiers and profile metadata
+
+**Only enable token capture in controlled debugging environments.** Never commit
+captured token files to version control. If you enable this setting:
+
+1. Ensure the capture directory is excluded from git (already covered by `.gitignore`)
+2. Delete captured token files immediately after debugging
+3. Consider rotating affected refresh tokens via the OAuth flow
+4. Never deploy with this setting enabled
+
 ### Workbook layout
 
 All sheet names are case sensitive.

@@ -10,6 +10,7 @@ import threading
 import time
 import urllib.parse
 import webbrowser
+from dataclasses import dataclass, field
 from typing import Optional
 
 from flask import Flask, abort, request
@@ -33,12 +34,34 @@ REDIRECT_URI = (
 SCOPE = "read,activity:read_all"
 PRINT_TOKENS_DEFAULT = False
 
-# Flask app and server state
+
+@dataclass
+class OAuthSession:
+    """Encapsulates OAuth flow state to avoid global variables.
+
+    This class holds all mutable state needed during the OAuth authorization
+    flow, making the module more testable and avoiding potential race conditions
+    from global state.
+    """
+
+    expected_state: str = field(default_factory=lambda: secrets.token_urlsafe(16))
+    auth_code: Optional[str] = None
+    auth_event: threading.Event = field(default_factory=threading.Event)
+    server: Optional[BaseWSGIServer] = None
+
+    def reset(self) -> None:
+        """Reset state for a new OAuth flow."""
+        self.expected_state = secrets.token_urlsafe(16)
+        self.auth_code = None
+        self.auth_event.clear()
+        self.server = None
+
+
+# Module-level session instance used by Flask routes and flow functions
+_session = OAuthSession()
+
+# Flask app
 app = Flask(__name__)
-auth_code: Optional[str] = None
-auth_event = threading.Event()
-expected_state = secrets.token_urlsafe(16)
-_server: BaseWSGIServer | None = None
 
 
 def _mask_token(token: str, visible: int = 4) -> str:
@@ -57,22 +80,21 @@ def _mask_token(token: str, visible: int = 4) -> str:
 
 @app.route("/callback")
 def callback() -> ResponseReturnValue:
-    global auth_code
     state = request.args.get("state")
-    if not state or state != expected_state:
+    if not state or state != _session.expected_state:
         logging.error("Invalid OAuth state received; possible CSRF. Aborting.")
         abort(400, description="Invalid state")
-    auth_code = request.args.get("code")
+    _session.auth_code = request.args.get("code")
     logging.info("Authorisation code received via callback.")
     # Signal that the code is received
-    auth_event.set()
+    _session.auth_event.set()
     return "Authorisation received! You can close this window now."
 
 
-def run_flask() -> None:
-    global _server
-    _server = make_server("localhost", OAUTH_PORT, app)
-    _server.serve_forever()
+def _run_flask() -> None:
+    """Start the Flask server and store reference in session."""
+    _session.server = make_server("localhost", OAUTH_PORT, app)
+    _session.server.serve_forever()
 
 
 def _build_auth_url() -> str:
@@ -82,7 +104,7 @@ def _build_auth_url() -> str:
         "redirect_uri": REDIRECT_URI,
         "scope": SCOPE,
         "approval_prompt": "force",
-        "state": expected_state,
+        "state": _session.expected_state,
     }
     return "https://www.strava.com/oauth/authorize?" + urllib.parse.urlencode(params)
 
@@ -100,19 +122,10 @@ def wait_for_port(port: int, host: str = "localhost", timeout: int = 10) -> bool
     return False
 
 
-def _reset_oauth_state() -> None:
-    """Reset state/flags so the OAuth helper can be rerun in one process."""
-
-    global auth_code, expected_state
-    auth_event.clear()
-    auth_code = None
-    expected_state = secrets.token_urlsafe(16)
-
-
 def _exchange_code_for_tokens(print_tokens: bool) -> None:
     """Exchange the captured code for tokens and log according to policy."""
 
-    if not auth_code:
+    if not _session.auth_code:
         raise RuntimeError(
             "OAuth exchange attempted without an authorisation code present"
         )
@@ -125,7 +138,7 @@ def _exchange_code_for_tokens(print_tokens: bool) -> None:
             data={
                 "client_id": CLIENT_ID,
                 "client_secret": CLIENT_SECRET,
-                "code": auth_code,
+                "code": _session.auth_code,
                 "grant_type": "authorization_code",
                 "redirect_uri": REDIRECT_URI,
             },
@@ -161,47 +174,46 @@ def _exchange_code_for_tokens(print_tokens: bool) -> None:
         logging.error("Failed to exchange code for tokens: %s", exc)
 
 
+def _shutdown_server(flask_thread: threading.Thread) -> None:
+    """Shutdown the OAuth server and wait for thread to finish."""
+    if _session.server:
+        _session.server.shutdown()
+    flask_thread.join(timeout=5)
+
+
 def start_oauth_flow(*, print_tokens: bool, wait_timeout: int = 60) -> None:
     """Run the OAuth flow end-to-end, optionally printing tokens."""
 
-    _reset_oauth_state()
-    flask_thread = threading.Thread(target=run_flask, daemon=True)
+    _session.reset()
+    flask_thread = threading.Thread(target=_run_flask, daemon=True)
     flask_thread.start()
 
     logging.info("Waiting for Flask server to start on port %s...", OAUTH_PORT)
     if not wait_for_port(OAUTH_PORT):
         logging.error("Flask server did not start on port %s", OAUTH_PORT)
-        if _server:
-            _server.shutdown()
-        flask_thread.join(timeout=5)
+        _shutdown_server(flask_thread)
         raise SystemExit(1)
 
     auth_url = _build_auth_url()
     logging.info("Opening browser for authorisation...")
     webbrowser.open(auth_url)
 
-    if not auth_event.wait(timeout=wait_timeout):
+    if not _session.auth_event.wait(timeout=wait_timeout):
         logging.error("Timeout waiting for authorisation code.")
-        if _server:
-            _server.shutdown()
-        flask_thread.join(timeout=5)
+        _shutdown_server(flask_thread)
         raise SystemExit(1)
 
-    if not auth_code:
+    if not _session.auth_code:
         logging.error("Authorisation code was not received. Exiting.")
-        if _server:
-            _server.shutdown()
-        flask_thread.join(timeout=5)
+        _shutdown_server(flask_thread)
         raise SystemExit(1)
 
     logging.info("Authorisation code received.")
     try:
         _exchange_code_for_tokens(print_tokens)
     finally:
-        if _server:
-            logging.info("Shutting down local OAuth server.")
-            _server.shutdown()
-        flask_thread.join(timeout=5)
+        logging.info("Shutting down local OAuth server.")
+        _shutdown_server(flask_thread)
 
 
 def _parse_args() -> argparse.Namespace:

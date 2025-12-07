@@ -308,6 +308,10 @@ def update_single_runner_refresh_token(filepath: PathInput, runner: Runner) -> N
                 filepath, engine="openpyxl", mode="a", if_sheet_exists="replace"
             ) as writer:
                 df.to_excel(writer, sheet_name=RUNNERS_SHEET, index=False)
-        except Exception:
-            # Silent failure acceptable; final write at shutdown still attempts full persistence.
+        except Exception as exc:
+            LOGGER.warning(
+                "Failed to persist refresh token for runner %s: %s",
+                runner.name,
+                exc,
+            )
             return

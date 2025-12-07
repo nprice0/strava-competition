@@ -25,6 +25,7 @@ from ..config import (
     MAX_WORKERS,
 )
 from ..strava_api import get_segment_efforts, get_activities
+from ..utils import parse_iso_datetime
 
 ResultsMapping = Dict[str, Dict[str, List[SegmentResult]]]
 
@@ -453,7 +454,7 @@ class SegmentService:
 
         valid.sort(key=lambda item: item[0])
         fastest_elapsed, fastest_effort = valid[0]
-        fastest_date = _parse_iso_datetime(
+        fastest_date = parse_iso_datetime(
             fastest_effort.get("start_date_local") or fastest_effort.get("start_date")
         )
 
@@ -521,17 +522,6 @@ class SegmentService:
             return float(value)
         except (TypeError, ValueError):
             return None
-
-
-def _parse_iso_datetime(value: str | None) -> datetime | None:
-    if not value:
-        return None
-    try:
-        if value.endswith("Z"):
-            value = value.replace("Z", "+00:00")
-        return datetime.fromisoformat(value)
-    except Exception:
-        return None
 
 
 __all__ = ["SegmentService"]

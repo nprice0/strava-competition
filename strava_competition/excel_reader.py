@@ -12,6 +12,7 @@ from typing import Iterator, List, Optional
 
 import pandas as pd
 
+from .errors import ExcelFormatError
 from .models import Segment, Runner
 
 SEGMENTS_SHEET = "Segment Series"
@@ -42,10 +43,6 @@ _REQUIRED_DISTANCE_COLS = {
     _SEGMENT_END_COL,
     "Distance Threshold (km)",
 }
-
-
-class ExcelFormatError(RuntimeError):
-    pass
 
 
 def _is_blank(value: object) -> bool:
@@ -249,6 +246,17 @@ def read_segments(
         default_time_raw,
     ) in enumerate(df[columns].itertuples(index=False, name=None), start=2):
         row_label = f"row {row_offset}"
+        # Validate date range early
+        if pd.isna(start_dt) or pd.isna(end_dt):
+            raise ExcelFormatError(
+                f"Segment '{seg_name}' in {row_label} has invalid date(s) in "
+                f"'{SEGMENTS_SHEET}' sheet"
+            )
+        if start_dt > end_dt:
+            raise ExcelFormatError(
+                f"Segment '{seg_name}' in {row_label} has inverted date range "
+                f"(start={start_dt} > end={end_dt}) in '{SEGMENTS_SHEET}' sheet"
+            )
         segs.append(
             Segment(
                 id=int(seg_id),

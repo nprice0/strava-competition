@@ -8,30 +8,15 @@ aggregation from orchestration in ``DistanceService``).
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Dict, List, Tuple
 
 from .models import Runner
+from .utils import to_utc_aware
 
 Activity = (
     dict  # minimal structure expected: distance, total_elevation_gain, start_date_local
 )
-
-
-def _to_utc_aware(dt: datetime) -> datetime:
-    """Return a UTC-aware datetime regardless of input (naive => assume UTC).
-
-    Accepts pandas Timestamps (via to_pydatetime) transparently. We treat all
-    competition window boundaries as UTC for comparison purposes. This avoids
-    TypeError when mixing naive & aware datetimes and provides deterministic
-    ordering.
-    """
-    # Pandas Timestamp compatibility
-    if hasattr(dt, "to_pydatetime"):
-        dt = dt.to_pydatetime()
-    if dt.tzinfo is None:
-        return dt.replace(tzinfo=timezone.utc)
-    return dt.astimezone(timezone.utc)
 
 
 def _activity_in_window(act: Activity, start_dt: datetime, end_dt: datetime) -> bool:
@@ -42,7 +27,7 @@ def _activity_in_window(act: Activity, start_dt: datetime, end_dt: datetime) -> 
         dt = datetime.fromisoformat(str(start_local).replace("Z", "+00:00"))
     except Exception:
         return False
-    dt_utc = _to_utc_aware(dt)
+    dt_utc = to_utc_aware(dt)
     return start_dt <= dt_utc <= end_dt
 
 
@@ -51,7 +36,7 @@ def _normalize_windows(
 ) -> List[Tuple[datetime, datetime, float | None]]:
     """Normalize all window boundaries to UTC-aware once up front."""
     return [
-        (_to_utc_aware(s), _to_utc_aware(e), threshold)
+        (to_utc_aware(s), to_utc_aware(e), threshold)
         for s, e, threshold in distance_windows
     ]
 

@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from strava_competition import strava_api
@@ -7,6 +7,11 @@ from strava_competition.models import Runner
 
 def _runner() -> Runner:
     return Runner(name="Test", strava_id=123, refresh_token="rt", segment_team="A")
+
+
+def _utcnow() -> datetime:
+    """Return current UTC time as timezone-aware datetime."""
+    return datetime.now(timezone.utc)
 
 
 def test_strava_client_injects_session_and_limiter(monkeypatch):
@@ -30,8 +35,8 @@ def test_strava_client_injects_session_and_limiter(monkeypatch):
     client = strava_api.StravaClient(session=dummy_session, limiter=dummy_limiter)
 
     runner = _runner()
-    client.get_segment_efforts(runner, 1, datetime.utcnow(), datetime.utcnow())
-    client.get_activities(runner, datetime.utcnow(), datetime.utcnow())
+    client.get_segment_efforts(runner, 1, _utcnow(), _utcnow())
+    client.get_activities(runner, _utcnow(), _utcnow())
 
     assert calls["segment_session"] is dummy_session
     assert calls["segment_limiter"] is dummy_limiter
@@ -64,12 +69,8 @@ def test_module_wrappers_delegate_to_default_client(monkeypatch):
         strava_api.DEFAULT_STRAVA_CLIENT, "set_rate_limiter", fake_resize
     )
 
-    assert strava_api.get_segment_efforts(
-        runner, 1, datetime.utcnow(), datetime.utcnow()
-    ) == ["ok"]
-    assert strava_api.get_activities(runner, datetime.utcnow(), datetime.utcnow()) == [
-        "activity"
-    ]
+    assert strava_api.get_segment_efforts(runner, 1, _utcnow(), _utcnow()) == ["ok"]
+    assert strava_api.get_activities(runner, _utcnow(), _utcnow()) == ["activity"]
     strava_api.set_rate_limiter(5)
     assert called["efforts"]
     assert called["activities"]
