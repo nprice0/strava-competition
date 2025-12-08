@@ -101,7 +101,7 @@ Create a `.env` file in the project root so credentials stay out of source contr
 STRAVA_CLIENT_ID=<your_id>
 STRAVA_CLIENT_SECRET=<your_secret>
 USE_ACTIVITY_SCAN_FALLBACK=true
-ACTIVITY_SCAN_MAX_ACTIVITY_PAGES=10
+ACTIVITY_SCAN_MAX_ACTIVITY_PAGES=0
 ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true
 STRAVA_API_CAPTURE_ENABLED=true
 STRAVA_CAPTURE_HASH_IDENTIFIERS=true
@@ -303,7 +303,8 @@ leans on cached pages when possible, and logs the inspected activity IDs for eas
 
 1. Enable `USE_ACTIVITY_SCAN_FALLBACK` (and keep `FORCE_ACTIVITY_SCAN_FALLBACK=false`
    so paid athletes still use official efforts). Optionally limit pagination via
-   `ACTIVITY_SCAN_MAX_ACTIVITY_PAGES`.
+   `ACTIVITY_SCAN_MAX_ACTIVITY_PAGES` (defaults to `0`, meaning "no cap"—set a
+   positive integer to stop after that many pages).
 2. Prime captures with `STRAVA_API_CAPTURE_ENABLED=true` / `STRAVA_API_REPLAY_ENABLED=false`.
 3. Switch to deterministic runs using replay (and flip `STRAVA_OFFLINE_MODE=true` if you
    want to forbid live calls). Watch for `source=activity_scan` in the logs.
