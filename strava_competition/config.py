@@ -94,11 +94,11 @@ STRAVA_API_REPLAY_ENABLED = _env_bool("STRAVA_API_REPLAY_ENABLED", True)
 
 # Maximum age (days) before a cached activity response is considered stale and
 # automatically refreshed from the live API. Set to 0 to disable the TTL.
-REPLAY_CACHE_TTL_DAYS = _env_int("REPLAY_CACHE_TTL_DAYS", 7)
+REPLAY_CACHE_TTL_DAYS = _env_int("REPLAY_CACHE_TTL_DAYS", 90)
 
 # Guardrail limiting how far back a replayed cache may attempt to "tail" fill
 # before falling back to a full live fetch. Set to 0 to disable.
-REPLAY_MAX_LOOKBACK_DAYS = _env_int("REPLAY_MAX_LOOKBACK_DAYS", 30)
+REPLAY_MAX_LOOKBACK_DAYS = _env_int("REPLAY_MAX_LOOKBACK_DAYS", 365)
 
 # Small overlap (seconds) applied when requesting the live tail window to avoid
 # missing activities that start near the cached boundary.
