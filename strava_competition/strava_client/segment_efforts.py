@@ -3,32 +3,45 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-from typing import Dict, List, Optional, TypeAlias, cast
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Iterable, List, Optional, TypeAlias, cast
 
 import requests
 
+from ..api_capture import CaptureRecord, record_overlay_response, record_response
 from ..config import (
-    REPLAY_CACHE_TTL_DAYS,
     STRAVA_API_CAPTURE_ENABLED,
+    STRAVA_API_CAPTURE_OVERWRITE,
     STRAVA_API_REPLAY_ENABLED,
     STRAVA_BASE_URL,
     STRAVA_OFFLINE_MODE,
 )
 from ..errors import StravaAPIError
 from ..models import Runner
-from ..replay_tail import cache_is_stale
-from .capture import record_list_response, replay_list_response_with_meta
+from ..replay_tail import chunk_activities, summarize_activities, merge_activity_lists
+from .base import ensure_runner_token
+from .capture import (
+    record_list_response,
+    replay_list_response_with_meta,
+    runner_identity,
+)
 from .pagination import fetch_page_with_retries
 from .rate_limiter import RateLimiter
 from .response_handling import extract_error
-from .base import ensure_runner_token
 from .session import get_default_session
 
 JSONList: TypeAlias = List[Dict[str, object]]
 
 LOGGER = logging.getLogger(__name__)
 SEGMENT_PAGE_SIZE = 200
+
+
+@dataclass(slots=True)
+class CachedPage:
+    params: Dict[str, Any]
+    data: JSONList
+    record: Optional[CaptureRecord]
 
 
 class SegmentEffortsAPI:
@@ -60,9 +73,11 @@ class SegmentEffortsAPI:
             "per_page": SEGMENT_PAGE_SIZE,
         }
         url = f"{STRAVA_BASE_URL}/segment_efforts"
+        cached_pages: List[CachedPage] = []
+        used_replay = False
 
         def fetch_page(page: int) -> JSONList:
-            nonlocal replay_allowed
+            nonlocal replay_allowed, used_replay
             params = dict(base_params)
             params["page"] = page
             if replay_allowed:
@@ -75,19 +90,16 @@ class SegmentEffortsAPI:
                     offline_mode=STRAVA_OFFLINE_MODE,
                 )
                 if record is not None:
-                    if not STRAVA_OFFLINE_MODE and cache_is_stale(
-                        record.captured_at,
-                        REPLAY_CACHE_TTL_DAYS,
-                    ):
-                        LOGGER.info(
-                            "Replay cache TTL expired for runner=%s segment=%s page=%s; switching to live fetch",
-                            runner.name,
-                            segment_id,
-                            page,
+                    used_replay = True
+                    cached_data = cast(JSONList, record.response)
+                    cached_pages.append(
+                        CachedPage(
+                            params=dict(params),
+                            data=cached_data,
+                            record=record,
                         )
-                        replay_allowed = False
-                    else:
-                        return cast(JSONList, record.response)
+                    )
+                    return cached_data
                 if STRAVA_OFFLINE_MODE:
                     raise StravaAPIError(
                         "Offline mode cache miss for segment efforts"
@@ -142,6 +154,25 @@ class SegmentEffortsAPI:
                 if len(batch) < SEGMENT_PAGE_SIZE:
                     break
                 page += 1
+            if used_replay and not STRAVA_OFFLINE_MODE:
+                all_efforts, refreshed = _maybe_refresh_segment_tail(
+                    runner,
+                    segment_id,
+                    url,
+                    base_params,
+                    cached_pages,
+                    all_efforts,
+                    self._session,
+                    self._limiter,
+                    start_date,
+                    end_date,
+                )
+                if refreshed:
+                    LOGGER.info(
+                        "Segment tail refresh runner=%s segment=%s performed incremental update",
+                        runner.name,
+                        segment_id,
+                    )
             return all_efforts
         except (
             requests.exceptions.HTTPError
@@ -198,3 +229,151 @@ class SegmentEffortsAPI:
                 status,
                 suffix,
             )
+
+
+def _maybe_refresh_segment_tail(
+    runner: Runner,
+    segment_id: int,
+    url: str,
+    base_params: Dict[str, Any],
+    cached_pages: List[CachedPage],
+    existing_efforts: List[Dict[str, object]],
+    session: requests.Session,
+    limiter: RateLimiter,
+    start_date: datetime,
+    end_date: datetime,
+) -> tuple[List[Dict[str, object]], bool]:
+    if not cached_pages:
+        return existing_efforts, False
+    cached_payloads = _flatten_pages(page.data for page in cached_pages)
+    stats = summarize_activities(cached_payloads)
+    latest_cached = stats.latest
+    if latest_cached is None:
+        return existing_efforts, False
+    window_start = _to_utc(start_date)
+    window_end = _to_utc(end_date)
+    if latest_cached >= window_end:
+        return existing_efforts, False
+    tail_start = max(latest_cached, window_start)
+    tail_pages = _fetch_segment_tail_pages(
+        runner,
+        segment_id,
+        url,
+        base_params,
+        tail_start,
+        window_end,
+        session,
+        limiter,
+    )
+    if not tail_pages:
+        return existing_efforts, False
+    tail_flat = _flatten_pages(tail_pages)
+    merged = merge_activity_lists(tail_flat, existing_efforts)
+    paged = chunk_activities(merged, chunk_size=SEGMENT_PAGE_SIZE)
+    _persist_segment_pages(runner, url, base_params, paged)
+    return merged, True
+
+
+def _fetch_segment_tail_pages(
+    runner: Runner,
+    segment_id: int,
+    url: str,
+    base_params: Dict[str, Any],
+    tail_start: datetime,
+    window_end: datetime,
+    session: requests.Session,
+    limiter: RateLimiter,
+) -> List[JSONList]:
+    boundary = tail_start + timedelta(seconds=1)
+    if boundary >= window_end:
+        return []
+    per_page = int(base_params.get("per_page", SEGMENT_PAGE_SIZE))
+    tail_pages: List[JSONList] = []
+    page = 1
+    while True:
+        params = dict(base_params)
+        params["start_date_local"] = boundary.isoformat()
+        params["end_date_local"] = window_end.isoformat()
+        params["page"] = page
+        data = fetch_page_with_retries(
+            runner=runner,
+            url=url,
+            params=params,
+            context_label="segment_efforts_tail",
+            page=page,
+            session=session,
+            limiter=limiter,
+            segment_id=segment_id,
+        )
+        if not data:
+            break
+        tail_pages.append(data)
+        record_list_response(
+            runner,
+            url,
+            dict(params),
+            data,
+            capture_enabled=STRAVA_API_CAPTURE_ENABLED,
+        )
+        if len(data) < per_page:
+            break
+        page += 1
+    return tail_pages
+
+
+def _persist_segment_pages(
+    runner: Runner,
+    url: str,
+    base_params: Dict[str, Any],
+    page_payloads: List[JSONList],
+) -> None:
+    if not STRAVA_API_CAPTURE_ENABLED:
+        LOGGER.warning(
+            "Capture disabled; cannot persist enriched segment data for runner=%s",
+            runner.name,
+        )
+        return
+    identity = runner_identity(runner)
+    template = {
+        "segment_id": base_params.get("segment_id"),
+        "start_date_local": base_params.get("start_date_local"),
+        "end_date_local": base_params.get("end_date_local"),
+        "per_page": base_params.get("per_page", SEGMENT_PAGE_SIZE),
+    }
+    if not page_payloads:
+        params = dict(template)
+        params["page"] = 1
+        _write_segment_overlay(identity, url, params, [])
+        return
+    for idx, payload in enumerate(page_payloads, start=1):
+        params = dict(template)
+        params["page"] = idx
+        _write_segment_overlay(identity, url, params, payload)
+    params = dict(template)
+    params["page"] = len(page_payloads) + 1
+    _write_segment_overlay(identity, url, params, [])
+
+
+def _write_segment_overlay(
+    identity: str,
+    url: str,
+    params: Dict[str, Any],
+    payload: JSONList,
+) -> None:
+    if STRAVA_API_CAPTURE_OVERWRITE:
+        record_response("GET", url, identity, payload, params=params)
+    else:
+        record_overlay_response("GET", url, identity, payload, params=params)
+
+
+def _flatten_pages(pages: Iterable[JSONList]) -> List[Dict[str, object]]:
+    flattened: List[Dict[str, object]] = []
+    for page in pages:
+        flattened.extend(page)
+    return flattened
+
+
+def _to_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

@@ -6,7 +6,7 @@ import logging
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional, TypeAlias, cast
+from typing import Any, Dict, Iterable, List, Optional, Sequence, TypeAlias, cast
 
 import requests
 from cachetools import TTLCache
@@ -15,8 +15,8 @@ from ..activity_types import activity_type_matches, normalize_activity_type
 from ..api_capture import record_overlay_response, record_response, CaptureRecord
 from ..config import (
     ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS,
-    REPLAY_CACHE_TTL_DAYS,
     REPLAY_EPSILON_SECONDS,
+    REPLAY_EMPTY_WINDOW_REFRESH_SECONDS,
     REPLAY_MAX_LOOKBACK_DAYS,
     STRAVA_API_CAPTURE_ENABLED,
     STRAVA_API_CAPTURE_OVERWRITE,
@@ -29,7 +29,6 @@ from ..config import (
 from ..errors import StravaAPIError
 from ..models import Runner
 from ..replay_tail import (
-    cache_is_stale,
     chunk_activities,
     clamp_window,
     exceeds_lookback,
@@ -150,27 +149,16 @@ class ActivitiesAPI:
                     salt=STRAVA_CAPTURE_ID_SALT,
                 )
                 if cache_record is not None:
-                    if not STRAVA_OFFLINE_MODE and cache_is_stale(
-                        cache_record.captured_at, REPLAY_CACHE_TTL_DAYS
-                    ):
-                        LOGGER.info(
-                            "Replay cache TTL expired for runner=%s page=%s; forcing live fetch",
-                            runner.name,
-                            page,
+                    used_replay = True
+                    cached_data = cast(JSONList, cache_record.response)
+                    cached_pages.append(
+                        CachedPage(
+                            params=dict(params),
+                            data=cached_data,
+                            record=cache_record,
                         )
-                        replay_allowed = False
-                        cache_record = None
-                    else:
-                        used_replay = True
-                        cached_data = cast(JSONList, cache_record.response)
-                        cached_pages.append(
-                            CachedPage(
-                                params=dict(params),
-                                data=cached_data,
-                                record=cache_record,
-                            )
-                        )
-                        return cached_data
+                    )
+                    return cached_data
             result = fetch_page_with_retries(
                 runner=runner,
                 url=url,
@@ -339,12 +327,24 @@ def _maybe_refresh_replay_tail(
         return raw_activities, False
     cached_payloads = _flatten_pages([page.data for page in cached_pages])
     stats = summarize_activities(cached_payloads)
-    if stats.latest is None:
-        return raw_activities, False
     start_utc, end_utc = clamp_window(_to_utc(start_date), _to_utc(end_date))
-    if stats.latest >= end_utc:
+    latest_cached = stats.latest
+    if latest_cached is None:
+        stale_age = _stale_empty_cache_age(cached_pages)
+        if stale_age is None:
+            return raw_activities, False
+        latest_cached = start_utc
+        LOGGER.info(
+            (
+                "Replay cache for runner=%s had no activities and is stale "
+                "(age=%ds); refreshing full window"
+            ),
+            runner.name,
+            int(stale_age),
+        )
+    if latest_cached >= end_utc:
         return raw_activities, False
-    if exceeds_lookback(stats.latest, REPLAY_MAX_LOOKBACK_DAYS):
+    if exceeds_lookback(latest_cached, REPLAY_MAX_LOOKBACK_DAYS):
         LOGGER.info(
             "Replay cache for runner=%s exceeds max lookback; skipping tail refresh",
             runner.name,
@@ -362,7 +362,7 @@ def _maybe_refresh_replay_tail(
         runner,
         url,
         base_params,
-        stats.latest,
+        latest_cached,
         start_utc,
         end_utc,
         session,
@@ -378,7 +378,7 @@ def _maybe_refresh_replay_tail(
     LOGGER.info(
         "Replay tail refresh runner=%s cached_latest=%s tail_end=%s live_pages=%s",
         runner.name,
-        stats.latest,
+        latest_cached,
         end_utc,
         len(tail_pages),
     )
@@ -488,3 +488,26 @@ def _write_page_overlay(
         record_response("GET", url, identity, payload, params=params)
     else:
         record_overlay_response("GET", url, identity, payload, params=params)
+
+
+def _stale_empty_cache_age(pages: Sequence[CachedPage]) -> float | None:
+    if REPLAY_EMPTY_WINDOW_REFRESH_SECONDS <= 0:
+        return None
+    capture_ts = _latest_capture_timestamp(pages)
+    if capture_ts is None:
+        return None
+    age = (datetime.now(timezone.utc) - capture_ts).total_seconds()
+    if age >= REPLAY_EMPTY_WINDOW_REFRESH_SECONDS:
+        return age
+    return None
+
+
+def _latest_capture_timestamp(pages: Sequence[CachedPage]) -> datetime | None:
+    latest: datetime | None = None
+    for page in pages:
+        record = page.record
+        if record is None or record.captured_at is None:
+            continue
+        if latest is None or record.captured_at > latest:
+            latest = record.captured_at
+    return latest

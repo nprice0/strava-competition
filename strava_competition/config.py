@@ -96,6 +96,12 @@ STRAVA_API_REPLAY_ENABLED = _env_bool("STRAVA_API_REPLAY_ENABLED", True)
 # automatically refreshed from the live API. Set to 0 to disable the TTL.
 REPLAY_CACHE_TTL_DAYS = _env_int("REPLAY_CACHE_TTL_DAYS", 90)
 
+# When replayed activity windows contain no entries, force a live refetch after
+# this many seconds to avoid missing newly recorded efforts. Set to 0 to disable.
+REPLAY_EMPTY_WINDOW_REFRESH_SECONDS = _env_int(
+    "REPLAY_EMPTY_WINDOW_REFRESH_SECONDS", 1 * 3600
+)
+
 # Guardrail limiting how far back a replayed cache may attempt to "tail" fill
 # before falling back to a full live fetch. Set to 0 to disable.
 REPLAY_MAX_LOOKBACK_DAYS = _env_int("REPLAY_MAX_LOOKBACK_DAYS", 365)

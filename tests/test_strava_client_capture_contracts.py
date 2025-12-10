@@ -90,25 +90,27 @@ def runner() -> Runner:
     return Runner(name="Contract Runner", strava_id="42", refresh_token="rt")
 
 
-def test_segment_efforts_switches_to_live_when_cache_stale(
+def test_segment_efforts_fetches_tail_after_cached_runs(
     monkeypatch: pytest.MonkeyPatch,
     runner: Runner,
 ) -> None:
-    """Stale replay payloads should trigger live fetch + capture."""
+    """Cached results trigger incremental fetch only for newer efforts."""
 
-    now = datetime.now(timezone.utc)
-    stale_record = CaptureRecord(
+    cached_effort = {"id": "cached", "start_date": "2025-01-01T00:00:00Z"}
+    cached_record = CaptureRecord(
         signature="abc",
-        response=[{"id": "cached"}],
-        captured_at=now - timedelta(days=8),
+        response=[cached_effort],
+        captured_at=datetime.now(timezone.utc),
         source="base",
     )
 
-    replay_calls: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
-
-    def fake_replay(*args: Any, **kwargs: Any) -> CaptureRecord | None:
-        replay_calls.append((args, kwargs))
-        return stale_record
+    def fake_replay(
+        runner_arg: Runner,
+        url: str,
+        params: dict[str, Any],
+        **_: Any,
+    ) -> CaptureRecord | None:
+        return cached_record if params.get("page") == 1 else None
 
     monkeypatch.setattr(
         segment_efforts,
@@ -116,12 +118,14 @@ def test_segment_efforts_switches_to_live_when_cache_stale(
         fake_replay,
     )
 
-    live_payload = [{"id": "live"}]
+    live_effort = {"id": "live", "start_date": "2025-01-02T00:00:00Z"}
     fetch_calls: list[dict[str, Any]] = []
 
     def fake_fetch_page_with_retries(**kwargs: Any) -> List[dict[str, Any]]:
         fetch_calls.append(kwargs)
-        return live_payload
+        if kwargs["context_label"] == "segment_efforts_tail":
+            return [live_effort]
+        raise AssertionError("unexpected live fetch outside tail refresh")
 
     monkeypatch.setattr(
         segment_efforts,
@@ -145,6 +149,23 @@ def test_segment_efforts_switches_to_live_when_cache_stale(
         "record_list_response",
         fake_record,
     )
+
+    overlays: list[tuple[dict[str, Any] | None, List[dict[str, Any]] | None]] = []
+    monkeypatch.setattr(segment_efforts, "STRAVA_API_CAPTURE_OVERWRITE", False)
+    monkeypatch.setattr(
+        segment_efforts,
+        "record_overlay_response",
+        lambda *_args, params=None, response=None, **__: overlays.append(
+            (params, response)
+        ),
+    )
+    monkeypatch.setattr(
+        segment_efforts,
+        "record_response",
+        lambda *_args, params=None, response=None, **__: overlays.append(
+            (params, response)
+        ),
+    )
     monkeypatch.setattr(
         segment_efforts,
         "ensure_runner_token",
@@ -165,18 +186,13 @@ def test_segment_efforts_switches_to_live_when_cache_stale(
         "STRAVA_OFFLINE_MODE",
         False,
     )
-    monkeypatch.setattr(
-        segment_efforts,
-        "REPLAY_CACHE_TTL_DAYS",
-        7,
-    )
 
     api = segment_efforts.SegmentEffortsAPI(
         session=object(),
         limiter=StubLimiter(),
     )
-    start = datetime(2024, 1, 1, tzinfo=timezone.utc)
-    end = start + timedelta(days=1)
+    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
+    end = start + timedelta(days=2)
 
     results = api.get_segment_efforts(
         runner,
@@ -185,22 +201,22 @@ def test_segment_efforts_switches_to_live_when_cache_stale(
         end_date=end,
     )
 
-    assert results == live_payload
-    assert fetch_calls, "expected live pagination after stale replay"
-    assert recorded_pages and recorded_pages[0][1] == live_payload
-    assert replay_calls and len(replay_calls) == 1
+    assert results == [live_effort, cached_effort]
+    assert fetch_calls and fetch_calls[0]["context_label"] == "segment_efforts_tail"
+    assert recorded_pages and recorded_pages[0][0]["page"] == 1
+    assert overlays, "expected overlay persistence for enriched cache"
 
 
-def test_segment_efforts_returns_cached_page_when_ttl_valid(
+def test_segment_efforts_returns_cached_page_when_no_tail_needed(
     monkeypatch: pytest.MonkeyPatch,
     runner: Runner,
 ) -> None:
-    """Fresh replay payloads should bypass live pagination entirely."""
+    """Cached payloads satisfy the full window when no newer data exists."""
 
     now = datetime.now(timezone.utc)
     cached_record = CaptureRecord(
         signature="def",
-        response=[{"id": "cached"}],
+        response=[{"id": "cached", "start_date": now.isoformat()}],
         captured_at=now - timedelta(days=1),
         source="base",
     )
