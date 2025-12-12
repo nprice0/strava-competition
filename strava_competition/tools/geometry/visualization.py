@@ -18,9 +18,9 @@ PathLike = Union[str, Path]
 FloatArray = NDArray[np.float64]
 FloatSequence = Union[Sequence[float], FloatArray]
 
-_ACTIVITY_COLOR = "#2c7bb6"
-_SEGMENT_COLOR = "#1a9641"
-_DIVERGENCE_COLOR = "#d73027"
+_ACTIVITY_COLOR = "#FF00E1"
+_SEGMENT_COLOR = "#0D00FC"
+_DIVERGENCE_COLOR = "#900700"
 
 
 @dataclass(slots=True)
