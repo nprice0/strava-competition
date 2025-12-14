@@ -5,7 +5,17 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from threading import Event, RLock
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    List,
+    Mapping,
+    Optional,
+    Sequence,
+    Tuple,
+)
 
 from cachetools import TTLCache
 
@@ -17,6 +27,9 @@ from ..utils import parse_iso_datetime
 from .models import ActivityScanResult
 
 ActivityProvider = Callable[[Runner, datetime, datetime], Sequence[Dict[str, Any]]]
+ElapsedAdjuster = Callable[
+    [Runner, Segment, float, datetime | None], Tuple[float, bool]
+]
 _DetailCacheKey = tuple[int | str, int]
 
 
@@ -30,6 +43,7 @@ class ActivityEffortScanner:
         activity_types: Iterable[str] | None = None,
         detail_cache_size: int = 128,
         max_activity_pages: Optional[int] = None,
+        elapsed_adjuster: ElapsedAdjuster | None = None,
     ) -> None:
         self._log = logging.getLogger(self.__class__.__name__)
         self._activity_provider = activity_provider
@@ -43,6 +57,7 @@ class ActivityEffortScanner:
         if max_activity_pages is None:
             max_activity_pages = ACTIVITY_SCAN_MAX_ACTIVITY_PAGES
         self._max_activity_pages = max_activity_pages
+        self._elapsed_adjuster = elapsed_adjuster
 
     def scan_segment(  # noqa: C901 - loops + filtering logic
         self,
@@ -60,11 +75,13 @@ class ActivityEffortScanner:
         attempts = 0
         effort_ids: List[int | str] = []
         inspected: List[Dict[str, object]] = []
+        best_adjusted: float | None = None
         best_elapsed: float | None = None
         best_effort: Dict[str, Any] | None = None
         best_activity_id: int | None = None
         best_moving_time: float | None = None
         best_start: datetime | None = None
+        best_bonus_applied: bool = False
 
         for summary in activities:
             if cancel_event and cancel_event.is_set():
@@ -95,15 +112,24 @@ class ActivityEffortScanner:
                 effort_id = self._coerce_effort_id(effort.get("id"))
                 if effort_id is not None:
                     effort_ids.append(effort_id)
-                if best_elapsed is None or elapsed < best_elapsed:
+                start_dt = parse_iso_datetime(
+                    effort.get("start_date_local") or effort.get("start_date")
+                )
+                adjusted, bonus_applied = self._apply_elapsed_adjuster(
+                    runner,
+                    segment,
+                    elapsed,
+                    start_dt,
+                )
+                if best_adjusted is None or adjusted < best_adjusted:
+                    best_adjusted = adjusted
                     best_elapsed = elapsed
                     best_effort = effort
                     best_activity_id = activity_id
                     best_moving_time = self._coerce_float(effort.get("moving_time"))
-                    best_start = parse_iso_datetime(
-                        effort.get("start_date_local") or effort.get("start_date")
-                    )
-        if attempts == 0 or best_elapsed is None:
+                    best_start = start_dt
+                    best_bonus_applied = bonus_applied
+        if attempts == 0 or best_adjusted is None or best_elapsed is None:
             return None
         fastest_effort_id = (
             self._coerce_effort_id(best_effort.get("id")) if best_effort else None
@@ -111,13 +137,14 @@ class ActivityEffortScanner:
         return ActivityScanResult(
             segment_id=segment.id,
             attempts=attempts,
-            fastest_elapsed=best_elapsed,
+            fastest_elapsed=best_adjusted,
             fastest_effort_id=fastest_effort_id,
             fastest_activity_id=best_activity_id,
             fastest_start_date=best_start,
             moving_time=best_moving_time,
             effort_ids=effort_ids,
             inspected_activities=inspected,
+            birthday_bonus_applied=best_bonus_applied,
         )
 
     def _get_activities(
@@ -210,6 +237,32 @@ class ActivityEffortScanner:
         with self._detail_cache_lock:
             self._detail_cache[key] = detail
         return detail
+
+    def _apply_elapsed_adjuster(
+        self,
+        runner: Runner,
+        segment: Segment,
+        elapsed: float,
+        start_date: datetime | None,
+    ) -> tuple[float, bool]:
+        if self._elapsed_adjuster is None:
+            return float(elapsed), False
+        try:
+            adjusted, applied = self._elapsed_adjuster(
+                runner,
+                segment,
+                elapsed,
+                start_date,
+            )
+        except Exception:
+            self._log.debug(
+                "Elapsed adjuster failed runner=%s segment=%s",
+                runner.name,
+                segment.id,
+                exc_info=True,
+            )
+            return float(elapsed), False
+        return float(adjusted), bool(applied)
 
     @staticmethod
     def _coerce_int(value: Any) -> int | None:

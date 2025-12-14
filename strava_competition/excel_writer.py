@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 import threading
 from os import PathLike
@@ -16,6 +17,10 @@ from .errors import ExcelFormatError
 from .segment_aggregation import (
     build_segment_outputs,
     ResultsMapping as SegResultsMapping,
+    FASTEST_SEC_COL,
+    FASTEST_FMT_COL,
+    FASTEST_DATE_COL,
+    BIRTHDAY_ATTR,
 )
 
 SEGMENTS_SHEET = "Segment Series"
@@ -26,6 +31,7 @@ STRAVA_ID_COLUMN = "Strava ID"
 REFRESH_TOKEN_COLUMN = "Refresh Token"  # nosec B105
 SEGMENT_TEAM_COLUMN = "Segment Series Team"
 DISTANCE_TEAM_COLUMN = "Distance Series Team"
+BIRTHDAY_COLUMN = "Birthday (dd-mmm)"
 MAX_SHEET_NAME_LEN = 31
 EXCEL_DATETIME_FORMAT = "yyyy-mm-dd hh:mm:ss"
 
@@ -39,6 +45,7 @@ __all__ = [
 ResultsMapping = SegResultsMapping
 SUMMARY_HEADER_FONT = Font(bold=True)
 HEADER_FILL = PatternFill(patternType="solid", fgColor="FFFF40FF")
+BIRTHDAY_FILL = PatternFill(patternType="solid", fgColor="FF8EFA00")
 HEADER_BORDER = Border(
     left=Side(style="thin", color="000000"),
     right=Side(style="thin", color="000000"),
@@ -127,6 +134,37 @@ def _autosize(ws: Worksheet) -> None:
 ## Row construction handled in segment_aggregation
 
 
+def _format_runner_birthday_column(df: pd.DataFrame) -> None:
+    if BIRTHDAY_COLUMN not in df.columns:
+        return
+
+    def _format_cell(value: object) -> object:
+        if pd.isna(value) or str(value).strip() == "":
+            return None
+        parsed: pd.Timestamp | None = None
+        if isinstance(value, tuple) and len(value) == 2:
+            month, day = value
+            try:
+                parsed = pd.Timestamp(datetime(2000, int(month), int(day)))
+            except (TypeError, ValueError):
+                parsed = None
+        if parsed is None:
+            parsed = pd.to_datetime(value, errors="coerce")
+        if (parsed is None or pd.isna(parsed)) and isinstance(value, str):
+            text = value.strip()
+            if text:
+                try:
+                    parsed = pd.Timestamp(datetime.strptime(f"{text}-2000", "%d-%b-%Y"))
+                except ValueError:
+                    parsed = None
+        if parsed is None or pd.isna(parsed):
+            return value
+        month_label = parsed.strftime("%b")
+        return f"{int(parsed.day):02d}-{month_label}"
+
+    df[BIRTHDAY_COLUMN] = df[BIRTHDAY_COLUMN].map(_format_cell)
+
+
 def _write_segment_sheets(
     writer: pd.ExcelWriter,
     results: ResultsMapping,
@@ -141,6 +179,7 @@ def _write_segment_sheets(
         if ws is None:
             continue
         _style_header_row(ws, 1, len(df.columns))
+        _apply_birthday_bonus_fill(ws, df)
         summary_df = getattr(df, "attrs", {}).get("segment_summary")
         if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
             _append_segment_summary(ws, summary_df)
@@ -245,6 +284,38 @@ def _style_header_row(ws: Worksheet, row_idx: int, max_col: int | None = None) -
         cell.border = HEADER_BORDER
 
 
+def _apply_birthday_bonus_fill(ws: Worksheet, df: pd.DataFrame) -> None:
+    if ws is None or df is None:
+        return
+    bonus_rows = getattr(df, "attrs", {}).get(BIRTHDAY_ATTR)
+    if not bonus_rows:
+        return
+    columns = list(df.columns)
+
+    def _col_index(name: str) -> int | None:
+        try:
+            return columns.index(name) + 1
+        except ValueError:
+            return None
+
+    target_cols = [
+        _col_index(FASTEST_SEC_COL),
+        _col_index(FASTEST_FMT_COL),
+        _col_index(FASTEST_DATE_COL),
+    ]
+    target_cols = [idx for idx in target_cols if idx is not None]
+    if not target_cols:
+        return
+    for row_idx in bonus_rows:
+        try:
+            excel_row = int(row_idx) + 2  # account for header row
+        except (TypeError, ValueError):
+            continue
+        for col_idx in target_cols:
+            cell = ws.cell(row=excel_row, column=col_idx)
+            cell.fill = BIRTHDAY_FILL
+
+
 def _normalise_value(value: object) -> str:
     """Normalise Strava IDs for consistent comparisons."""
 
@@ -279,6 +350,7 @@ def update_runner_refresh_tokens(
             if not mask.any():
                 continue
             df.loc[mask, REFRESH_TOKEN_COLUMN] = runner.refresh_token
+        _format_runner_birthday_column(df)
         with pd.ExcelWriter(
             filepath, engine="openpyxl", mode="a", if_sheet_exists="replace"
         ) as writer:
@@ -303,6 +375,7 @@ def update_single_runner_refresh_token(filepath: PathInput, runner: Runner) -> N
         id_series = _normalise_ids(df[STRAVA_ID_COLUMN])
         runner_id = _normalise_value(runner.strava_id)
         df.loc[id_series == runner_id, REFRESH_TOKEN_COLUMN] = runner.refresh_token
+        _format_runner_birthday_column(df)
         try:
             with pd.ExcelWriter(
                 filepath, engine="openpyxl", mode="a", if_sheet_exists="replace"

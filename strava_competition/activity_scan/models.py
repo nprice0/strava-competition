@@ -20,3 +20,4 @@ class ActivityScanResult:
     moving_time: float | None
     effort_ids: List[int | str] = field(default_factory=list)
     inspected_activities: List[Dict[str, object]] = field(default_factory=list)
+    birthday_bonus_applied: bool = False

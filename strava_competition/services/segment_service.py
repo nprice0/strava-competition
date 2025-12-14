@@ -43,7 +43,8 @@ class SegmentService:
         )
         self._activity_cache_lock = threading.RLock()
         self._activity_scanner = ActivityEffortScanner(
-            activity_provider=self._get_runner_activities
+            activity_provider=self._get_runner_activities,
+            elapsed_adjuster=self._adjust_elapsed_for_birthday,
         )
 
     def process(
@@ -412,6 +413,7 @@ class SegmentService:
             "fastest_activity_id": scan.fastest_activity_id,
             "fastest_effort_id": scan.fastest_effort_id,
             "moving_time": scan.moving_time,
+            "birthday_bonus_applied": scan.birthday_bonus_applied,
         }
         attempts = scan.attempts if scan.attempts > 0 else 1
         return SegmentResult(
@@ -421,6 +423,7 @@ class SegmentService:
             attempts=attempts,
             fastest_time=scan.fastest_elapsed,
             fastest_date=scan.fastest_start_date,
+            birthday_bonus_applied=scan.birthday_bonus_applied,
             source="activity_scan",
             diagnostics=diagnostics,
         )
@@ -439,7 +442,7 @@ class SegmentService:
         if not efforts:
             return None
 
-        valid: List[tuple[float, dict]] = []
+        valid: List[tuple[float, float, datetime | None, dict, bool]] = []
         for effort in efforts:
             if not isinstance(effort, dict):
                 continue
@@ -447,26 +450,39 @@ class SegmentService:
             elapsed_f = self._coerce_float(elapsed)
             if elapsed_f is None or elapsed_f <= 0:
                 continue
-            valid.append((elapsed_f, effort))
+            start_dt = parse_iso_datetime(
+                effort.get("start_date_local") or effort.get("start_date")
+            )
+            adjusted_elapsed, bonus_applied = self._adjust_elapsed_for_birthday(
+                runner,
+                segment,
+                elapsed_f,
+                start_dt,
+            )
+            valid.append((adjusted_elapsed, elapsed_f, start_dt, effort, bonus_applied))
 
         if not valid:
             return None
 
         valid.sort(key=lambda item: item[0])
-        fastest_elapsed, fastest_effort = valid[0]
-        fastest_date = parse_iso_datetime(
-            fastest_effort.get("start_date_local") or fastest_effort.get("start_date")
-        )
+        (
+            fastest_adjusted,
+            fastest_raw,
+            fastest_date,
+            fastest_effort,
+            bonus_applied,
+        ) = valid[0]
 
         diagnostics: Dict[str, object] = {
             "source": "strava",
             "effort_ids": [
                 effort.get("id")
-                for _, effort in valid
+                for _, _, _, effort, _ in valid
                 if isinstance(effort.get("id"), (int, str))
             ],
             "best_effort_id": fastest_effort.get("id"),
             "moving_time": fastest_effort.get("moving_time"),
+            "birthday_bonus_applied": bonus_applied,
         }
 
         attempts = len(valid)
@@ -476,8 +492,9 @@ class SegmentService:
             team=team,
             segment=segment.name,
             attempts=attempts,
-            fastest_time=fastest_elapsed,
+            fastest_time=fastest_adjusted,
             fastest_date=fastest_date,
+            birthday_bonus_applied=bonus_applied,
             source="strava",
             diagnostics=diagnostics,
         )
@@ -522,6 +539,22 @@ class SegmentService:
             return float(value)
         except (TypeError, ValueError):
             return None
+
+    def _adjust_elapsed_for_birthday(
+        self,
+        runner: Runner,
+        segment: Segment,
+        elapsed_seconds: float,
+        effort_date: datetime | None,
+    ) -> tuple[float, bool]:
+        bonus = segment.birthday_bonus_seconds or 0.0
+        if bonus <= 0 or not effort_date or not runner.birthday:
+            return float(elapsed_seconds), False
+        month, day = runner.birthday
+        if effort_date.month != month or effort_date.day != day:
+            return float(elapsed_seconds), False
+        adjusted = max(0.0, float(elapsed_seconds) - bonus)
+        return adjusted, True
 
 
 __all__ = ["SegmentService"]

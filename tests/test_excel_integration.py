@@ -21,6 +21,7 @@ def make_input_workbook(path):
                 "Start Date": datetime(2024, 1, 1),
                 "End Date": datetime(2024, 1, 31),
                 "Default Time": None,
+                "Birthday Bonus (secs)": 5,
             }
         ]
     )
@@ -32,6 +33,7 @@ def make_input_workbook(path):
                 "Refresh Token": "rt1",
                 "Segment Series Team": "Red",
                 "Distance Series Team": "Red",
+                "Birthday (dd-mmm)": "15-Jan",
             },
             {
                 "Name": "Ben",
@@ -39,6 +41,7 @@ def make_input_workbook(path):
                 "Refresh Token": "rt2",
                 "Segment Series Team": "Blue",
                 "Distance Series Team": None,
+                "Birthday (dd-mmm)": "01-Feb",
             },
             {
                 "Name": "Carl",
@@ -46,6 +49,7 @@ def make_input_workbook(path):
                 "Refresh Token": "rt3",
                 "Segment Series Team": "Red",
                 "Distance Series Team": "Red",
+                "Birthday (dd-mmm)": "20-Mar",
             },
         ]
     )
@@ -121,11 +125,11 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
     assert len(detail_df) == 3
     df_sorted = detail_df.sort_values("Runner").reset_index(drop=True)
     runner_to_rank = dict(zip(df_sorted["Runner"], df_sorted["Rank"]))
-    assert runner_to_rank["Carl"] == 1
-    assert runner_to_rank["Alice"] == 2
+    assert runner_to_rank["Alice"] == 1
+    assert runner_to_rank["Carl"] == 2
     assert runner_to_rank["Ben"] == 3
     runner_to_time = dict(zip(df_sorted["Runner"], df_sorted["Fastest Time (h:mm:ss)"]))
-    assert runner_to_time["Carl"] == "0:01:52"
+    assert runner_to_time["Alice"] == "0:01:50"
     # Segment summary table appended beneath detail rows
     summary_header_row = None
     for idx in range(2, ws.max_row + 1):
@@ -155,9 +159,24 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
     assert summary_rows[0][2] == "0:00:00"
     assert summary_rows[0][3] == 3
     assert summary_rows[1][0] == "Red"
-    assert summary_rows[1][1] == "0:03:47"
-    assert summary_rows[1][2] == "0:01:49"
+    assert summary_rows[1][1] == "0:03:42"
+    assert summary_rows[1][2] == "0:01:44"
     assert summary_rows[1][3] == 3
-    assert summary_rows[1][4].startswith("Carl")
+    assert summary_rows[1][4].startswith("Alice")
     assert float(summary_rows[0][-1]) == pytest.approx(1.0)
     assert float(summary_rows[1][-1]) == pytest.approx(2.0)
+
+    headers = [cell.value for cell in ws[1]]
+    fastest_sec_idx = headers.index("Fastest Time (sec)") + 1
+    fastest_fmt_idx = headers.index("Fastest Time (h:mm:ss)") + 1
+    fastest_date_idx = headers.index("Fastest Date") + 1
+    alice_row_idx = None
+    for row_idx in range(2, summary_header_row):
+        if ws.cell(row=row_idx, column=2).value == "Alice":
+            alice_row_idx = row_idx
+            break
+    assert alice_row_idx is not None
+    for col_idx in (fastest_sec_idx, fastest_fmt_idx, fastest_date_idx):
+        fill = ws.cell(row=alice_row_idx, column=col_idx).fill
+        assert fill is not None
+        assert fill.fgColor.rgb in ("FF8EFA00", "008EFA00")

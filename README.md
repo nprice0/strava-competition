@@ -168,10 +168,11 @@ token files to version control. If you flip the flag on:
 All sheet names are case-sensitive.
 
 - `Segment Series`: segment ID, segment name, start date, end date, default time
-- `Runners`: name, Strava ID, refresh token, segment team, distance team
+- `Runners`: name, Strava ID, refresh token, segment team, distance team,
+  **Birthday (dd-mmm)**
 - Optional `Distance Series`: start date, end date, distance threshold (km)
 
-Leave a team column blank and that runner quietly skips the related competition. Dates can be Excel dates or ISO strings—pandas is happy with either.
+Leave a team column blank and that runner quietly skips the related competition. Runner birthdays must stay in `dd-MMM` form (e.g. `07-May`). The reader accepts Excel dates or ISO strings, but when the workbook is rewritten the values are normalised to that format. Other date columns can be Excel dates or ISO strings—pandas is happy with either.
 
 `Default Time` accepts `HH:MM:SS`, Excel time values, or raw seconds. Every runner with no recorded effort picks up this fallback so rankings always account for the full roster.
 

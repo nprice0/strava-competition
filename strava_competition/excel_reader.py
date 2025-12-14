@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, time, timedelta
+import re
 from pathlib import Path
 from typing import Iterator, List, Optional
 
@@ -24,12 +25,14 @@ _SEGMENT_NAME_COL = "Segment Name"
 _SEGMENT_START_COL = "Start Date"
 _SEGMENT_END_COL = "End Date"
 _SEGMENT_DEFAULT_TIME_COL = "Default Time"
+_SEGMENT_BIRTHDAY_BONUS_COL = "Birthday Bonus (secs)"
 _REQUIRED_SEGMENT_COLS = {
     _SEGMENT_ID_COL,
     _SEGMENT_NAME_COL,
     _SEGMENT_START_COL,
     _SEGMENT_END_COL,
     _SEGMENT_DEFAULT_TIME_COL,
+    _SEGMENT_BIRTHDAY_BONUS_COL,
 }
 _REQUIRED_RUNNER_COLS = {
     "Name",
@@ -37,6 +40,7 @@ _REQUIRED_RUNNER_COLS = {
     "Refresh Token",
     "Segment Series Team",
     "Distance Series Team",
+    "Birthday (dd-mmm)",
 }
 _REQUIRED_DISTANCE_COLS = {
     _SEGMENT_START_COL,
@@ -89,6 +93,34 @@ def _clean_team(value: object) -> Optional[str]:
     if _is_blank(value):
         return None
     return str(value).strip()
+
+
+def _parse_runner_birthday(
+    value: object, runner_name: str, row_label: str
+) -> tuple[int, int] | None:
+    if _is_blank(value):
+        return None
+    parsed: pd.Timestamp | None = None
+    if isinstance(value, (pd.Timestamp, datetime)):
+        parsed = pd.Timestamp(value)
+    else:
+        string_value = str(value).strip()
+        if not string_value:
+            return None
+        parsed = None
+        if re.fullmatch(r"\d{1,2}-[A-Za-z]{3}", string_value):
+            try:
+                parsed_dt = datetime.strptime(f"{string_value}-2000", "%d-%b-%Y")
+                parsed = pd.Timestamp(parsed_dt)
+            except ValueError:
+                parsed = None
+        if parsed is None:
+            parsed = pd.to_datetime(string_value, errors="coerce")
+    if parsed is None or pd.isna(parsed):
+        raise ExcelFormatError(
+            f"Runner '{runner_name}' in {row_label} has invalid birthday value '{value}'"
+        )
+    return (int(parsed.month), int(parsed.day))
 
 
 def _seconds_from_timedelta(value: object) -> float | None:
@@ -160,6 +192,23 @@ def _parse_segment_default_time(
     if seconds <= 0:
         raise ExcelFormatError(
             f"Segment '{seg_name}' in {row_label} has non-positive default time '{value}'"
+        )
+    return float(seconds)
+
+
+def _parse_segment_birthday_bonus(
+    value: object, seg_name: str, row_label: str
+) -> float | None:
+    if _is_blank(value):
+        return None
+    seconds = _coerce_duration_seconds(value)
+    if seconds is None:
+        raise ExcelFormatError(
+            f"Segment '{seg_name}' in {row_label} has invalid Birthday Bonus (secs) value '{value}'"
+        )
+    if seconds < 0:
+        raise ExcelFormatError(
+            f"Segment '{seg_name}' in {row_label} has negative Birthday Bonus (secs) value '{value}'"
         )
     return float(seconds)
 
@@ -237,6 +286,7 @@ def read_segments(
         _SEGMENT_START_COL,
         _SEGMENT_END_COL,
         _SEGMENT_DEFAULT_TIME_COL,
+        _SEGMENT_BIRTHDAY_BONUS_COL,
     ]
     for row_offset, (
         seg_id,
@@ -244,6 +294,7 @@ def read_segments(
         start_dt,
         end_dt,
         default_time_raw,
+        birthday_bonus_raw,
     ) in enumerate(df[columns].itertuples(index=False, name=None), start=2):
         row_label = f"row {row_offset}"
         # Validate date range early
@@ -265,6 +316,9 @@ def read_segments(
                 end_date=end_dt,
                 default_time_seconds=_parse_segment_default_time(
                     default_time_raw, str(seg_name), row_label
+                ),
+                birthday_bonus_seconds=_parse_segment_birthday_bonus(
+                    birthday_bonus_raw, str(seg_name), row_label
                 ),
             )
         )
@@ -290,10 +344,16 @@ def read_runners(
         "Refresh Token",
         "Segment Series Team",
         "Distance Series Team",
+        "Birthday (dd-mmm)",
     ]
-    for row_offset, (name, strava_id, refresh_token, seg_team, dist_team) in enumerate(
-        df[columns].itertuples(index=False, name=None), start=2
-    ):
+    for row_offset, (
+        name,
+        strava_id,
+        refresh_token,
+        seg_team,
+        dist_team,
+        birthday_raw,
+    ) in enumerate(df[columns].itertuples(index=False, name=None), start=2):
         if all(
             _is_blank(value)
             for value in (name, strava_id, refresh_token, seg_team, dist_team)
@@ -304,6 +364,7 @@ def read_runners(
         clean_name = _clean_required_name(name, row_label)
         strava_id_val = _parse_strava_id(strava_id, clean_name, row_label)
         refresh_val = _clean_refresh_token(refresh_token, clean_name, row_label)
+        birthday_value = _parse_runner_birthday(birthday_raw, clean_name, row_label)
 
         runners.append(
             Runner(
@@ -312,6 +373,7 @@ def read_runners(
                 refresh_token=refresh_val,
                 segment_team=_clean_team(seg_team),
                 distance_team=_clean_team(dist_team),
+                birthday=birthday_value,
             )
         )
     return runners

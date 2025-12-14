@@ -10,6 +10,7 @@ from strava_competition.excel_writer import (
     REFRESH_TOKEN_COLUMN,
     SEGMENT_TEAM_COLUMN,
     DISTANCE_TEAM_COLUMN,
+    BIRTHDAY_COLUMN,
     update_runner_refresh_tokens,
     update_single_runner_refresh_token,
 )
@@ -26,6 +27,11 @@ def runners_sheet(tmp_path):
             REFRESH_TOKEN_COLUMN: ["tok1", "tok2", "tok3"],
             SEGMENT_TEAM_COLUMN: [None, None, None],
             DISTANCE_TEAM_COLUMN: [None, None, None],
+            BIRTHDAY_COLUMN: [
+                pd.Timestamp("2001-05-10"),
+                "3-Nov",
+                pd.Timestamp("1999-01-01 08:00:00"),
+            ],
         }
     )
     with pd.ExcelWriter(path, engine="openpyxl") as writer:
@@ -53,6 +59,18 @@ def test_update_runner_refresh_tokens_updates_all_rows(runners_sheet):
     assert _refresh_token_for(result, "101") == "new-ana"
     assert _refresh_token_for(result, "202") == "new-ben"
     assert _refresh_token_for(result, "303") == "new-cara"
+
+
+def test_update_runner_refresh_tokens_formats_birthdays(runners_sheet):
+    runners = [Runner("Ana", "101", "tok-new")]
+
+    update_runner_refresh_tokens(str(runners_sheet), runners)
+
+    result = pd.read_excel(runners_sheet, sheet_name=RUNNERS_SHEET)
+    birthdays = result[BIRTHDAY_COLUMN].tolist()
+    assert birthdays[0] == "10-May"
+    assert birthdays[1] == "03-Nov"
+    assert birthdays[2] == "01-Jan"
 
 
 def test_update_single_runner_refresh_token_threadsafe(runners_sheet):
