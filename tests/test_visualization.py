@@ -83,7 +83,7 @@ def test_create_deviation_map_highlights_divergence(
         for child in map_object._children.values()
         if isinstance(child, folium.vector_layers.PolyLine)
     }
-    assert "#d73027" in polyline_colors, "Divergent section should be highlighted"
+    assert "#900700" in polyline_colors, "Divergent section should be highlighted"
 
     html = output_path.read_text(encoding="utf-8")
     assert "Max deviation" in html

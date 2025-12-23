@@ -121,7 +121,10 @@ def fetch_activity_streams(
 def fetch_activity_metadata(token: str, activity_id: int) -> Dict[str, Any]:
     """Fetch basic activity metadata for GPX header info."""
     url = f"{STRAVA_BASE_URL}/activities/{activity_id}"
-    return _http_get(url, token)
+    data = _http_get(url, token)
+    if not isinstance(data, dict):
+        raise RuntimeError(f"Unexpected response type: {type(data)}")
+    return data
 
 
 def streams_to_gpx(
