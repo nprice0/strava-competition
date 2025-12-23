@@ -91,6 +91,15 @@ OUTPUT_FILE = "data/competition_results"
 OUTPUT_FILE_TIMESTAMP_ENABLED = True  # adds _YYYYMMDD_HHMMSS
 ```
 
+Quick reference for the default on-disk layout inside `data/`:
+
+- Input workbook: `data/competition_input.xlsx` (drop your Excel file here unless
+  you override paths on the CLI).
+- Results: `data/competition_results_<timestamp>.xlsx` when timestamping is on,
+  or `data/competition_results.xlsx` when you disable it.
+- GPX helpers: `data/gpx_output/` (auto-created by the CLI tools so exports live
+  alongside other generated artifacts).
+
 Performance tuning knobs—worker counts, HTTP pools, rate limits, retry strategy, and so on—also live in this file. Tweak them only when you have a concrete reason.
 
 Create a `.env` file in the project root so credentials stay out of source control:
@@ -210,14 +219,16 @@ same configuration as the main app:
   a runner. Run `python -m strava_competition.tools.fetch_runner_segment_efforts --help`
   to check the flags.
 - `fetch_activity_gps`: fetches GPS coordinates for a specific activity using
-  Strava's Streams API. Outputs to `data/gpx_output/activity_<id>.gpx` by default (GPX format).
+  Strava's Streams API. Outputs to `data/gpx_output/activity_<id>.gpx` by default (GPX format)
+  and creates the directory if it isn't there yet.
   Altitude, time, and distance data are included by default; use `--no-altitude`,
   `--no-time`, or `--no-distance` to exclude. Use `--output-file` to override the
   output path, or `--no-file` to print to stdout. Run
   `python -m strava_competition.tools.fetch_activity_gps --help` for usage.
 - `fetch_segment_gpx`: exports a Strava segment as a GPX route file for sharing
   or importing into GPS devices and mapping apps. Outputs to `data/gpx_output/segment_<id>.gpx`
-  by default. Use `--output-file` to override the output path, or `--no-file` to print
+  by default and creates the directory automatically. Use `--output-file` to override
+  the output path, or `--no-file` to print
   to stdout. Run `python -m strava_competition.tools.fetch_segment_gpx --help` for usage.
 - `deviation_map`: builds an interactive Folium map that highlights gate crossings
   and large deviations for a runner/segment pair. Launch it via
