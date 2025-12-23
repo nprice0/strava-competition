@@ -30,12 +30,16 @@ from __future__ import annotations
 
 import argparse
 import logging
+from pathlib import Path
 from typing import Any, Dict, List, Tuple
 
 import requests
 from polyline import decode as polyline_decode
 
 from strava_competition.auth import get_access_token
+
+# Default output directory for GPX files
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / "gpx_output"
 from strava_competition.config import REQUEST_TIMEOUT, STRAVA_BASE_URL
 
 LOGGER = logging.getLogger("fetch_segment_gpx")
@@ -201,7 +205,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-file",
-        help="Write output to file instead of stdout",
+        help="Output file path (default: gpx_output/segment_<id>.gpx)",
+    )
+    parser.add_argument(
+        "--no-file",
+        action="store_true",
+        help="Print to stdout instead of writing to file",
     )
     parser.add_argument(
         "--log-level",
@@ -247,13 +256,21 @@ def main() -> None:
     # Format output as GPX
     output = segment_to_gpx(segment)
 
-    # Write or print
-    if args.output_file:
-        with open(args.output_file, "w", encoding="utf-8") as f:
-            f.write(output)
-        LOGGER.info("Output written to %s", args.output_file)
-    else:
+    # Determine output path
+    if args.no_file:
         print(output)
+    else:
+        if args.output_file:
+            output_path = Path(args.output_file)
+        else:
+            # Default to gpx_output/segment_<id>.gpx
+            DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            output_path = DEFAULT_OUTPUT_DIR / f"segment_{args.segment_id}.gpx"
+        
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(output)
+        LOGGER.info("Output written to %s", output_path)
 
 
 if __name__ == "__main__":

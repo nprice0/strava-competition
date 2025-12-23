@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Quick Strava probe for a runner's segment efforts on a specific day.
 
-The script mirrors the curl/HTTPie flow you described:
+The script mirrors the curl/HTTP flow to fetch activities for a runner on a
+given day, then retrieves each activity's details with all segment efforts:
 
 1. Exchange the provided refresh token for a short-lived access token.
 2. Call ``GET /athlete/activities`` with ``before``/``after`` filters for the
