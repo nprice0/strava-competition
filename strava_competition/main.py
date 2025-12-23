@@ -1,3 +1,4 @@
+import argparse
 from datetime import datetime, timezone
 import logging
 from typing import Any, List, Sequence, Tuple
@@ -38,14 +39,9 @@ def _setup_logging() -> None:
         )
 
 
-def _resolve_output_path() -> str:
-    if OUTPUT_FILE_TIMESTAMP_ENABLED:
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
-        return f"{OUTPUT_FILE}_{timestamp}.xlsx"
-    return f"{OUTPUT_FILE}.xlsx"
-
-
-def _load_inputs() -> Tuple[
+def _load_inputs(
+    input_file: str,
+) -> Tuple[
     List[Segment],
     List[Runner],
     List[DistanceWindow],
@@ -53,10 +49,10 @@ def _load_inputs() -> Tuple[
     List[Runner],
 ]:
     logging.info("Loading segments, runners and distance windows ...")
-    with workbook_context(INPUT_FILE) as workbook:
-        segments = read_segments(INPUT_FILE, workbook=workbook)
-        runners = read_runners(INPUT_FILE, workbook=workbook)
-        distance_windows = read_distance_windows(INPUT_FILE, workbook=workbook)
+    with workbook_context(input_file) as workbook:
+        segments = read_segments(input_file, workbook=workbook)
+        runners = read_runners(input_file, workbook=workbook)
+        distance_windows = read_distance_windows(input_file, workbook=workbook)
     segment_runners = [r for r in runners if r.segment_team]
     distance_runners = [r for r in runners if r.distance_team]
     if distance_windows:
@@ -66,7 +62,7 @@ def _load_inputs() -> Tuple[
     return segments, runners, distance_windows, segment_runners, distance_runners
 
 
-def _ensure_tokens_early(runners: Sequence[Runner]) -> None:
+def _ensure_tokens_early(runners: Sequence[Runner], input_file: str) -> None:
     any_token_rotated = False
     for r in runners:
         before = getattr(r, "refresh_token", None)
@@ -89,7 +85,7 @@ def _ensure_tokens_early(runners: Sequence[Runner]) -> None:
         if before and after and before != after:
             any_token_rotated = True
     if any_token_rotated:
-        update_runner_refresh_tokens(INPUT_FILE, runners)
+        update_runner_refresh_tokens(input_file, runners)
         logging.info("Persisted rotated refresh tokens early (pre-processing)")
 
 
@@ -126,11 +122,11 @@ def _process_distance(
     return distance_windows_results
 
 
-def _persist_tokens_final(runners: Sequence[Runner]) -> None:
+def _persist_tokens_final(runners: Sequence[Runner], input_file: str) -> None:
     rotated = False
     try:
         # Always write once more defensively (lightweight operation).
-        update_runner_refresh_tokens(INPUT_FILE, runners)
+        update_runner_refresh_tokens(input_file, runners)
         rotated = True
     except (OSError, PermissionError) as e:
         logging.warning("Failed to persist refresh tokens at shutdown: %s", e)
@@ -141,9 +137,38 @@ def _persist_tokens_final(runners: Sequence[Runner]) -> None:
             logging.info("Refresh tokens persisted at shutdown.")
 
 
+def _parse_args() -> argparse.Namespace:
+    """Parse command-line arguments."""
+    parser = argparse.ArgumentParser(
+        prog="strava_competition",
+        description="Run the Strava competition aggregation.",
+    )
+    parser.add_argument(
+        "--input",
+        "-i",
+        default=INPUT_FILE,
+        help=f"Path to the input Excel workbook (default: {INPUT_FILE})",
+    )
+    parser.add_argument(
+        "--output",
+        "-o",
+        default=OUTPUT_FILE,
+        help=f"Output file base name without extension (default: {OUTPUT_FILE})",
+    )
+    return parser.parse_args()
+
+
 def main() -> None:
     _setup_logging()
-    output_file = _resolve_output_path()
+    args = _parse_args()
+    input_file = args.input
+    output_base = args.output
+
+    if OUTPUT_FILE_TIMESTAMP_ENABLED:
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        output_file = f"{output_base}_{timestamp}.xlsx"
+    else:
+        output_file = f"{output_base}.xlsx"
 
     try:
         (
@@ -152,13 +177,13 @@ def main() -> None:
             distance_windows,
             segment_runners,
             distance_runners,
-        ) = _load_inputs()
+        ) = _load_inputs(input_file)
     except (ExcelFormatError, FileNotFoundError) as exc:
-        logging.error("Failed to load input workbook '%s': %s", INPUT_FILE, exc)
+        logging.error("Failed to load input workbook '%s': %s", input_file, exc)
         return
 
     # Early token refresh & persistence to avoid losing rotated refresh tokens
-    _ensure_tokens_early(runners)
+    _ensure_tokens_early(runners, input_file)
 
     try:
         results = _process_segments(segments, segment_runners)
@@ -174,4 +199,4 @@ def main() -> None:
             len(distance_windows_results),
         )
     finally:
-        _persist_tokens_final(runners)
+        _persist_tokens_final(runners, input_file)

@@ -46,7 +46,9 @@ from strava_competition.auth import get_access_token
 from strava_competition.config import REQUEST_TIMEOUT, STRAVA_BASE_URL
 
 # Default output directory for GPX files
-DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / "gpx_output"
+DEFAULT_OUTPUT_DIR = (
+    Path(__file__).resolve().parent.parent.parent / "data" / "gpx_output"
+)
 
 LOGGER = logging.getLogger("fetch_activity_gps")
 

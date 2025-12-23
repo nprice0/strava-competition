@@ -81,16 +81,14 @@ On Windows use `py -3 -m venv .venv` and `.venv\Scripts\activate` instead of `so
 
 ## Configure the app
 
-Edit `strava_competition/config.py` to point at your input and output files and to set Strava credentials:
+The app looks for input/output files in the `data/` folder by default. You can override
+paths via command-line arguments (see [Run it](#run-it)) or by editing the defaults in
+`strava_competition/config.py`:
 
 ```python
-INPUT_FILE = "/absolute/path/to/competition_input.xlsx"
-OUTPUT_FILE = "/absolute/path/for/output/competition_results"
+INPUT_FILE = "data/competition_input.xlsx"
+OUTPUT_FILE = "data/competition_results"
 OUTPUT_FILE_TIMESTAMP_ENABLED = True  # adds _YYYYMMDD_HHMMSS
-
-import os
-CLIENT_ID = os.getenv("STRAVA_CLIENT_ID", "")
-CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
 ```
 
 Performance tuning knobs—worker counts, HTTP pools, rate limits, retry strategy, and so on—also live in this file. Tweak them only when you have a concrete reason.
@@ -212,13 +210,13 @@ same configuration as the main app:
   a runner. Run `python -m strava_competition.tools.fetch_runner_segment_efforts --help`
   to check the flags.
 - `fetch_activity_gps`: fetches GPS coordinates for a specific activity using
-  Strava's Streams API. Outputs to `gpx_output/activity_<id>.gpx` by default (GPX format).
+  Strava's Streams API. Outputs to `data/gpx_output/activity_<id>.gpx` by default (GPX format).
   Altitude, time, and distance data are included by default; use `--no-altitude`,
   `--no-time`, or `--no-distance` to exclude. Use `--output-file` to override the
   output path, or `--no-file` to print to stdout. Run
   `python -m strava_competition.tools.fetch_activity_gps --help` for usage.
 - `fetch_segment_gpx`: exports a Strava segment as a GPX route file for sharing
-  or importing into GPS devices and mapping apps. Outputs to `gpx_output/segment_<id>.gpx`
+  or importing into GPS devices and mapping apps. Outputs to `data/gpx_output/segment_<id>.gpx`
   by default. Use `--output-file` to override the output path, or `--no-file` to print
   to stdout. Run `python -m strava_competition.tools.fetch_segment_gpx --help` for usage.
 - `deviation_map`: builds an interactive Folium map that highlights gate crossings
@@ -236,13 +234,33 @@ modules so existing scripts keep working.
 
 ## Run it
 
-With your virtual environment active, run either command from the repo root:
+With your virtual environment active, run from the repo root:
 
 ```bash
 python -m strava_competition
-# or
-python run.py
 ```
+
+By default, the app reads from `data/competition_input.xlsx` and writes results to
+`data/competition_results_<timestamp>.xlsx`. Override these paths with command-line
+arguments:
+
+```bash
+# Show available options
+python -m strava_competition --help
+
+# Use custom input and output paths
+python -m strava_competition \
+  --input /Users/me/Documents/strava/my_competition.xlsx \
+  --output /Users/me/Documents/strava/results
+
+# Short flags work too
+python -m strava_competition -i ~/Dropbox/running/input.xlsx -o ~/Dropbox/running/output
+```
+
+| Flag       | Short | Description                                                       |
+| ---------- | ----- | ----------------------------------------------------------------- |
+| `--input`  | `-i`  | Path to the input Excel workbook                                  |
+| `--output` | `-o`  | Output file base name (timestamp and `.xlsx` added automatically) |
 
 The app reads the workbook, pulls the Strava data it needs, writes the results workbook named after `OUTPUT_FILE`, and updates runner tokens before it exits. Status logs stream to stdout and keep the sensitive bits redacted.
 

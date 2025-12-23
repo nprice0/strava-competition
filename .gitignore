@@ -1,6 +1,9 @@
 # GPX output files
 gpx_output/
 
+# Competition data files (input/output)
+data/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]

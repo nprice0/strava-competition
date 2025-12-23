@@ -59,9 +59,9 @@ if callable(_load_dotenv):
 # ---------------------------------------------------------------------------
 # Input/Output
 # ---------------------------------------------------------------------------
-# Paths can be absolute or relative.
-INPUT_FILE = "competition_input.xlsx"
-OUTPUT_FILE = "competition_results"
+# Paths can be absolute or relative. Default to data/ subfolder.
+INPUT_FILE = "data/competition_input.xlsx"
+OUTPUT_FILE = "data/competition_results"
 
 # Append _YYYYMMDD_HHMMSS to the output name when True.
 OUTPUT_FILE_TIMESTAMP_ENABLED = True
