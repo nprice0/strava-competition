@@ -212,13 +212,15 @@ same configuration as the main app:
   a runner. Run `python -m strava_competition.tools.fetch_runner_segment_efforts --help`
   to check the flags.
 - `fetch_activity_gps`: fetches GPS coordinates for a specific activity using
-  Strava's Streams API. Outputs JSON or GPX format. Altitude, time, and distance
-  data are included by default; use `--no-altitude`, `--no-time`, or `--no-distance`
-  to exclude. Run `python -m strava_competition.tools.fetch_activity_gps --help`
-  for usage.
+  Strava's Streams API. Outputs to `gpx_output/activity_<id>.gpx` by default (GPX format).
+  Altitude, time, and distance data are included by default; use `--no-altitude`,
+  `--no-time`, or `--no-distance` to exclude. Use `--output-file` to override the
+  output path, or `--no-file` to print to stdout. Run
+  `python -m strava_competition.tools.fetch_activity_gps --help` for usage.
 - `fetch_segment_gpx`: exports a Strava segment as a GPX route file for sharing
-  or importing into GPS devices and mapping apps. Run
-  `python -m strava_competition.tools.fetch_segment_gpx --help` for usage.
+  or importing into GPS devices and mapping apps. Outputs to `gpx_output/segment_<id>.gpx`
+  by default. Use `--output-file` to override the output path, or `--no-file` to print
+  to stdout. Run `python -m strava_competition.tools.fetch_segment_gpx --help` for usage.
 - `deviation_map`: builds an interactive Folium map that highlights gate crossings
   and large deviations for a runner/segment pair. Launch it via
   `python -m strava_competition.tools.deviation_map --help` and drop the output

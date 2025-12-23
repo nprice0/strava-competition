@@ -68,11 +68,11 @@ def fetch_segment(token: str, segment_id: int) -> Dict[str, Any]:
     """Fetch segment details including polyline geometry.
 
     Args:
-        token: Valid Strava access token.
-        segment_id: The Strava segment ID.
+        token: Strava access token.
+        segment_id: Strava segment ID.
 
     Returns:
-        Dictionary with segment metadata and decoded coordinates.
+        Dict with segment metadata and decoded lat/lng coordinates.
     """
     url = f"{STRAVA_BASE_URL}/segments/{segment_id}"
     data = _http_get(url, token)
@@ -107,13 +107,13 @@ def fetch_segment(token: str, segment_id: int) -> Dict[str, Any]:
 
 
 def segment_to_gpx(segment: Dict[str, Any]) -> str:
-    """Convert segment data to GPX format.
+    """Convert segment data to GPX route format.
 
     Args:
-        segment: Segment dictionary with 'name' and 'points' keys.
+        segment: Segment dict with ``name`` and ``points`` keys.
 
     Returns:
-        GPX XML string representing the segment as a route.
+        GPX XML string.
     """
     name = segment.get("name", "Strava Segment")
     points: List[Tuple[float, float]] = segment.get("points", [])
@@ -266,7 +266,7 @@ def main() -> None:
             # Default to gpx_output/segment_<id>.gpx
             DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
             output_path = DEFAULT_OUTPUT_DIR / f"segment_{args.segment_id}.gpx"
-        
+
         output_path.parent.mkdir(parents=True, exist_ok=True)
         with open(output_path, "w", encoding="utf-8") as f:
             f.write(output)

@@ -37,11 +37,15 @@ import argparse
 import json
 import logging
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 import requests
 
 from strava_competition.auth import get_access_token
+
+# Default output directory for GPX files
+DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent.parent.parent / "gpx_output"
 from strava_competition.config import REQUEST_TIMEOUT, STRAVA_BASE_URL
 
 LOGGER = logging.getLogger("fetch_activity_gps")
@@ -77,15 +81,14 @@ def fetch_activity_streams(
     """Fetch GPS stream data for an activity.
 
     Args:
-        token: Valid Strava access token.
-        activity_id: The Strava activity ID.
+        token: Strava access token.
+        activity_id: Strava activity ID.
         include_altitude: Include elevation data.
         include_time: Include time offsets from activity start.
         include_distance: Include cumulative distance.
 
     Returns:
-        Dictionary with stream keys mapped to data arrays.
-        Always includes 'latlng'. Optional keys: 'altitude', 'time', 'distance'.
+        Dict mapping stream keys to data arrays. Always includes ``latlng``.
     """
     keys = ["latlng"]
     if include_altitude:
@@ -103,7 +106,7 @@ def fetch_activity_streams(
 
     payload = _http_get(url, token, params=params)
 
-    # Strava returns streams as a dict keyed by stream type when key_by_type=true
+    # Strava keys responses by stream type when key_by_type is set
     result: Dict[str, List[Any]] = {}
     if isinstance(payload, dict):
         for key in keys:
@@ -128,7 +131,7 @@ def streams_to_gpx(
     """Convert stream data to GPX format.
 
     Args:
-        streams: Dictionary containing at minimum 'latlng' stream.
+        streams: Dict containing at minimum ``latlng`` stream.
         metadata: Activity metadata for name and timestamps.
 
     Returns:
@@ -141,7 +144,7 @@ def streams_to_gpx(
     activity_name = metadata.get("name", "Strava Activity")
     start_date_str = metadata.get("start_date")
 
-    # Parse start time for computing point timestamps
+    # Parse start time to compute absolute timestamps for each point
     start_time: Optional[datetime] = None
     if start_date_str:
         if start_date_str.endswith("Z"):
@@ -261,7 +264,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--output-file",
-        help="Write output to file instead of stdout",
+        help="Output file path (default: gpx_output/activity_<id>.gpx)",
+    )
+    parser.add_argument(
+        "--no-file",
+        action="store_true",
+        help="Print to stdout instead of writing to file",
     )
     parser.add_argument(
         "--log-level",
@@ -324,13 +332,22 @@ def main() -> None:
             indent=2,
         )
 
-    # Write or print
-    if args.output_file:
-        with open(args.output_file, "w", encoding="utf-8") as f:
-            f.write(output)
-        LOGGER.info("Output written to %s", args.output_file)
-    else:
+    # Determine output path
+    if args.no_file:
         print(output)
+    else:
+        if args.output_file:
+            output_path = Path(args.output_file)
+        else:
+            # Default to gpx_output/activity_<id>.gpx
+            ext = "json" if args.output_format == "json" else "gpx"
+            DEFAULT_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+            output_path = DEFAULT_OUTPUT_DIR / f"activity_{args.activity_id}.{ext}"
+
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(output_path, "w", encoding="utf-8") as f:
+            f.write(output)
+        LOGGER.info("Output written to %s", output_path)
 
 
 if __name__ == "__main__":
