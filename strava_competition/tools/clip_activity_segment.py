@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
-import xml.etree.ElementTree as ET
+from defusedxml import ElementTree as ET
 
 import requests
 
@@ -352,7 +352,11 @@ def resolve_indices(
             raise SystemExit("end-index exceeds number of track points")
         return start_index, end_index
 
-    assert uses_time  # guarded above
+    if not uses_time:
+        raise SystemExit(
+            "Supply --start/--end times or --elapsed when not using indices"
+            " or --segment-efforts-json"
+        )
     if start_time is None:
         raise SystemExit("--start-time is required when slicing by time")
     if end_time is None:
@@ -392,7 +396,11 @@ def build_output_tree(
     tree: ET.ElementTree[ET.Element] = ET.parse(source)
     root = tree.getroot()
     trkseg = root.find(".//g:trkseg", GPX_NS)
-    assert trkseg is not None  # already validated in load_trackpoints
+    if trkseg is None:
+        raise SystemExit(
+            "GPX source is missing a <trkseg> block even though track points"
+            " were parsed"
+        )
     # Remove existing points and insert the slice while keeping metadata intact.
     for child in list(trkseg):
         trkseg.remove(child)
