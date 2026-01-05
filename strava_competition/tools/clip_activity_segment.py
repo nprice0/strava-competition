@@ -334,6 +334,8 @@ def resolve_indices(
             raise SystemExit(
                 "--activity-id is required when using --segment-efforts-json"
             )
+        if efforts_path is None:  # mypy: guarded by uses_json
+            raise SystemExit("--segment-efforts-json must be provided")
         start_index, end_index = _indices_from_segment_efforts(
             efforts_path, activity_id=activity_id, segment_id=segment_id
         )
@@ -358,7 +360,14 @@ def resolve_indices(
             raise SystemExit("Specify --end-time or --elapsed (seconds)")
         end_time = start_time + timedelta(seconds=elapsed)
 
-    point_times = [parse_iso8601(pt.find("g:time", GPX_NS).text) for pt in points]
+    point_times: List[datetime] = []
+    for idx, pt in enumerate(points):
+        time_el = pt.find("g:time", GPX_NS)
+        if time_el is None or time_el.text is None:
+            raise SystemExit(
+                f"Track point {idx} is missing a timestamp; cannot slice by time"
+            )
+        point_times.append(parse_iso8601(time_el.text))
     try:
         start_idx = next(idx for idx, ts in enumerate(point_times) if ts >= start_time)
     except StopIteration as exc:
@@ -379,8 +388,8 @@ def build_output_tree(
     points: List[ET.Element],
     start_idx: int,
     end_idx: int,
-) -> ET.ElementTree:
-    tree = ET.parse(source)
+) -> ET.ElementTree[ET.Element]:
+    tree: ET.ElementTree[ET.Element] = ET.parse(source)
     root = tree.getroot()
     trkseg = root.find(".//g:trkseg", GPX_NS)
     assert trkseg is not None  # already validated in load_trackpoints
@@ -537,6 +546,10 @@ def main() -> None:  # pragma: no cover - CLI glue
     )
 
     if auto_segment_mode:
+        if remote_fetcher is None:
+            raise SystemExit("Automatic segment mode requires a remote fetcher")
+        if args.segment_id is None:
+            raise SystemExit("Automatic segment mode requires --segment-id")
         auto_start, auto_end = remote_fetcher.indices_for_segment(args.segment_id)
         start_idx, end_idx = resolve_indices(
             points,
