@@ -178,6 +178,88 @@ def test_activity_scanner_ignores_bad_elapsed_times(
     assert result.fastest_effort_id == "kept"
 
 
+def test_activity_scanner_enforces_min_distance(
+    monkeypatch: pytest.MonkeyPatch, runner: Runner, segment: Segment
+) -> None:
+    activities = [{"id": 789, "name": "Long Run"}]
+    segment.min_distance_meters = 400.0
+
+    detail_payload = {
+        "segment_efforts": [
+            {
+                "id": "short",
+                "segment": {"id": segment.id},
+                "elapsed_time": 310,
+            },
+            {
+                "id": "long",
+                "segment": {"id": segment.id},
+                "elapsed_time": 320,
+                "start_date_local": "2024-01-01T09:00:00Z",
+            },
+        ]
+    }
+
+    scanner = ActivityEffortScanner(activity_provider=lambda *_: activities)
+    distance_map = {"short": 350.0, "long": 405.0}
+
+    def _fake_distance(_runner, effort, *, allow_stream=True):
+        return distance_map[effort["id"]]
+
+    monkeypatch.setattr(
+        "strava_competition.activity_scan.scanner.derive_effort_distance_m",
+        _fake_distance,
+    )
+    monkeypatch.setattr(
+        "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+        lambda *_args, **_kwargs: detail_payload,
+    )
+
+    result = scanner.scan_segment(runner, segment)
+
+    assert result is not None
+    assert result.attempts == 1
+    assert result.fastest_effort_id == "long"
+    assert result.filtered_efforts_below_distance == 1
+    assert result.fastest_distance_m == pytest.approx(405.0)
+
+
+def test_activity_scanner_distance_fallbacks_to_payload(
+    monkeypatch: pytest.MonkeyPatch, runner: Runner, segment: Segment
+) -> None:
+    activities = [{"id": 12, "name": "Morning"}]
+    segment.min_distance_meters = 300.0
+
+    detail_payload = {
+        "segment_efforts": [
+            {
+                "id": "with-distance",
+                "segment": {"id": segment.id},
+                "elapsed_time": 200,
+                "distance": 305.0,
+                "start_date_local": "2024-01-05T08:00:00Z",
+            }
+        ]
+    }
+
+    scanner = ActivityEffortScanner(activity_provider=lambda *_: activities)
+    monkeypatch.setattr(
+        "strava_competition.effort_distance.compute_effort_distance_from_payload",
+        lambda *_runner, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+        lambda *_args, **_kwargs: detail_payload,
+    )
+
+    result = scanner.scan_segment(runner, segment)
+
+    assert result is not None
+    assert result.attempts == 1
+    assert result.fastest_effort_id == "with-distance"
+    assert result.fastest_distance_m == pytest.approx(305.0)
+
+
 def test_activity_scanner_propagates_strava_api_error(
     monkeypatch: pytest.MonkeyPatch, runner: Runner, segment: Segment
 ) -> None:

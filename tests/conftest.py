@@ -33,6 +33,7 @@ def make_segment_results():
                     attempts=2,
                     fastest_time=100,
                     fastest_date="2025-01-01T10:00:00",
+                    fastest_distance_m=3100.0,
                 ),
                 SegmentResult(
                     runner="Runner2",
@@ -41,6 +42,7 @@ def make_segment_results():
                     attempts=1,
                     fastest_time=120,
                     fastest_date="2025-01-01T10:05:00",
+                    fastest_distance_m=3200.0,
                 ),
             ],
             "Team B": [
@@ -51,6 +53,7 @@ def make_segment_results():
                     attempts=3,
                     fastest_time=90,
                     fastest_date="2025-01-01T09:50:00",
+                    fastest_distance_m=3000.0,
                 ),
             ],
         },
@@ -63,6 +66,7 @@ def make_segment_results():
                     attempts=1,
                     fastest_time=110,
                     fastest_date="2025-01-02T11:00:00",
+                    fastest_distance_m=4100.0,
                 ),
             ],
             "Team C": [
@@ -73,6 +77,7 @@ def make_segment_results():
                     attempts=2,
                     fastest_time=80,
                     fastest_date="2025-01-02T11:15:00",
+                    fastest_distance_m=4200.0,
                 ),
             ],
         },

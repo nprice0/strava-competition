@@ -1,4 +1,5 @@
 from strava_competition.segment_aggregation import build_segment_outputs
+from strava_competition.models import SegmentResult
 
 
 def test_build_segment_outputs_includes_summary_and_ranking(segment_results):
@@ -12,7 +13,14 @@ def test_build_segment_outputs_includes_summary_and_ranking(segment_results):
     assert "Summary" in names
     # Find Climb sheet
     climb_df = dict(outputs)["Segment One"]
-    assert {"Team", "Runner", "Rank", "Fastest Time (sec)"}.issubset(climb_df.columns)
+    assert {
+        "Team",
+        "Runner",
+        "Rank",
+        "Fastest Time (sec)",
+        "Fastest Distance (m)",
+    }.issubset(climb_df.columns)
+    assert climb_df["Fastest Distance (m)"].notna().any()
     # Ranking: fastest_time -> 110 (Carl), 115 (Ben), 120 (Alice)
     ranks = {row.Runner: row.Rank for row in climb_df.itertuples() if row.Runner}
     # Validate ordering irrespective of which team produced fastest time
@@ -53,3 +61,23 @@ def test_build_segment_outputs_no_summary(segment_results):
     outputs = build_segment_outputs(segment_results, include_summary=False)
     names = [n for n, _ in outputs]
     assert "Summary" not in names
+
+
+def test_fastest_distance_zero_for_default_results():
+    zero_segment = {
+        "Team Z": [
+            SegmentResult(
+                runner="No Attempts",
+                team="Team Z",
+                segment="Zero Seg",
+                attempts=0,
+                fastest_time=150.0,
+                fastest_date=None,
+                fastest_distance_m=None,
+            )
+        ]
+    }
+    outputs = build_segment_outputs({"Zero Seg": zero_segment}, include_summary=False)
+    df = dict(outputs)["Zero Seg"]
+    row = df[df["Runner"] == "No Attempts"].iloc[0]
+    assert row["Fastest Distance (m)"] == 0

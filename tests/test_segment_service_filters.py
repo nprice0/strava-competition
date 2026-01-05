@@ -174,8 +174,84 @@ def test_default_time_results_added_for_missing_runners() -> None:
     assert default_result.fastest_date == segment.start_date
     assert default_result.source == "default_time"
     assert default_result.diagnostics.get("reason") == "default_time_applied"
+    assert default_result.fastest_distance_m == 0.0
     assert "Beta" in segment_results
     beta_default = segment_results["Beta"][0]
     assert beta_default.runner == "Cara"
     assert beta_default.fastest_time == pytest.approx(150.0)
     assert beta_default.fastest_date == segment.start_date
+    assert beta_default.fastest_distance_m == 0.0
+
+
+def test_result_from_efforts_filters_below_min_distance(
+    monkeypatch: pytest.MonkeyPatch, runner: Runner, segment: Segment
+) -> None:
+    monkeypatch.setattr(
+        "strava_competition.services.segment_service.FORCE_ACTIVITY_SCAN_FALLBACK",
+        False,
+        raising=False,
+    )
+    service = SegmentService(max_workers=1)
+    segment.min_distance_meters = 400.0
+    efforts = [
+        {
+            "id": "short",
+            "elapsed_time": 150,
+            "start_date_local": "2024-01-01T09:00:00Z",
+        },
+        {
+            "id": "long",
+            "elapsed_time": 140,
+            "start_date_local": "2024-01-01T09:15:00Z",
+        },
+    ]
+
+    distance_map = {"short": 350.0, "long": 450.0}
+
+    def _fake_distance(_runner, effort, *, allow_stream=True):
+        return distance_map[effort["id"]]
+
+    monkeypatch.setattr(
+        "strava_competition.services.segment_service.derive_effort_distance_m",
+        _fake_distance,
+    )
+
+    result = service._result_from_efforts(runner, segment, efforts)
+
+    assert result is not None
+    assert result.attempts == 1
+    assert result.fastest_time == pytest.approx(140)
+    assert result.diagnostics.get("filtered_efforts_below_distance") == 1
+    assert result.fastest_distance_m == pytest.approx(450.0)
+
+
+def test_result_from_efforts_fallbacks_to_payload_distance(
+    monkeypatch: pytest.MonkeyPatch, runner: Runner, segment: Segment
+) -> None:
+    monkeypatch.setattr(
+        "strava_competition.services.segment_service.FORCE_ACTIVITY_SCAN_FALLBACK",
+        False,
+        raising=False,
+    )
+    service = SegmentService(max_workers=1)
+    segment.min_distance_meters = 400.0
+    efforts = [
+        {
+            "id": "candidate",
+            "elapsed_time": 150,
+            "distance": 410.0,
+            "start_date_local": "2024-01-01T09:00:00Z",
+        }
+    ]
+
+    monkeypatch.setattr(
+        "strava_competition.effort_distance.compute_effort_distance_from_payload",
+        lambda *_args, **_kwargs: None,
+    )
+
+    result = service._result_from_efforts(runner, segment, efforts)
+
+    assert result is not None
+    assert result.attempts == 1
+    assert result.diagnostics.get("best_effort_id") == "candidate"
+    assert result.fastest_distance_m == pytest.approx(410.0)

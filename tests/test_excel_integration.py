@@ -21,6 +21,7 @@ def make_input_workbook(path):
                 "Start Date": datetime(2024, 1, 1),
                 "End Date": datetime(2024, 1, 31),
                 "Default Time": None,
+                "Minimum Distance (m)": 0,
                 "Birthday Bonus (secs)": 5,
             }
         ]
@@ -111,6 +112,7 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
         "Fastest Time (sec)",
         "Fastest Time (h:mm:ss)",
         "Fastest Date",
+        "Fastest Distance (m)",
     }.issubset(set(df.columns))
     # Raw sheet includes blank spacer and summary rows - drop them for runner-level assertions.
     assert df["Team"].isna().sum() >= 1

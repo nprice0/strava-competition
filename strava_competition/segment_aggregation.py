@@ -22,6 +22,7 @@ ATTEMPTS_COL = "Attempts"
 FASTEST_SEC_COL = "Fastest Time (sec)"
 FASTEST_FMT_COL = "Fastest Time (h:mm:ss)"
 FASTEST_DATE_COL = "Fastest Date"
+FASTEST_DISTANCE_COL = "Fastest Distance (m)"
 RANK_COL = "Rank"
 TEAM_RANK_COL = "Team Rank"
 BIRTHDAY_FLAG_COL = "_birthday_bonus_applied"
@@ -107,6 +108,9 @@ def _rows_for_segment(
     rows: List[dict] = []
     for _team, seg_results in segment_team_mapping.items():
         for r in seg_results:
+            distance_value = r.fastest_distance_m
+            if distance_value is None and (r.attempts or 0) == 0:
+                distance_value = 0.0
             rows.append(
                 {
                     TEAM_COL: r.team,
@@ -115,6 +119,7 @@ def _rows_for_segment(
                     FASTEST_SEC_COL: r.fastest_time,
                     FASTEST_FMT_COL: _format_fastest_time(r.fastest_time),
                     FASTEST_DATE_COL: r.fastest_date,
+                    FASTEST_DISTANCE_COL: _format_fastest_distance(distance_value),
                     BIRTHDAY_FLAG_COL: r.birthday_bonus_applied,
                 }
             )
@@ -136,6 +141,21 @@ def _format_fastest_time(seconds: float | None) -> str | None:
     minutes = (total_seconds % 3600) // 60
     secs = total_seconds % 60
     return f"{sign}{hours}:{minutes:02d}:{secs:02d}"
+
+
+def _format_fastest_distance(distance: float | None) -> float | None:
+    if distance is None:
+        return None
+    try:
+        value = float(distance)
+    except (TypeError, ValueError):
+        return None
+    if math.isnan(value):
+        return None
+    rounded = round(value, 1)
+    if rounded == 0.0:
+        return 0
+    return rounded
 
 
 def _insert_team_spacers(df: pd.DataFrame) -> pd.DataFrame:

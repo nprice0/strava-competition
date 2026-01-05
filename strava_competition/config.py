@@ -214,6 +214,7 @@ SEGMENT_COLUMN_ORDER = [
     "Fastest Time (sec)",
     "Fastest Time (h:mm:ss)",
     "Fastest Date",
+    "Fastest Distance (m)",
 ]
 
 # Automatically size columns after writing each sheet (openpyxl only).

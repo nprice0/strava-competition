@@ -18,6 +18,8 @@ class ActivityScanResult:
     fastest_activity_id: int | None
     fastest_start_date: datetime | None
     moving_time: float | None
+    fastest_distance_m: float | None = None
     effort_ids: List[int | str] = field(default_factory=list)
     inspected_activities: List[Dict[str, object]] = field(default_factory=list)
     birthday_bonus_applied: bool = False
+    filtered_efforts_below_distance: int = 0

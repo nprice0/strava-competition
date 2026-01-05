@@ -20,6 +20,7 @@ from typing import (
 from cachetools import TTLCache
 
 from ..config import ACTIVITY_SCAN_MAX_ACTIVITY_PAGES
+from ..effort_distance import derive_effort_distance_m
 from ..errors import StravaAPIError
 from ..models import Runner, Segment
 from ..strava_api import get_activities, get_activity_with_efforts
@@ -82,6 +83,9 @@ class ActivityEffortScanner:
         best_moving_time: float | None = None
         best_start: datetime | None = None
         best_bonus_applied: bool = False
+        best_distance: float | None = None
+        filtered_by_distance = 0
+        min_distance = self._effective_min_distance(segment)
 
         for summary in activities:
             if cancel_event and cancel_event.is_set():
@@ -108,6 +112,15 @@ class ActivityEffortScanner:
                 elapsed = self._coerce_float(effort.get("elapsed_time"))
                 if elapsed is None or elapsed <= 0:
                     continue
+                distance = derive_effort_distance_m(
+                    runner,
+                    effort,
+                    allow_stream=min_distance > 0,
+                )
+                if min_distance > 0:
+                    if distance is None or distance < min_distance:
+                        filtered_by_distance += 1
+                        continue
                 attempts += 1
                 effort_id = self._coerce_effort_id(effort.get("id"))
                 if effort_id is not None:
@@ -129,11 +142,20 @@ class ActivityEffortScanner:
                     best_moving_time = self._coerce_float(effort.get("moving_time"))
                     best_start = start_dt
                     best_bonus_applied = bonus_applied
+                    best_distance = distance
         if attempts == 0 or best_adjusted is None or best_elapsed is None:
             return None
         fastest_effort_id = (
             self._coerce_effort_id(best_effort.get("id")) if best_effort else None
         )
+        if min_distance <= 0 and best_effort is not None:
+            precise_distance = derive_effort_distance_m(
+                runner,
+                best_effort,
+                allow_stream=True,
+            )
+            if precise_distance is not None:
+                best_distance = precise_distance
         return ActivityScanResult(
             segment_id=segment.id,
             attempts=attempts,
@@ -142,9 +164,11 @@ class ActivityEffortScanner:
             fastest_activity_id=best_activity_id,
             fastest_start_date=best_start,
             moving_time=best_moving_time,
+            fastest_distance_m=best_distance,
             effort_ids=effort_ids,
             inspected_activities=inspected,
             birthday_bonus_applied=best_bonus_applied,
+            filtered_efforts_below_distance=filtered_by_distance,
         )
 
     def _get_activities(
@@ -283,3 +307,12 @@ class ActivityEffortScanner:
         if isinstance(value, (int, str)):
             return value
         return None
+
+    @staticmethod
+    def _effective_min_distance(segment: Segment) -> float:
+        raw_value = getattr(segment, "min_distance_meters", None)
+        try:
+            numeric = float(raw_value) if raw_value is not None else 0.0
+        except (TypeError, ValueError):
+            return 0.0
+        return numeric if numeric > 0 else 0.0

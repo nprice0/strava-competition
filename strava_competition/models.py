@@ -10,6 +10,7 @@ class Segment:
     start_date: datetime
     end_date: datetime
     default_time_seconds: float | None = None
+    min_distance_meters: float | None = None
     birthday_bonus_seconds: float | None = None
 
 
@@ -38,3 +39,4 @@ class SegmentResult:
     birthday_bonus_applied: bool = False
     source: str = "strava"
     diagnostics: Dict[str, Any] = field(default_factory=dict)
+    fastest_distance_m: float | None = None

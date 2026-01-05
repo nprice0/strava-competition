@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from datetime import datetime, time, timedelta
+import logging
 import re
 from pathlib import Path
 from typing import Iterator, List, Optional
@@ -15,6 +16,8 @@ import pandas as pd
 
 from .errors import ExcelFormatError
 from .models import Segment, Runner
+
+LOGGER = logging.getLogger(__name__)
 
 SEGMENTS_SHEET = "Segment Series"
 RUNNERS_SHEET = "Runners"
@@ -25,6 +28,7 @@ _SEGMENT_NAME_COL = "Segment Name"
 _SEGMENT_START_COL = "Start Date"
 _SEGMENT_END_COL = "End Date"
 _SEGMENT_DEFAULT_TIME_COL = "Default Time"
+_SEGMENT_MIN_DISTANCE_COL = "Minimum Distance (m)"
 _SEGMENT_BIRTHDAY_BONUS_COL = "Birthday Bonus (secs)"
 _REQUIRED_SEGMENT_COLS = {
     _SEGMENT_ID_COL,
@@ -32,6 +36,7 @@ _REQUIRED_SEGMENT_COLS = {
     _SEGMENT_START_COL,
     _SEGMENT_END_COL,
     _SEGMENT_DEFAULT_TIME_COL,
+    _SEGMENT_MIN_DISTANCE_COL,
     _SEGMENT_BIRTHDAY_BONUS_COL,
 }
 _REQUIRED_RUNNER_COLS = {
@@ -213,6 +218,32 @@ def _parse_segment_birthday_bonus(
     return float(seconds)
 
 
+def _parse_segment_min_distance(value: object, seg_name: str, row_label: str) -> float:
+    if _is_blank(value):
+        return 0.0
+    candidate: float | None = None
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        candidate = float(value)
+    else:
+        string_value = str(value).strip()
+        if string_value:
+            try:
+                candidate = float(string_value)
+            except ValueError:
+                candidate = None
+    if candidate is None:
+        LOGGER.warning(
+            "Segment '%s' in %s has invalid Minimum Distance (m) '%s'; defaulting to 0.",
+            seg_name,
+            row_label,
+            value,
+        )
+        return 0.0
+    if candidate <= 0:
+        return 0.0
+    return candidate
+
+
 def _assert_file_exists(path: str | Path) -> None:
     if not Path(path).is_file():
         raise FileNotFoundError(f"Workbook not found: {path}")
@@ -286,6 +317,7 @@ def read_segments(
         _SEGMENT_START_COL,
         _SEGMENT_END_COL,
         _SEGMENT_DEFAULT_TIME_COL,
+        _SEGMENT_MIN_DISTANCE_COL,
         _SEGMENT_BIRTHDAY_BONUS_COL,
     ]
     for row_offset, (
@@ -294,6 +326,7 @@ def read_segments(
         start_dt,
         end_dt,
         default_time_raw,
+        min_distance_raw,
         birthday_bonus_raw,
     ) in enumerate(df[columns].itertuples(index=False, name=None), start=2):
         row_label = f"row {row_offset}"
@@ -316,6 +349,9 @@ def read_segments(
                 end_date=end_dt,
                 default_time_seconds=_parse_segment_default_time(
                     default_time_raw, str(seg_name), row_label
+                ),
+                min_distance_meters=_parse_segment_min_distance(
+                    min_distance_raw, str(seg_name), row_label
                 ),
                 birthday_bonus_seconds=_parse_segment_birthday_bonus(
                     birthday_bonus_raw, str(seg_name), row_label

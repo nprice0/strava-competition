@@ -15,8 +15,6 @@ from typing import Any, Callable, Dict, List, Sequence, Tuple, Set
 
 from cachetools import TTLCache
 
-from ..errors import StravaAPIError
-from ..models import Segment, Runner, SegmentResult
 from ..activity_scan import ActivityEffortScanner
 from ..config import (
     FORCE_ACTIVITY_SCAN_FALLBACK,
@@ -24,6 +22,9 @@ from ..config import (
     USE_ACTIVITY_SCAN_FALLBACK,
     MAX_WORKERS,
 )
+from ..effort_distance import derive_effort_distance_m
+from ..errors import StravaAPIError
+from ..models import Segment, Runner, SegmentResult
 from ..strava_api import get_segment_efforts, get_activities
 from ..utils import parse_iso_datetime
 
@@ -358,6 +359,7 @@ class SegmentService:
                         "reason": "default_time_applied",
                         "segment_id": segment.id,
                     },
+                    fastest_distance_m=0.0,
                 )
             )
 
@@ -415,6 +417,10 @@ class SegmentService:
             "moving_time": scan.moving_time,
             "birthday_bonus_applied": scan.birthday_bonus_applied,
         }
+        if scan.filtered_efforts_below_distance:
+            diagnostics["filtered_efforts_below_distance"] = (
+                scan.filtered_efforts_below_distance
+            )
         attempts = scan.attempts if scan.attempts > 0 else 1
         return SegmentResult(
             runner=runner.name,
@@ -426,6 +432,7 @@ class SegmentService:
             birthday_bonus_applied=scan.birthday_bonus_applied,
             source="activity_scan",
             diagnostics=diagnostics,
+            fastest_distance_m=scan.fastest_distance_m,
         )
 
     def _result_from_efforts(
@@ -442,7 +449,9 @@ class SegmentService:
         if not efforts:
             return None
 
-        valid: List[tuple[float, float, datetime | None, dict, bool]] = []
+        min_distance = self._coerce_float(segment.min_distance_meters) or 0.0
+        filtered_by_distance = 0
+        valid: List[tuple[float, float, datetime | None, dict, bool, float | None]] = []
         for effort in efforts:
             if not isinstance(effort, dict):
                 continue
@@ -450,6 +459,15 @@ class SegmentService:
             elapsed_f = self._coerce_float(elapsed)
             if elapsed_f is None or elapsed_f <= 0:
                 continue
+            effort_distance = derive_effort_distance_m(
+                runner,
+                effort,
+                allow_stream=min_distance > 0,
+            )
+            if min_distance > 0:
+                if effort_distance is None or effort_distance < min_distance:
+                    filtered_by_distance += 1
+                    continue
             start_dt = parse_iso_datetime(
                 effort.get("start_date_local") or effort.get("start_date")
             )
@@ -459,7 +477,16 @@ class SegmentService:
                 elapsed_f,
                 start_dt,
             )
-            valid.append((adjusted_elapsed, elapsed_f, start_dt, effort, bonus_applied))
+            valid.append(
+                (
+                    adjusted_elapsed,
+                    elapsed_f,
+                    start_dt,
+                    effort,
+                    bonus_applied,
+                    effort_distance,
+                )
+            )
 
         if not valid:
             return None
@@ -467,23 +494,37 @@ class SegmentService:
         valid.sort(key=lambda item: item[0])
         (
             fastest_adjusted,
-            fastest_raw,
+            _fastest_raw,
             fastest_date,
             fastest_effort,
             bonus_applied,
+            fastest_distance_m,
         ) = valid[0]
+
+        if min_distance <= 0:
+            precise_distance = derive_effort_distance_m(
+                runner,
+                fastest_effort,
+                allow_stream=True,
+            )
+            if precise_distance is not None:
+                fastest_distance_m = precise_distance
 
         diagnostics: Dict[str, object] = {
             "source": "strava",
             "effort_ids": [
                 effort.get("id")
-                for _, _, _, effort, _ in valid
+                for _, _, _, effort, _, _ in valid
                 if isinstance(effort.get("id"), (int, str))
             ],
             "best_effort_id": fastest_effort.get("id"),
             "moving_time": fastest_effort.get("moving_time"),
             "birthday_bonus_applied": bonus_applied,
         }
+        if fastest_distance_m is not None:
+            diagnostics["fastest_distance_m"] = fastest_distance_m
+        if filtered_by_distance:
+            diagnostics["filtered_efforts_below_distance"] = filtered_by_distance
 
         attempts = len(valid)
         team = runner.segment_team or ""
@@ -497,6 +538,7 @@ class SegmentService:
             birthday_bonus_applied=bonus_applied,
             source="strava",
             diagnostics=diagnostics,
+            fastest_distance_m=fastest_distance_m,
         )
 
     def _get_runner_activities(

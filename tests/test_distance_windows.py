@@ -37,6 +37,7 @@ def test_read_distance_windows_basic():
                     "Start Date",
                     "End Date",
                     "Default Time",
+                    "Minimum Distance (m)",
                 ]
             ).to_excel(w, sheet_name="Segment Series", index=False)
             pd.DataFrame(

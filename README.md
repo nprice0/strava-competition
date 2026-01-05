@@ -174,7 +174,8 @@ token files to version control. If you flip the flag on:
 
 All sheet names are case-sensitive.
 
-- `Segment Series`: segment ID, segment name, start date, end date, default time
+- `Segment Series`: segment ID, segment name, start date, end date, default time,
+  **Minimum Distance (m)**
 - `Runners`: name, Strava ID, refresh token, segment team, distance team,
   **Birthday (dd-mmm)**
 - Optional `Distance Series`: start date, end date, distance threshold (km)
@@ -182,6 +183,11 @@ All sheet names are case-sensitive.
 Leave a team column blank and that runner quietly skips the related competition. Runner birthdays must stay in `dd-MMM` form (e.g. `07-May`). The reader accepts Excel dates or ISO strings, but when the workbook is rewritten the values are normalised to that format. Other date columns can be Excel dates or ISO strings—pandas is happy with either.
 
 `Default Time` accepts `HH:MM:SS`, Excel time values, or raw seconds. Every runner with no recorded effort picks up this fallback so rankings always account for the full roster.
+
+`Minimum Distance (m)` is optional per segment. Leave it blank or set it to `0`
+to disable distance filtering. When populated with a positive value the runner's
+effort distance (from Strava's payload) must meet or exceed that threshold to
+count toward rankings.
 
 ---
 
@@ -230,6 +236,47 @@ same configuration as the main app:
   by default and creates the directory automatically. Use `--output-file` to override
   the output path, or `--no-file` to print
   to stdout. Run `python -m strava_competition.tools.fetch_segment_gpx --help` for usage.
+- `clip_activity_segment`: slices a window of track points out of a GPX file so you can
+  reproduce a Strava segment effort locally. Start/end indices are optional—pick
+  whichever selector suits you: the zero-based indices from Strava's
+  `segment_efforts` API, a time window, a captured `segment_efforts` response, or
+  provide the Strava IDs (activity + segment) plus a refresh token and the
+  tool will fetch the GPX stream and effort metadata for you. Auto-downloaded GPX
+  files land in `data/gpx_output/` by default (override with `--download-dir`),
+  and `--force-download` refreshes the cache when you need a clean pull.
+
+  Fully automatic example (no local GPX/JSON required):
+
+  ```bash
+  python -m strava_competition.tools.clip_activity_segment \
+    --activity-id 16543582334 \
+    --segment-id 40422214 \
+    --refresh-token 428d4533373e68e32ec57e9fae2b8fc79ed934f5 \
+    --runner-id 19923466 \
+    --output data/gpx_output/activity_16543582334_segment_40422214_auto.gpx
+  ```
+
+  Index-based example:
+
+  ```bash
+  python -m strava_competition.tools.clip_activity_segment \
+    --input data/gpx_output/activity_16919797941.gpx \
+    --start-index 1572 --end-index 2699 \
+    --output data/gpx_output/activity_16919797941_segment_40641291.gpx
+  ```
+
+  JSON-based auto detection:
+
+  ```bash
+  python -m strava_competition.tools.clip_activity_segment \
+    --input data/gpx_output/activity_16919797941.gpx \
+    --segment-efforts-json strava_api_capture/c0/bd/...overlay.json \
+    --activity-id 16919797941 \
+    --segment-id 40641291
+  ```
+
+  You can also slice by ISO timestamps: `--start-time 2026-01-03T06:23:44+00:00 --elapsed 1127`.
+
 - `deviation_map`: builds an interactive Folium map that highlights gate crossings
   and large deviations for a runner/segment pair. Launch it via
   `python -m strava_competition.tools.deviation_map --help` and drop the output
