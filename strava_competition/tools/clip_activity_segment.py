@@ -18,7 +18,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, cast
 from defusedxml import ElementTree as ET
 
 import requests
@@ -298,7 +298,7 @@ def load_trackpoints(path: Path) -> List[ET.Element]:
     trkseg = root.find(".//g:trkseg", GPX_NS)
     if trkseg is None:
         raise SystemExit("GPX file is missing a <trkseg> block")
-    points = trkseg.findall("g:trkpt", GPX_NS)
+    points = cast(List[ET.Element], trkseg.findall("g:trkpt", GPX_NS))
     if not points:
         raise SystemExit("GPX file contains no track points")
     return points
