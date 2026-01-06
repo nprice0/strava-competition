@@ -25,7 +25,7 @@ from .errors import StravaAPIError
 from .models import Runner, Segment
 from .services import SegmentService, DistanceService
 from .services.segment_service import ResultsMapping
-from .strava_api import DEFAULT_STRAVA_CLIENT
+from .strava_api import get_default_client
 
 DistanceWindow = Tuple[datetime, datetime, float | None]
 DistanceWindowsResult = List[Tuple[str, List[dict[str, Any]]]]
@@ -67,7 +67,7 @@ def _ensure_tokens_early(runners: Sequence[Runner], input_file: str) -> None:
     for r in runners:
         before = getattr(r, "refresh_token", None)
         try:
-            DEFAULT_STRAVA_CLIENT.ensure_runner_token(r)
+            get_default_client().ensure_runner_token(r)
         except (TokenError, StravaAPIError) as e:
             logging.warning(
                 "Initial token ensure failed for runner=%s: %s",

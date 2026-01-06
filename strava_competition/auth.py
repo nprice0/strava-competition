@@ -8,11 +8,9 @@ that avoids leaking secrets, and defensive JSON parsing.
 from __future__ import annotations
 import logging
 from hashlib import sha256
-from typing import Tuple
+from typing import TYPE_CHECKING, Tuple
 
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
+from requests.exceptions import RequestException
 
 from .config import (
     CLIENT_ID,
@@ -25,20 +23,19 @@ from .config import (
 )
 from .api_capture import record_response, replay_response
 
-# Reusable session with limited retry for transient network/server issues.
-_token_retry = Retry(
-    total=3,
-    backoff_factor=1.0,
-    status_forcelist=[429, 500, 502, 503, 504],
-    allowed_methods=["POST"],
-)
-_session = requests.Session()
-_session.mount("https://", HTTPAdapter(max_retries=_token_retry))
-_session.mount("http://", HTTPAdapter(max_retries=_token_retry))
+if TYPE_CHECKING:
+    from requests import Session
 
 
 class TokenError(Exception):
     """Raised when token refresh fails (after retries)."""
+
+
+def _get_session() -> "Session":
+    """Lazy import to avoid circular dependency with strava_client."""
+    from .strava_client.session import get_default_session
+
+    return get_default_session()
 
 
 def _mask_tail(value: str | None, visible: int = 4) -> str:
@@ -117,12 +114,10 @@ def get_access_token(
         data = cached
     else:
         try:
-            resp = _session.post(
+            resp = _get_session().post(
                 STRAVA_OAUTH_URL, data=payload, timeout=REQUEST_TIMEOUT
             )
-        except (
-            requests.exceptions.RequestException
-        ) as e:  # Network / connection / timeout
+        except RequestException as e:  # Network / connection / timeout
             logger.error("Token request transport error: %s", e)
             raise TokenError("Transport failure during token refresh") from e
 

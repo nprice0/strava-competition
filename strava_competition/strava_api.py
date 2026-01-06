@@ -26,9 +26,8 @@ from .strava_client.segment_efforts import SegmentEffortsAPI
 from .strava_client.session import get_default_session
 
 DEFAULT_TIMEOUT: int = REQUEST_TIMEOUT
-_session = get_default_session()
 
-# Shared limiter instance
+# Shared limiter instance (thread-safe by design)
 _limiter = RateLimiter()
 
 
@@ -38,7 +37,7 @@ def set_rate_limiter(max_concurrent: Optional[int] = None) -> None:
     Passing ``max_concurrent`` calls ``RateLimiter.resize``; omitted / None
     leaves the current limit unchanged.
     """
-    DEFAULT_STRAVA_CLIENT.set_rate_limiter(max_concurrent)
+    get_default_client().set_rate_limiter(max_concurrent)
 
 
 def _get_segment_efforts_impl(
@@ -53,7 +52,7 @@ def _get_segment_efforts_impl(
     """Delegate to :class:`SegmentEffortsAPI` for backwards compatibility."""
 
     api = SegmentEffortsAPI(
-        session=session or _session,
+        session=session or get_default_session(),
         limiter=limiter or _limiter,
     )
     return api.get_segment_efforts(
@@ -78,7 +77,7 @@ def _get_activities_impl(
     """Delegate activity fetching to ``strava_client.activities.ActivitiesAPI``."""
 
     api = activities_api or ActivitiesAPI(
-        session=session or _session,
+        session=session or get_default_session(),
         limiter=limiter or _limiter,
     )
     return api.get_activities(
@@ -98,7 +97,7 @@ def get_activity_with_efforts(
 ) -> Dict[str, Any]:
     """Return ``/activities/{id}`` payload via the shared Strava client."""
 
-    return DEFAULT_STRAVA_CLIENT.get_activity_with_efforts(
+    return get_default_client().get_activity_with_efforts(
         runner,
         activity_id,
         include_all_efforts=include_all_efforts,
@@ -111,7 +110,7 @@ def fetch_segment_geometry(
 ) -> Dict[str, Any]:
     """Return high-resolution geometry details for a Strava segment."""
 
-    return DEFAULT_STRAVA_CLIENT.fetch_segment_geometry(runner, segment_id)
+    return get_default_client().fetch_segment_geometry(runner, segment_id)
 
 
 def fetch_activity_stream(
@@ -124,7 +123,7 @@ def fetch_activity_stream(
 ) -> Dict[str, Any]:
     """Return GPS stream data for an activity (lat/lon + timestamps)."""
 
-    return DEFAULT_STRAVA_CLIENT.fetch_activity_stream(
+    return get_default_client().fetch_activity_stream(
         runner,
         activity_id,
         stream_types=stream_types,
@@ -144,7 +143,7 @@ class StravaClient:
         activities_api: Optional[ActivitiesAPI] = None,
         resource_api: Optional[ResourceAPI] = None,
     ) -> None:
-        self._session = session or _session
+        self._session = session or get_default_session()
         self._limiter = limiter or _limiter
         self._activities = activities_api or ActivitiesAPI(
             session=self._session,
@@ -333,18 +332,13 @@ def get_default_client() -> StravaClient:
     return _default_client
 
 
-# For backwards compatibility, DEFAULT_STRAVA_CLIENT is now a property-like access
-# that lazily initializes the client on first use.
-DEFAULT_STRAVA_CLIENT = get_default_client()
-
-
 def get_segment_efforts(
     runner: Runner,
     segment_id: int,
     start_date: datetime,
     end_date: datetime,
 ) -> Optional[List[Dict[str, Any]]]:
-    return DEFAULT_STRAVA_CLIENT.get_segment_efforts(
+    return get_default_client().get_segment_efforts(
         runner,
         segment_id,
         start_date,
@@ -360,7 +354,7 @@ def get_activities(
     activity_types: Optional[Iterable[str]] = ("Run",),
     max_pages: Optional[int] = None,
 ) -> Optional[List[Dict[str, Any]]]:
-    return DEFAULT_STRAVA_CLIENT.get_activities(
+    return get_default_client().get_activities(
         runner,
         start_date,
         end_date,

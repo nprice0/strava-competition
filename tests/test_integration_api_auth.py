@@ -1,34 +1,69 @@
 from datetime import datetime
-import json
+
+import pytest
 
 from strava_competition.models import Runner
 from strava_competition import strava_api, auth
+from strava_competition.strava_client import session as session_module
+from strava_competition.strava_client import segment_efforts as segment_client
+from strava_competition.strava_client import resources as resource_client
+
+from conftest import FakeResp
 
 
-class FakeResp:
-    def __init__(self, status_code=200, data=None, headers=None):
-        self.status_code = status_code
-        self._data = data if data is not None else []
-        self.headers = headers or {}
+@pytest.fixture(autouse=True)
+def reset_default_client(monkeypatch):
+    """Reset the default client before each test to avoid cross-test pollution."""
+    monkeypatch.setattr(strava_api, "_default_client", None)
 
-    def json(self):
-        return self._data
 
-    @property
-    def text(self):
-        try:
-            return json.dumps(self._data)
-        except Exception:
-            return str(self._data)
+@pytest.fixture(autouse=True)
+def no_sleep_rate_limiter(monkeypatch):
+    class NoopLimiter:
+        def before_request(self):
+            return
 
-    @property
-    def content(self):
-        return self.text.encode()
+        def after_response(self, headers, status_code):
+            return
 
-    def raise_for_status(self):
-        if 400 <= self.status_code:
-            import requests
-            raise requests.exceptions.HTTPError(response=self)
+    monkeypatch.setattr(strava_api, "_limiter", NoopLimiter())
+
+
+@pytest.fixture(autouse=True)
+def disable_capture(monkeypatch):
+    """Force replay misses and prevent filesystem writes during unit tests."""
+
+    monkeypatch.setattr(resource_client, "STRAVA_OFFLINE_MODE", False)
+    monkeypatch.setattr(segment_client, "STRAVA_OFFLINE_MODE", False)
+    monkeypatch.setattr(
+        resource_client, "replay_response", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        resource_client, "record_response", lambda *args, **kwargs: None
+    )
+    # Also disable segment_efforts replay
+    monkeypatch.setattr(
+        segment_client, "replay_list_response_with_meta", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        segment_client, "record_list_response", lambda *args, **kwargs: None
+    )
+
+
+def _patch_all_sessions(monkeypatch, mock_session):
+    """Patch get_default_session in all modules that import it.
+
+    Also resets the default client to force re-creation with the mocked session.
+    """
+    # First patch the get_default_session functions
+    monkeypatch.setattr(session_module, "get_default_session", lambda: mock_session)
+    monkeypatch.setattr(strava_api, "get_default_session", lambda: mock_session)
+    monkeypatch.setattr(segment_client, "get_default_session", lambda: mock_session)
+    monkeypatch.setattr(auth, "_get_session", lambda: mock_session)
+    # Reset the module-level cached client so get_default_client creates a fresh one
+    monkeypatch.setattr(strava_api, "_default_client", None)
+    # Force recreation and update the module-level reference
+    strava_api.get_default_client()
 
 
 def test_integration_token_refresh_and_segment_fetch(monkeypatch):
@@ -51,7 +86,6 @@ def test_integration_token_refresh_and_segment_fetch(monkeypatch):
 
     monkeypatch.setattr(auth, "CLIENT_ID", "cid")
     monkeypatch.setattr(auth, "CLIENT_SECRET", "csec")
-    monkeypatch.setattr(auth, "_session", type("S", (), {"post": staticmethod(fake_post)})())
 
     # Patch GET efforts sequence: first 401, then success page (<200 to stop)
     get_calls = {"count": 0}
@@ -62,11 +96,22 @@ def test_integration_token_refresh_and_segment_fetch(monkeypatch):
             # 401 triggers refresh
             return FakeResp(401, data=[])
         # Successful page (single effort)
-        return FakeResp(200, data=[{"elapsed_time": 123, "start_date_local": "2024-01-05T09:00:00Z"}])
+        return FakeResp(
+            200,
+            data=[{"elapsed_time": 123, "start_date_local": "2024-01-05T09:00:00Z"}],
+        )
 
-    monkeypatch.setattr(strava_api._session, "get", fake_get)
+    # Create a mock session with both get and post methods
+    mock_session = type(
+        "MockSession",
+        (),
+        {"get": staticmethod(fake_get), "post": staticmethod(fake_post)},
+    )()
+    _patch_all_sessions(monkeypatch, mock_session)
 
-    runner = Runner(name="Alice", strava_id=1, refresh_token="origRT", segment_team="Red")
+    runner = Runner(
+        name="Alice", strava_id=1, refresh_token="origRT", segment_team="Red"
+    )
 
     efforts = strava_api.get_segment_efforts(
         runner,

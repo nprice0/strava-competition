@@ -10,6 +10,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import logging
 import threading
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Sequence, Tuple, Set
 
@@ -32,15 +33,36 @@ ResultsMapping = Dict[str, Dict[str, List[SegmentResult]]]
 
 _ActivityCacheKey = Tuple[int | str, datetime, datetime]
 
+# Cache TTL for runner activities (1 hour)
+_ACTIVITY_CACHE_TTL_SECONDS = 3600
+
+
+@dataclass(frozen=True, slots=True)
+class _ValidatedEffort:
+    """Intermediate representation of a validated segment effort."""
+
+    adjusted_elapsed: float
+    raw_elapsed: float
+    start_date: datetime | None
+    effort: dict
+    birthday_bonus_applied: bool
+    distance_m: float | None
+
 
 class SegmentService:
+    """Orchestrates fetching segment efforts and aggregating results."""
+
     def __init__(self, max_workers: int | None = None):
+        """Initialize the service with thread pool size and caches."""
         self.max_workers = max_workers or MAX_WORKERS
         if self.max_workers <= 0:
             raise ValueError("max_workers must be positive")
         self._log = logging.getLogger(self.__class__.__name__)
         self._activity_cache: TTLCache[_ActivityCacheKey, List[Dict[str, Any]]] = (
-            TTLCache(maxsize=max(1, RUNNER_ACTIVITY_CACHE_SIZE), ttl=3600)
+            TTLCache(
+                maxsize=max(1, RUNNER_ACTIVITY_CACHE_SIZE),
+                ttl=_ACTIVITY_CACHE_TTL_SECONDS,
+            )
         )
         self._activity_cache_lock = threading.RLock()
         self._activity_scanner = ActivityEffortScanner(
@@ -55,6 +77,11 @@ class SegmentService:
         cancel_event: threading.Event | None = None,
         progress: Callable[[str, int, int], None] | None = None,
     ) -> ResultsMapping:
+        """Process all segments for all runners, returning aggregated results.
+
+        Iterates through each segment, fetches efforts concurrently, and
+        applies fallback strategies for runners without direct API access.
+        """
         results: ResultsMapping = {}
         total_segments = len(segments)
         try:
@@ -91,6 +118,7 @@ class SegmentService:
         cancel_event: threading.Event | None,
         progress: Callable[[str, int, int], None] | None,
     ) -> Dict[str, List[SegmentResult]]:
+        """Process a single segment: fetch efforts, run fallbacks, inject defaults."""
         segment_results: Dict[str, List[SegmentResult]] = {}
         eligible_runners = [r for r in runners if r.segment_team]
         total_runners = len(eligible_runners)
@@ -158,6 +186,11 @@ class SegmentService:
         segment: Segment,
         cancel_event: threading.Event | None,
     ) -> Tuple[Dict[Future, Runner], List[Runner]]:
+        """Submit concurrent Strava API calls for each runner's segment efforts.
+
+        Runners marked as payment_required skip the API and go directly to
+        the fallback queue for activity-scan processing.
+        """
         future_to_runner: Dict[Future, Runner] = {}
         fallback_queue: List[Runner] = []
         for runner in runners:
@@ -186,12 +219,20 @@ class SegmentService:
         completed: int,
         notify_progress: Callable[[int], None],
     ) -> int:
+        """Collect completed effort futures and process results.
+
+        Runners that fail or return no efforts are added to the fallback
+        queue for activity-scan retry. Cancels pending futures if cancelled.
+        """
         for fut in as_completed(future_to_runner):
             if cancel_event and cancel_event.is_set():
                 self._log.info(
                     "Cancellation requested during segment %s; stopping remaining futures.",
                     segment.name,
                 )
+                # Cancel any pending futures to stop further Strava requests
+                for pending in future_to_runner:
+                    pending.cancel()
                 break
             runner = future_to_runner[fut]
             try:
@@ -228,6 +269,7 @@ class SegmentService:
         completed: int,
         notify_progress: Callable[[int], None],
     ) -> int:
+        """Process runners via activity-scan fallback when API access failed."""
         unique_runners = self._deduplicate_fallback_runners(fallback_queue)
         if not unique_runners:
             return completed
@@ -260,6 +302,7 @@ class SegmentService:
     def _deduplicate_fallback_runners(
         self, fallback_queue: Sequence[Runner]
     ) -> List[Runner]:
+        """Remove duplicate runners from fallback queue by strava_id."""
         unique: List[Runner] = []
         seen: Set[int | str] = set()
         for runner in fallback_queue:
@@ -276,6 +319,7 @@ class SegmentService:
         segment: Segment,
         cancel_event: threading.Event | None,
     ) -> Dict[Future, Runner]:
+        """Submit activity-scan fallback tasks for runners without API results."""
         future_to_runner: Dict[Future, Runner] = {}
         for runner in runners:
             if cancel_event and cancel_event.is_set():
@@ -303,6 +347,7 @@ class SegmentService:
         completed: int,
         notify_progress: Callable[[int], None],
     ) -> int:
+        """Collect fallback results and add to segment_results. Cancels on event."""
         for fut in as_completed(future_to_runner):
             runner = future_to_runner[fut]
             result: SegmentResult | None = None
@@ -327,6 +372,9 @@ class SegmentService:
                     "Cancellation requested while processing segment %s fallback results; stopping early.",
                     segment.name,
                 )
+                # Cancel any pending futures to stop further processing
+                for pending in future_to_runner:
+                    pending.cancel()
                 break
         return completed
 
@@ -336,6 +384,7 @@ class SegmentService:
         runners: Sequence[Runner],
         segment_results: Dict[str, List[SegmentResult]],
     ) -> None:
+        """Add default_time placeholder results for runners without any effort."""
         default_time = segment.default_time_seconds
         if default_time is None:
             return
@@ -370,6 +419,7 @@ class SegmentService:
         efforts: List[dict] | None,
         cancel_event: threading.Event | None = None,
     ) -> SegmentResult | None:
+        """Convert raw efforts to SegmentResult, falling back to activity scan."""
         seg_result = self._result_from_efforts(runner, segment, efforts)
         if seg_result is not None:
             return seg_result
@@ -389,8 +439,7 @@ class SegmentService:
         segment: Segment,
         cancel_event: threading.Event | None,
     ) -> SegmentResult | None:
-        if not USE_ACTIVITY_SCAN_FALLBACK:
-            return None
+        """Scan runner's activities for segment efforts when API unavailable."""
         try:
             scan = self._activity_scanner.scan_segment(
                 runner,
@@ -451,7 +500,7 @@ class SegmentService:
 
         min_distance = self._coerce_float(segment.min_distance_meters) or 0.0
         filtered_by_distance = 0
-        valid: List[tuple[float, float, datetime | None, dict, bool, float | None]] = []
+        valid: List[_ValidatedEffort] = []
         for effort in efforts:
             if not isinstance(effort, dict):
                 continue
@@ -478,33 +527,27 @@ class SegmentService:
                 start_dt,
             )
             valid.append(
-                (
-                    adjusted_elapsed,
-                    elapsed_f,
-                    start_dt,
-                    effort,
-                    bonus_applied,
-                    effort_distance,
+                _ValidatedEffort(
+                    adjusted_elapsed=adjusted_elapsed,
+                    raw_elapsed=elapsed_f,
+                    start_date=start_dt,
+                    effort=effort,
+                    birthday_bonus_applied=bonus_applied,
+                    distance_m=effort_distance,
                 )
             )
 
         if not valid:
             return None
 
-        valid.sort(key=lambda item: item[0])
-        (
-            fastest_adjusted,
-            _fastest_raw,
-            fastest_date,
-            fastest_effort,
-            bonus_applied,
-            fastest_distance_m,
-        ) = valid[0]
+        valid.sort(key=lambda v: v.adjusted_elapsed)
+        fastest = valid[0]
 
+        fastest_distance_m = fastest.distance_m
         if min_distance <= 0:
             precise_distance = derive_effort_distance_m(
                 runner,
-                fastest_effort,
+                fastest.effort,
                 allow_stream=True,
             )
             if precise_distance is not None:
@@ -513,13 +556,13 @@ class SegmentService:
         diagnostics: Dict[str, object] = {
             "source": "strava",
             "effort_ids": [
-                effort.get("id")
-                for _, _, _, effort, _, _ in valid
-                if isinstance(effort.get("id"), (int, str))
+                v.effort.get("id")
+                for v in valid
+                if isinstance(v.effort.get("id"), (int, str))
             ],
-            "best_effort_id": fastest_effort.get("id"),
-            "moving_time": fastest_effort.get("moving_time"),
-            "birthday_bonus_applied": bonus_applied,
+            "best_effort_id": fastest.effort.get("id"),
+            "moving_time": fastest.effort.get("moving_time"),
+            "birthday_bonus_applied": fastest.birthday_bonus_applied,
         }
         if fastest_distance_m is not None:
             diagnostics["fastest_distance_m"] = fastest_distance_m
@@ -533,9 +576,9 @@ class SegmentService:
             team=team,
             segment=segment.name,
             attempts=attempts,
-            fastest_time=fastest_adjusted,
-            fastest_date=fastest_date,
-            birthday_bonus_applied=bonus_applied,
+            fastest_time=fastest.adjusted_elapsed,
+            fastest_date=fastest.start_date,
+            birthday_bonus_applied=fastest.birthday_bonus_applied,
             source="strava",
             diagnostics=diagnostics,
             fastest_distance_m=fastest_distance_m,
@@ -570,13 +613,14 @@ class SegmentService:
         return activities
 
     def _clear_runner_activity_cache(self) -> None:
-        """Reset per-runner activity cache before processing a new batch."""
+        """Clear the per-runner activity cache between processing batches."""
 
         with self._activity_cache_lock:
             self._activity_cache.clear()
 
     @staticmethod
     def _coerce_float(value: Any) -> float | None:
+        """Safely convert a value to float, returning None on failure."""
         try:
             return float(value)
         except (TypeError, ValueError):
@@ -589,6 +633,7 @@ class SegmentService:
         elapsed_seconds: float,
         effort_date: datetime | None,
     ) -> tuple[float, bool]:
+        """Apply birthday bonus deduction if effort occurred on runner's birthday."""
         bonus = segment.birthday_bonus_seconds or 0.0
         if bonus <= 0 or not effort_date or not runner.birthday:
             return float(elapsed_seconds), False

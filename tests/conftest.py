@@ -21,6 +21,85 @@ os.environ.setdefault("STRAVA_CAPTURE_ID_SALT", "pytest-salt")
 from strava_competition.models import SegmentResult, Runner  # noqa: E402
 
 
+# --- Shared test doubles for requests.Session mocking ----------------
+class FakeResp:
+    """Unified fake response for mocking requests.Session methods.
+
+    Supports all common use cases across test files:
+    - `data`: JSON body returned by .json()
+    - `text`: Raw text body returned by .text property
+    - `headers`: Response headers dict
+    - `status_code`: HTTP status code
+
+    If `data` is an Exception instance, .json() will raise it (useful for
+    testing JSON parse error handling).
+    """
+
+    def __init__(
+        self,
+        status_code: int = 200,
+        data: dict | list | Exception | None = None,
+        *,
+        text: str | None = None,
+        headers: dict | None = None,
+    ):
+        self.status_code = status_code
+        self._data = data
+        self._text = text
+        self.headers = headers or {}
+
+    def json(self):
+        if isinstance(self._data, Exception):
+            raise self._data
+        return self._data
+
+    def raise_for_status(self) -> None:
+        if 400 <= self.status_code:
+            import requests
+
+            raise requests.exceptions.HTTPError(response=self)
+
+    @property
+    def content(self) -> bytes:
+        if self._text is not None:
+            return self._text.encode()
+        if self._data is not None:
+            import json
+
+            return json.dumps(self._data).encode()
+        return b""
+
+    @property
+    def text(self) -> str:
+        if self._text is not None:
+            return self._text
+        return self.content.decode()
+
+
+def _patch_session(monkeypatch, mock_session):
+    """Patch get_default_session in all modules that import it.
+
+    Also resets the default client to force re-creation with the mocked session.
+
+    Args:
+        monkeypatch: pytest monkeypatch fixture
+        mock_session: A mock session object with .get() and/or .post() methods
+    """
+    from strava_competition import strava_api
+    from strava_competition.strava_client import (
+        segment_efforts as segment_client,
+        session as session_module,
+    )
+
+    monkeypatch.setattr(session_module, "get_default_session", lambda: mock_session)
+    monkeypatch.setattr(strava_api, "get_default_session", lambda: mock_session)
+    monkeypatch.setattr(segment_client, "get_default_session", lambda: mock_session)
+    # Reset the module-level cached client so get_default_client creates a fresh one
+    monkeypatch.setattr(strava_api, "_default_client", None)
+    # Force recreation and update the module-level reference
+    strava_api.get_default_client()
+
+
 # --- Factory helpers -------------------------------------------------
 def make_segment_results():
     return {
