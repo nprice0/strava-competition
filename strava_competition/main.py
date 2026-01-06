@@ -12,7 +12,7 @@ from .config import (
 )
 from .excel_reader import (
     read_runners,
-    read_segments,
+    read_segment_groups,
     read_distance_windows,
     ExcelFormatError,
     workbook_context,
@@ -22,7 +22,7 @@ from .excel_writer import (
     write_results,
 )
 from .errors import StravaAPIError
-from .models import Runner, Segment
+from .models import Runner, SegmentGroup
 from .services import SegmentService, DistanceService
 from .services.segment_service import ResultsMapping
 from .strava_api import get_default_client
@@ -42,7 +42,7 @@ def _setup_logging() -> None:
 def _load_inputs(
     input_file: str,
 ) -> Tuple[
-    List[Segment],
+    List[SegmentGroup],
     List[Runner],
     List[DistanceWindow],
     List[Runner],
@@ -50,7 +50,7 @@ def _load_inputs(
 ]:
     logging.info("Loading segments, runners and distance windows ...")
     with workbook_context(input_file) as workbook:
-        segments = read_segments(input_file, workbook=workbook)
+        segment_groups = read_segment_groups(input_file, workbook=workbook)
         runners = read_runners(input_file, workbook=workbook)
         distance_windows = read_distance_windows(input_file, workbook=workbook)
     segment_runners = [r for r in runners if r.segment_team]
@@ -59,7 +59,7 @@ def _load_inputs(
         logging.info("Loaded %s distance windows", len(distance_windows))
     else:
         logging.info("No distance windows defined (sheet optional)")
-    return segments, runners, distance_windows, segment_runners, distance_runners
+    return segment_groups, runners, distance_windows, segment_runners, distance_runners
 
 
 def _ensure_tokens_early(runners: Sequence[Runner], input_file: str) -> None:
@@ -90,11 +90,11 @@ def _ensure_tokens_early(runners: Sequence[Runner], input_file: str) -> None:
 
 
 def _process_segments(
-    segments: Sequence[Segment], segment_runners: Sequence[Runner]
+    segment_groups: Sequence[SegmentGroup], segment_runners: Sequence[Runner]
 ) -> ResultsMapping:
     logging.info(
-        "Processing %s segments for %s segment runners ...",
-        len(segments),
+        "Processing %s segment groups for %s segment runners ...",
+        len(segment_groups),
         len(segment_runners),
     )
     segment_service = SegmentService(max_workers=MAX_WORKERS)
@@ -105,7 +105,9 @@ def _process_segments(
                 "Segment %s progress: %d/%d runners fetched", seg_name, done, total
             )
 
-    results = segment_service.process(segments, segment_runners, progress=_progress)
+    results = segment_service.process_groups(
+        segment_groups, segment_runners, progress=_progress
+    )
     logging.info("Finished segment aggregation for %d segments", len(results))
     return results
 
@@ -172,7 +174,7 @@ def main() -> None:
 
     try:
         (
-            segments,
+            segment_groups,
             runners,
             distance_windows,
             segment_runners,
@@ -186,7 +188,7 @@ def main() -> None:
     _ensure_tokens_early(runners, input_file)
 
     try:
-        results = _process_segments(segments, segment_runners)
+        results = _process_segments(segment_groups, segment_runners)
         distance_windows_results = _process_distance(distance_runners, distance_windows)
 
         write_results(

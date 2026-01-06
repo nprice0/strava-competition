@@ -181,6 +181,15 @@ STRAVA_BACKOFF_MAX_SECONDS = 4.0
 
 
 # ---------------------------------------------------------------------------
+# Segment competition options
+# ---------------------------------------------------------------------------
+# When enabled, rows with the same Segment ID are aggregated into a single
+# output sheet showing each runner's best time across all windows. When
+# disabled, each row produces its own output sheet.
+SEGMENT_SPLIT_WINDOWS_ENABLED = _env_bool("SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+
+
+# ---------------------------------------------------------------------------
 # Distance competition options
 # ---------------------------------------------------------------------------
 # Write a distance sheet even when a window has no rows.
