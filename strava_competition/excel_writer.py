@@ -45,6 +45,7 @@ __all__ = [
 ResultsMapping = SegResultsMapping
 SUMMARY_HEADER_FONT = Font(bold=True)
 HEADER_FILL = PatternFill(patternType="solid", fgColor="FFFF40FF")
+DISTANCE_HEADER_FILL = PatternFill(patternType="solid", fgColor="FF92D050")
 BIRTHDAY_FILL = PatternFill(patternType="solid", fgColor="FF8EFA00")
 HEADER_BORDER = Border(
     left=Side(style="thin", color="000000"),
@@ -221,6 +222,7 @@ def _write_distance_sheets(
         )
         ws = _get_worksheet(writer, sheet_name)
         if ws is not None:
+            _style_header_row(ws, 1, len(dfw.columns), fill=DISTANCE_HEADER_FILL)
             _autosize(ws)
 
 
@@ -273,11 +275,16 @@ def _append_segment_summary(ws: Worksheet, summary_df: pd.DataFrame) -> None:
         ws.append(list(row))
 
 
-def _style_header_row(ws: Worksheet, row_idx: int, max_col: int | None = None) -> None:
+def _style_header_row(
+    ws: Worksheet,
+    row_idx: int,
+    max_col: int | None = None,
+    fill: PatternFill | None = None,
+) -> None:
     if row_idx <= 0:
         return
     max_col = max_col or ws.max_column
-    fill = PatternFill(patternType="solid", fgColor="FFFF40FF")
+    fill = fill or HEADER_FILL
     for col_idx in range(1, max_col + 1):
         cell = ws.cell(row=row_idx, column=col_idx)
         cell.fill = fill
