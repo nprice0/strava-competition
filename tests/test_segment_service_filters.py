@@ -9,6 +9,8 @@ from typing import List
 
 import pytest
 
+import warnings
+
 from strava_competition.models import Segment, Runner, SegmentResult
 from strava_competition.services.segment_service import SegmentService
 
@@ -23,9 +25,14 @@ def segment() -> Segment:
     from datetime import datetime, timedelta, timezone
 
     now = datetime.now(timezone.utc)
-    return Segment(
-        id=123, name="Test Segment", start_date=now - timedelta(days=1), end_date=now
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return Segment(
+            id=123,
+            name="Test Segment",
+            start_date=now - timedelta(days=1),
+            end_date=now,
+        )
 
 
 def test_fallback_queue_processes_in_parallel(runner: Runner, segment: Segment) -> None:
@@ -133,18 +140,21 @@ def test_fallback_queue_skips_when_cancelled(runner: Runner, segment: Segment) -
     assert not invoked.is_set()
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_default_time_results_added_for_missing_runners() -> None:
     from datetime import datetime, timedelta, timezone
 
     service = SegmentService(max_workers=1)
     now = datetime.now(timezone.utc)
-    segment = Segment(
-        id=42,
-        name="Defaulted",
-        start_date=now - timedelta(days=5),
-        end_date=now,
-        default_time_seconds=150.0,
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        segment = Segment(
+            id=42,
+            name="Defaulted",
+            start_date=now - timedelta(days=5),
+            end_date=now,
+            default_time_seconds=150.0,
+        )
     runners = [
         Runner("Alice", "1", "rt1", segment_team="Alpha"),
         Runner("Bob", "2", "rt2", segment_team="Alpha"),

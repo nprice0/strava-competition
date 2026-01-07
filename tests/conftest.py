@@ -15,8 +15,8 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-# Ensure capture hashing has a deterministic salt during tests.
-os.environ.setdefault("STRAVA_CAPTURE_ID_SALT", "pytest-salt")
+# Ensure cache hashing has a deterministic salt during tests.
+os.environ.setdefault("STRAVA_CACHE_ID_SALT", "pytest-salt")
 
 from strava_competition.models import SegmentResult, Runner  # noqa: E402
 

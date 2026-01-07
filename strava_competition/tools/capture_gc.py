@@ -1,4 +1,4 @@
-"""Utility for pruning stale capture/replay payloads."""
+"""Utility for pruning stale cache payloads."""
 
 from __future__ import annotations
 
@@ -8,14 +8,14 @@ import logging
 from pathlib import Path
 from typing import Iterable, Optional
 
-from ..config import STRAVA_API_CAPTURE_DIR
+from ..config import STRAVA_CACHE_DIR
 
 LOGGER = logging.getLogger(__name__)
 
 
 def _resolve_base(path: str | Path | None) -> Path:
     if path is None:
-        candidate = Path(STRAVA_API_CAPTURE_DIR)
+        candidate = Path(STRAVA_CACHE_DIR)
     else:
         candidate = Path(path)
     return candidate if candidate.is_absolute() else Path.cwd() / candidate
@@ -63,7 +63,7 @@ def prune_directory(
             LOGGER.warning("Failed to delete %s: %s", file_path, exc)
             skipped += 1
     LOGGER.info(
-        "Capture GC complete base=%s deleted=%s skipped=%s cutoff=%s",
+        "Cache GC complete base=%s deleted=%s skipped=%s cutoff=%s",
         resolved,
         deleted,
         skipped,
@@ -97,10 +97,8 @@ def _parse_duration(spec: str) -> timedelta:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Delete stale Strava capture payloads")
-    parser.add_argument(
-        "--path", help="Capture directory (defaults to STRAVA_API_CAPTURE_DIR)"
-    )
+    parser = argparse.ArgumentParser(description="Delete stale Strava cache payloads")
+    parser.add_argument("--path", help="Cache directory (defaults to STRAVA_CACHE_DIR)")
     parser.add_argument(
         "--max-age",
         help="Delete files older than this duration (e.g. 30d, 12h, 90m, 3600)",

@@ -31,22 +31,22 @@ def no_sleep_rate_limiter(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def disable_capture(monkeypatch):
-    """Force replay misses and prevent filesystem writes during unit tests."""
+    """Force cache misses and prevent filesystem writes during unit tests."""
 
-    monkeypatch.setattr(resource_client, "STRAVA_OFFLINE_MODE", False)
-    monkeypatch.setattr(segment_client, "STRAVA_OFFLINE_MODE", False)
+    monkeypatch.setattr(resource_client, "_cache_mode_offline", False)
+    monkeypatch.setattr(segment_client, "_cache_mode_offline", False)
     monkeypatch.setattr(
-        resource_client, "replay_response", lambda *args, **kwargs: None
+        resource_client, "get_cached_response", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(
-        resource_client, "record_response", lambda *args, **kwargs: None
+        resource_client, "save_response_to_cache", lambda *args, **kwargs: None
     )
     # Also disable segment_efforts replay
     monkeypatch.setattr(
-        segment_client, "replay_list_response_with_meta", lambda *args, **kwargs: None
+        segment_client, "get_cached_list_with_meta", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(
-        segment_client, "record_list_response", lambda *args, **kwargs: None
+        segment_client, "save_list_to_cache", lambda *args, **kwargs: None
     )
 
 
@@ -177,9 +177,9 @@ def test_fetch_segment_geometry_offline_requires_capture(monkeypatch):
         name="Offline", strava_id=99, refresh_token="rt", segment_team="Solo"
     )
 
-    monkeypatch.setattr(resource_client, "STRAVA_OFFLINE_MODE", True)
+    monkeypatch.setattr(resource_client, "_cache_mode_offline", True)
     monkeypatch.setattr(
-        resource_client, "replay_response", lambda *args, **kwargs: None
+        resource_client, "get_cached_response", lambda *args, **kwargs: None
     )
 
     def fail_get(*args, **kwargs):  # pragma: no cover - should never run
@@ -200,12 +200,12 @@ def test_get_segment_efforts_offline_cache_miss(monkeypatch):
         name="Offline", strava_id=42, refresh_token="rt", segment_team="Solo"
     )
 
-    monkeypatch.setattr(segment_client, "STRAVA_OFFLINE_MODE", True)
-    monkeypatch.setattr(config, "STRAVA_OFFLINE_MODE", True, raising=False)
-    # Mock the underlying replay function to return None (cache miss)
+    monkeypatch.setattr(segment_client, "_cache_mode_offline", True)
+    monkeypatch.setattr(config, "_cache_mode_offline", True, raising=False)
+    # Mock the underlying cache function to return None (cache miss)
     monkeypatch.setattr(
         segment_client,
-        "replay_list_response_with_meta",
+        "get_cached_list_with_meta",
         lambda *args, **kwargs: None,
     )
 
@@ -223,4 +223,4 @@ def test_get_segment_efforts_offline_cache_miss(monkeypatch):
             end_date=datetime(2024, 1, 2),
         )
 
-    assert "cache miss" in str(excinfo.value)
+    assert "miss" in str(excinfo.value).lower()

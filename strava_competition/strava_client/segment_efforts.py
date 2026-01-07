@@ -1,4 +1,4 @@
-"""Segment efforts pagination, caching, and replay orchestration."""
+"""Segment efforts pagination and caching orchestration."""
 
 from __future__ import annotations
 
@@ -9,21 +9,21 @@ from typing import Any, Dict, Iterable, List, Optional, TypeAlias, cast
 
 import requests
 
-from ..api_capture import CaptureRecord, record_overlay_response, record_response
+from ..api_capture import CaptureRecord, save_overlay_to_cache, save_response_to_cache
 from ..config import (
-    STRAVA_API_CAPTURE_ENABLED,
-    STRAVA_API_CAPTURE_OVERWRITE,
-    STRAVA_API_REPLAY_ENABLED,
+    _cache_mode_saves,
+    STRAVA_CACHE_OVERWRITE,
+    _cache_mode_reads,
     STRAVA_BASE_URL,
-    STRAVA_OFFLINE_MODE,
+    _cache_mode_offline,
 )
 from ..errors import StravaAPIError
 from ..models import Runner
 from ..replay_tail import chunk_activities, summarize_activities, merge_activity_lists
 from .base import ensure_runner_token
 from .capture import (
-    record_list_response,
-    replay_list_response_with_meta,
+    save_list_to_cache,
+    get_cached_list_with_meta,
     runner_identity,
 )
 from .pagination import fetch_page_with_retries
@@ -65,7 +65,7 @@ class SegmentEffortsAPI:
     ) -> Optional[List[Dict[str, object]]]:
         """Fetch all efforts for ``segment_id`` between ``start_date`` and ``end_date``."""
 
-        replay_allowed = STRAVA_API_REPLAY_ENABLED
+        cache_available = _cache_mode_reads
         base_params = {
             "segment_id": segment_id,
             "start_date_local": start_date.isoformat(),
@@ -74,23 +74,23 @@ class SegmentEffortsAPI:
         }
         url = f"{STRAVA_BASE_URL}/segment_efforts"
         cached_pages: List[CachedPage] = []
-        used_replay = False
+        used_cache = False
 
         def fetch_page(page: int) -> JSONList:
-            nonlocal replay_allowed, used_replay
+            nonlocal cache_available, used_cache
             params = dict(base_params)
             params["page"] = page
-            if replay_allowed:
-                record = replay_list_response_with_meta(
+            if cache_available:
+                record = get_cached_list_with_meta(
                     runner,
                     url,
                     params,
                     context_label="segment_efforts",
                     page=page,
-                    offline_mode=STRAVA_OFFLINE_MODE,
+                    require_cache=_cache_mode_offline,
                 )
                 if record is not None:
-                    used_replay = True
+                    used_cache = True
                     cached_data = cast(JSONList, record.response)
                     cached_pages.append(
                         CachedPage(
@@ -100,9 +100,9 @@ class SegmentEffortsAPI:
                         )
                     )
                     return cached_data
-                if STRAVA_OFFLINE_MODE:
+                if _cache_mode_offline:
                     raise StravaAPIError(
-                        "Offline mode cache miss for segment efforts"
+                        "Cache-only mode miss for segment efforts"
                         f" (runner={runner.name} segment={segment_id} page={page})"
                     )
             ensure_runner_token(runner)
@@ -116,12 +116,12 @@ class SegmentEffortsAPI:
                 limiter=self._limiter,
                 segment_id=segment_id,
             )
-            record_list_response(
+            save_list_to_cache(
                 runner,
                 url,
                 dict(params),
                 data,
-                capture_enabled=STRAVA_API_CAPTURE_ENABLED,
+                save_to_cache=_cache_mode_saves,
             )
             return data
 
@@ -154,7 +154,7 @@ class SegmentEffortsAPI:
                 if len(batch) < SEGMENT_PAGE_SIZE:
                     break
                 page += 1
-            if used_replay and not STRAVA_OFFLINE_MODE:
+            if used_cache and _cache_mode_saves:
                 all_efforts, refreshed = _maybe_refresh_segment_tail(
                     runner,
                     segment_id,
@@ -308,12 +308,12 @@ def _fetch_segment_tail_pages(
         if not data:
             break
         tail_pages.append(data)
-        record_list_response(
+        save_list_to_cache(
             runner,
             url,
             dict(params),
             data,
-            capture_enabled=STRAVA_API_CAPTURE_ENABLED,
+            save_to_cache=_cache_mode_saves,
         )
         if len(data) < per_page:
             break
@@ -327,9 +327,9 @@ def _persist_segment_pages(
     base_params: Dict[str, Any],
     page_payloads: List[JSONList],
 ) -> None:
-    if not STRAVA_API_CAPTURE_ENABLED:
+    if not _cache_mode_saves:
         LOGGER.warning(
-            "Capture disabled; cannot persist enriched segment data for runner=%s",
+            "Cache saving disabled; cannot persist enriched segment data for runner=%s",
             runner.name,
         )
         return
@@ -360,10 +360,10 @@ def _write_segment_overlay(
     params: Dict[str, Any],
     payload: JSONList,
 ) -> None:
-    if STRAVA_API_CAPTURE_OVERWRITE:
-        record_response("GET", url, identity, payload, params=params)
+    if STRAVA_CACHE_OVERWRITE:
+        save_response_to_cache("GET", url, identity, payload, params=params)
     else:
-        record_overlay_response("GET", url, identity, payload, params=params)
+        save_overlay_to_cache("GET", url, identity, payload, params=params)
 
 
 def _flatten_pages(pages: Iterable[JSONList]) -> List[Dict[str, object]]:

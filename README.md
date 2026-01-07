@@ -136,80 +136,63 @@ STRAVA_CLIENT_SECRET=<your_secret>
 USE_ACTIVITY_SCAN_FALLBACK=true
 FORCE_ACTIVITY_SCAN_FALLBACK=false
 ACTIVITY_SCAN_MAX_ACTIVITY_PAGES=0
-ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true
+ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS=true
 
 # Segment split windows
 SEGMENT_SPLIT_WINDOWS_ENABLED=true
 
-# API capture & replay
-STRAVA_API_CAPTURE_ENABLED=true
-STRAVA_API_REPLAY_ENABLED=false
-STRAVA_OFFLINE_MODE=false
-STRAVA_CAPTURE_HASH_IDENTIFIERS=true
-STRAVA_CAPTURE_ID_SALT=please_change_me
-STRAVA_CAPTURE_REDACT_PII=true
-STRAVA_CAPTURE_REDACT_FIELDS=name,email,athlete.firstname,athlete.lastname
+# API cache mode: live | cache | offline
+STRAVA_API_CACHE_MODE=cache
+STRAVA_CACHE_HASH_IDENTIFIERS=true
+STRAVA_CACHE_ID_SALT=please_change_me
+STRAVA_CACHE_REDACT_PII=true
+STRAVA_CACHE_REDACT_FIELDS=name,email,athlete.firstname,athlete.lastname
 ```
 
-| Variable                        | Default | Description                                                    |
-| ------------------------------- | ------- | -------------------------------------------------------------- |
-| `USE_ACTIVITY_SCAN_FALLBACK`    | `true`  | Fall back to activity scan when segment API fails (402 errors) |
-| `FORCE_ACTIVITY_SCAN_FALLBACK`  | `false` | Always use activity scan, bypassing segment API entirely       |
-| `SEGMENT_SPLIT_WINDOWS_ENABLED` | `true`  | Group duplicate segment IDs into multi-window competitions     |
-| `STRAVA_OFFLINE_MODE`           | `false` | Block all live API calls (requires replay to be enabled)       |
+| Variable                        | Default | Description                                                       |
+| ------------------------------- | ------- | ----------------------------------------------------------------- |
+| `USE_ACTIVITY_SCAN_FALLBACK`    | `true`  | Fall back to activity scan when segment API fails (402 errors)    |
+| `FORCE_ACTIVITY_SCAN_FALLBACK`  | `false` | Always use activity scan, bypassing segment API entirely          |
+| `SEGMENT_SPLIT_WINDOWS_ENABLED` | `true`  | Group duplicate segment IDs into multi-window competitions        |
+| `STRAVA_API_CACHE_MODE`         | `live`  | Cache mode: `live` (no cache), `cache` (read+write), or `offline` |
 
 The app pulls in `.env` automatically at startup.
 
-#### Replay-tail refresh knobs
+#### Cache tail refresh knobs
 
-When `STRAVA_API_REPLAY_ENABLED` is on, the tool automatically tops up cached
-`/athlete/activities` pages with live data. You can tune the behaviour via
+When `STRAVA_API_CACHE_MODE=cache` or `offline`, the tool automatically tops up cached
+`/athlete/activities` pages with live data (in `cache` mode). You can tune the behaviour via
 environment variables:
 
-| Variable                   | Default | Description                                                                                                                     |
-| -------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------- |
-| `REPLAY_CACHE_TTL_DAYS`    | `7`     | Maximum age for cached pages before they are discarded and fully refetched. Set to `0` to disable the TTL.                      |
-| `REPLAY_MAX_LOOKBACK_DAYS` | `30`    | Guard that prevents replaying extremely old captures. When exceeded, the process logs a warning and performs a full live fetch. |
-| `REPLAY_EPSILON_SECONDS`   | `60`    | Small overlap injected into the tail window so activities near the cached boundary are never skipped.                           |
-| `REPLAY_MAX_PARALLELISM`   | `4`     | Caps how many runners are refreshed in parallel inside the distance service orchestration layer.                                |
+| Variable                     | Default | Description                                                                                                                     |
+| ---------------------------- | ------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `CACHE_TTL_DAYS`             | `7`     | Maximum age for cached pages before they are discarded and fully refetched. Set to `0` to disable the TTL.                      |
+| `CACHE_MAX_LOOKBACK_DAYS`    | `30`    | Guard that prevents replaying extremely old captures. When exceeded, the process logs a warning and performs a full live fetch. |
+| `CACHE_TAIL_OVERLAP_SECONDS` | `60`    | Small overlap injected into the tail window so activities near the cached boundary are never skipped.                           |
+| `CACHE_MAX_PARALLELISM`      | `4`     | Caps how many runners are refreshed in parallel inside the distance service orchestration layer.                                |
 
-The hybrid replay-tail workflow automatically persists enriched pages back to
-the capture directory. When `STRAVA_API_CAPTURE_OVERWRITE` is `False` (the
+The hybrid cache-tail workflow automatically persists enriched pages back to
+the cache directory. When `STRAVA_CACHE_OVERWRITE` is `False` (the
 default), enriched data is stored in lightweight overlay files so existing
-captures remain untouched.
+caches remain untouched.
 
-#### Capture hygiene & retention
+#### Cache hygiene & retention
 
-- **Hash runner identifiers.** Turn on `STRAVA_CAPTURE_HASH_IDENTIFIERS=true` and give it a
-  unique, non-empty `STRAVA_CAPTURE_ID_SALT` so capture filenames don't leak Strava IDs.
+- **Hash runner identifiers.** Turn on `STRAVA_CACHE_HASH_IDENTIFIERS=true` and give it a
+  unique, non-empty `STRAVA_CACHE_ID_SALT` so cache filenames don't leak Strava IDs.
   When hashing is enabled without a salt the app simply bows out instead of producing
   predictable hashes.
-- **Redact payload fields.** Enable `STRAVA_CAPTURE_REDACT_PII` and list comma-separated
-  JSON paths in `STRAVA_CAPTURE_REDACT_FIELDS` to strip names, emails, GPS details, and any
+- **Redact payload fields.** Enable `STRAVA_CACHE_REDACT_PII` and list comma-separated
+  JSON paths in `STRAVA_CACHE_REDACT_FIELDS` to strip names, emails, GPS details, and any
   other sensitive bits before writing to disk.
-- **Prune stale captures.** Use the helper in the [CLI tools](#cli-tools) section whenever
+- **Prune stale caches.** Use the helper in the [CLI tools](#cli-tools) section whenever
   you want to free disk space without touching fresh data.
-- **Automate retention.** Set `STRAVA_CAPTURE_AUTO_PRUNE_DAYS=30` (or whatever window you
-  prefer) to delete old capture files on startup. Pick `0` to leave files alone.
+- **Automate retention.** Set `STRAVA_CACHE_AUTO_PRUNE_DAYS=30` (or whatever window you
+  prefer) to delete old cache files on startup. Pick `0` to leave files alone.
 
-#### Security considerations for token capture
-
-⚠️ **Heads-up:** Token capture stays off by default for good reason.
-
-The `STRAVA_TOKEN_CAPTURE_ENABLED` flag decides whether OAuth token responses hit disk.
-Those payloads include:
-
-- Access tokens (short-lived but grants full API access)
-- Refresh tokens (long-lived credentials that can generate new access tokens)
-- Athlete identifiers and profile metadata
-
-**Only enable token capture in a controlled debugging session.** Never commit captured
-token files to version control. If you flip the flag on:
-
-1. Ensure the capture directory is excluded from git (already covered by `.gitignore`)
-2. Delete captured token files immediately after debugging
-3. Consider rotating affected refresh tokens via the OAuth flow
-4. Never deploy with this setting enabled
+> **Note:** Token responses are never cached—they contain short-lived secrets and
+> should always come from Strava directly. In `offline` mode, auth calls will fail
+> with a clear error message.
 
 ### Workbook layout
 
@@ -383,7 +366,7 @@ same configuration as the main app:
   ```bash
   python -m strava_competition.tools.clip_activity_segment \
     --input data/gpx_output/activity_16919797941.gpx \
-    --segment-efforts-json strava_api_capture/c0/bd/...overlay.json \
+    --segment-efforts-json strava_cache/c0/bd/...overlay.json \
     --activity-id 16919797941 \
     --segment-id 40641291
   ```
@@ -394,7 +377,7 @@ same configuration as the main app:
   and large deviations for a runner/segment pair. Launch it via
   `python -m strava_competition.tools.deviation_map --help` and drop the output
   wherever you need.
-- `capture_gc`: deletes capture responses older than a retention window. Run
+- `capture_gc`: deletes cache responses older than a retention window. Run
   `python -m strava_competition.tools.capture_gc --max-age 30d` to prune files
   older than 30 days (supports `d`, `h`, or raw seconds).
 
@@ -452,7 +435,7 @@ docker run --rm \
   strava-competition
 ```
 
-- `$(pwd)` should point at the folder containing `competition_input.xlsx` and `strava_api_capture/`.
+- `$(pwd)` should point at the folder containing `competition_input.xlsx` and `strava_cache/`.
 - Outputs such as `competition_results_*.xlsx` and refreshed captures are written straight to the host directory because of the bind mount.
 - Override paths by changing the `-v host_dir:/app` portion.
 
@@ -480,7 +463,7 @@ Tips:
 
 - Make sure Docker Desktop can see the drive you’re mounting (Settings ▸ Resources ▸ File Sharing on Windows).
 - Quote host paths that include spaces so the shell doesn’t split them.
-- The container image ships with `STRAVA_API_CAPTURE_ENABLED=1`, so capture files will show up under the mounted directory’s `strava_api_capture/` folder.
+- The container image ships with `STRAVA_API_CACHE_MODE=cache`, so cache files will show up under the mounted directory's `strava_cache/` folder.
 
 ---
 
@@ -505,13 +488,13 @@ leans on cached pages when possible, and logs the inspected activity IDs for eas
    so paid athletes still use official efforts). Optionally limit pagination via
    `ACTIVITY_SCAN_MAX_ACTIVITY_PAGES` (defaults to `0`, meaning "no cap"—set a
    positive integer to stop after that many pages).
-2. Prime captures with `STRAVA_API_CAPTURE_ENABLED=true` / `STRAVA_API_REPLAY_ENABLED=false`.
-3. Switch to deterministic runs using replay (and flip `STRAVA_OFFLINE_MODE=true` if you
+2. Prime caches with `STRAVA_API_CACHE_MODE=cache`.
+3. Switch to deterministic runs using cached data (and set `STRAVA_API_CACHE_MODE=offline` if you
    want to forbid live calls). Watch for `source=activity_scan` in the logs.
 
-Keep `ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true` so cached payloads match the scanner; otherwise
-offline runs throw a `StravaAPIError` when captures are missing. Files live under
-`strava_api_capture/`, and `tests/strava_api_capture/` holds the fixtures used by pytest.
+Keep `ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS=true` so cached payloads match the scanner; otherwise
+offline runs throw a `StravaAPIError` when caches are missing. Files live under
+`strava_cache/`, and `tests/strava_cache/` holds the fixtures used by pytest.
 
 ---
 

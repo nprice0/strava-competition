@@ -59,6 +59,7 @@ def make_input_workbook(path):
         runners.to_excel(w, sheet_name="Runners", index=False)
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_excel_integration_roundtrip_and_ranks(monkeypatch):
     with tempfile.TemporaryDirectory() as tmpdir:
         in_path = os.path.join(tmpdir, "input.xlsx")

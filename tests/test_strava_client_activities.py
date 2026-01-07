@@ -9,7 +9,7 @@ from strava_competition.models import Runner
 from strava_competition.strava_client.activities import (
     ACTIVITY_PAGE_SIZE,
     CachedPage,
-    _maybe_refresh_replay_tail,
+    _maybe_refresh_cache_tail,
 )
 
 
@@ -48,7 +48,7 @@ def test_empty_activity_cache_triggers_refresh_when_stale(
     fetched = [[{"id": 999, "start_date_local": "2025-12-10T09:34:12Z"}]]
 
     monkeypatch.setattr(
-        "strava_competition.strava_client.activities.REPLAY_EMPTY_WINDOW_REFRESH_SECONDS",
+        "strava_competition.strava_client.activities.CACHE_EMPTY_REFRESH_SECONDS",
         60,
         raising=False,
     )
@@ -69,7 +69,7 @@ def test_empty_activity_cache_triggers_refresh_when_stale(
         lambda *_args, **_kwargs: None,
     )
 
-    merged, refreshed = _maybe_refresh_replay_tail(
+    merged, refreshed = _maybe_refresh_cache_tail(
         runner,
         "https://www.strava.com/api/v3/athlete/activities",
         base_params,
@@ -94,7 +94,7 @@ def test_empty_activity_cache_skips_refresh_when_recent(
     end = datetime(2025, 12, 11, tzinfo=timezone.utc)
 
     monkeypatch.setattr(
-        "strava_competition.strava_client.activities.REPLAY_EMPTY_WINDOW_REFRESH_SECONDS",
+        "strava_competition.strava_client.activities.CACHE_EMPTY_REFRESH_SECONDS",
         3600,
         raising=False,
     )
@@ -107,7 +107,7 @@ def test_empty_activity_cache_skips_refresh_when_recent(
         _fail_fetch,
     )
 
-    merged, refreshed = _maybe_refresh_replay_tail(
+    merged, refreshed = _maybe_refresh_cache_tail(
         runner,
         "https://www.strava.com/api/v3/athlete/activities",
         base_params,

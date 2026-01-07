@@ -114,7 +114,7 @@ def test_segment_efforts_fetches_tail_after_cached_runs(
 
     monkeypatch.setattr(
         segment_efforts,
-        "replay_list_response_with_meta",
+        "get_cached_list_with_meta",
         fake_replay,
     )
 
@@ -146,22 +146,22 @@ def test_segment_efforts_fetches_tail_after_cached_runs(
 
     monkeypatch.setattr(
         segment_efforts,
-        "record_list_response",
+        "save_list_to_cache",
         fake_record,
     )
 
     overlays: list[tuple[dict[str, Any] | None, List[dict[str, Any]] | None]] = []
-    monkeypatch.setattr(segment_efforts, "STRAVA_API_CAPTURE_OVERWRITE", False)
+    monkeypatch.setattr(segment_efforts, "STRAVA_CACHE_OVERWRITE", False)
     monkeypatch.setattr(
         segment_efforts,
-        "record_overlay_response",
+        "save_overlay_to_cache",
         lambda *_args, params=None, response=None, **__: overlays.append(
             (params, response)
         ),
     )
     monkeypatch.setattr(
         segment_efforts,
-        "record_response",
+        "save_response_to_cache",
         lambda *_args, params=None, response=None, **__: overlays.append(
             (params, response)
         ),
@@ -173,17 +173,17 @@ def test_segment_efforts_fetches_tail_after_cached_runs(
     )
     monkeypatch.setattr(
         segment_efforts,
-        "STRAVA_API_REPLAY_ENABLED",
+        "_cache_mode_reads",
         True,
     )
     monkeypatch.setattr(
         segment_efforts,
-        "STRAVA_API_CAPTURE_ENABLED",
+        "_cache_mode_saves",
         True,
     )
     monkeypatch.setattr(
         segment_efforts,
-        "STRAVA_OFFLINE_MODE",
+        "_cache_mode_offline",
         False,
     )
 
@@ -223,7 +223,7 @@ def test_segment_efforts_returns_cached_page_when_no_tail_needed(
 
     monkeypatch.setattr(
         segment_efforts,
-        "replay_list_response_with_meta",
+        "get_cached_list_with_meta",
         lambda *_, **__: cached_record,
     )
 
@@ -249,7 +249,7 @@ def test_segment_efforts_returns_cached_page_when_no_tail_needed(
 
     monkeypatch.setattr(
         segment_efforts,
-        "record_list_response",
+        "save_list_to_cache",
         fake_record,
     )
     monkeypatch.setattr(
@@ -259,12 +259,12 @@ def test_segment_efforts_returns_cached_page_when_no_tail_needed(
     )
     monkeypatch.setattr(
         segment_efforts,
-        "STRAVA_API_REPLAY_ENABLED",
+        "_cache_mode_reads",
         True,
     )
     monkeypatch.setattr(
         segment_efforts,
-        "STRAVA_OFFLINE_MODE",
+        "_cache_mode_offline",
         False,
     )
 

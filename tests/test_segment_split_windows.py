@@ -20,7 +20,6 @@ import pytest
 
 from strava_competition import excel_reader
 from strava_competition.errors import ExcelFormatError
-from strava_competition.models import SegmentGroup, SegmentWindow
 from strava_competition.services.segment_service import SegmentService
 
 

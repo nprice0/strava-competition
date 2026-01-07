@@ -6,7 +6,10 @@ from strava_competition.excel_writer import write_results
 # Helper to build results mapping structure expected by write_results
 # { segment_name: { team_name: [SegmentResult, ...] } }
 
-def test_summary_sheet_aggregates(tmp_path: Path, segment_results, assert_summary_columns):
+
+def test_summary_sheet_aggregates(
+    tmp_path: Path, segment_results, assert_summary_columns
+):
     results = segment_results
     out = tmp_path / "output.xlsx"
     write_results(out, results, include_summary=True)
@@ -57,4 +60,6 @@ def test_no_summary_when_disabled(tmp_path: Path, segment_results):
     out = tmp_path / "output_no_summary.xlsx"
     write_results(out, results, include_summary=False)
     book = pd.read_excel(out, sheet_name=None)
-    assert "Summary" not in book, "Summary sheet should not be present when include_summary=False"
+    assert "Summary" not in book, (
+        "Summary sheet should not be present when include_summary=False"
+    )

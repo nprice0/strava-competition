@@ -302,9 +302,11 @@ class SegmentService:
                 return None
 
             # Fetch efforts for this window
-            # Try Strava API first if not payment_required
+            # Try Strava API first if not payment_required and not forcing activity scan
             efforts: List[dict] | None = None
-            if not getattr(runner, "payment_required", False):
+            if not FORCE_ACTIVITY_SCAN_FALLBACK and not getattr(
+                runner, "payment_required", False
+            ):
                 try:
                     efforts = get_segment_efforts(
                         runner,
@@ -586,14 +588,19 @@ class SegmentService:
         """Submit concurrent Strava API calls for each runner's segment efforts.
 
         Runners marked as payment_required skip the API and go directly to
-        the fallback queue for activity-scan processing.
+        the fallback queue for activity-scan processing. When
+        FORCE_ACTIVITY_SCAN_FALLBACK is True, all runners go to the fallback
+        queue and no API calls are made.
         """
         future_to_runner: Dict[Future, Runner] = {}
         fallback_queue: List[Runner] = []
         for runner in runners:
             if cancel_event and cancel_event.is_set():
                 break
-            if getattr(runner, "payment_required", False):
+            # Skip API calls entirely when forcing activity scan fallback
+            if FORCE_ACTIVITY_SCAN_FALLBACK or getattr(
+                runner, "payment_required", False
+            ):
                 fallback_queue.append(runner)
                 continue
             future = executor.submit(
