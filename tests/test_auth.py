@@ -1,33 +1,18 @@
-import json
 import pytest
 
 from strava_competition import auth
-
-
-class FakeResp:
-    def __init__(self, status_code=200, data=None, text=None):
-        self.status_code = status_code
-        self._data = data
-        self._text = text
-
-    def json(self):
-        if isinstance(self._data, Exception):  # force JSON error
-            raise self._data
-        return self._data
-
-    @property
-    def text(self):  # emulate .text attribute for snippet logging
-        if self._text is not None:
-            return self._text
-        try:
-            return json.dumps(self._data)
-        except Exception:
-            return str(self._data)
+from conftest import FakeResp
 
 
 def _set_creds(monkeypatch):
     monkeypatch.setattr(auth, "CLIENT_ID", "cid")
     monkeypatch.setattr(auth, "CLIENT_SECRET", "csec")
+
+
+def _mock_session_with_post(monkeypatch, fake_post):
+    """Patch _get_session() to return a mock with the given post function."""
+    mock_session = type("MockSession", (), {"post": staticmethod(fake_post)})()
+    monkeypatch.setattr(auth, "_get_session", lambda: mock_session)
 
 
 def test_get_access_token_success(monkeypatch):
@@ -37,7 +22,7 @@ def test_get_access_token_success(monkeypatch):
         assert data["grant_type"] == "refresh_token"
         return FakeResp(200, data={"access_token": "AAA", "refresh_token": "BBB"})
 
-    monkeypatch.setattr(auth, "_session", type("S", (), {"post": staticmethod(fake_post)})())
+    _mock_session_with_post(monkeypatch, fake_post)
     at, rt = auth.get_access_token("refresh123", runner_name="Runner1")
     assert at == "AAA"
     assert rt == "BBB"
@@ -55,7 +40,7 @@ def test_get_access_token_http_error_with_json(monkeypatch):
             },
         )
 
-    monkeypatch.setattr(auth, "_session", type("S", (), {"post": staticmethod(fake_post)})())
+    _mock_session_with_post(monkeypatch, fake_post)
     with pytest.raises(auth.TokenError):
         auth.get_access_token("badtoken")
 
@@ -70,7 +55,7 @@ def test_get_access_token_invalid_json(monkeypatch):
     def fake_post(url, data=None, timeout=None):
         return BadJSONResp(200, data=None, text="not-json")
 
-    monkeypatch.setattr(auth, "_session", type("S", (), {"post": staticmethod(fake_post)})())
+    _mock_session_with_post(monkeypatch, fake_post)
     with pytest.raises(auth.TokenError):
         auth.get_access_token("refresh123")
 
@@ -81,7 +66,7 @@ def test_get_access_token_missing_access_token(monkeypatch):
     def fake_post(url, data=None, timeout=None):
         return FakeResp(200, data={"refresh_token": "NEW"})
 
-    monkeypatch.setattr(auth, "_session", type("S", (), {"post": staticmethod(fake_post)})())
+    _mock_session_with_post(monkeypatch, fake_post)
     with pytest.raises(auth.TokenError):
         auth.get_access_token("refresh123")
 

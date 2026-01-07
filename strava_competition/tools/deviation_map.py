@@ -15,8 +15,8 @@ from ..config import (
     GEOMETRY_RESAMPLE_INTERVAL_M,
     GEOMETRY_SIMPLIFICATION_TOLERANCE_M,
 )
-from ..excel_reader import ExcelFormatError, read_runners, read_segments
-from ..models import Runner, Segment
+from ..excel_reader import ExcelFormatError, read_runners, read_segment_groups
+from ..models import Runner, SegmentGroup
 from .geometry.visualization import create_deviation_map
 from .geometry.fetchers import fetch_activity_stream, fetch_segment_geometry
 from .geometry.models import ActivityTrack, SegmentGeometry
@@ -126,23 +126,23 @@ def _select_runner(
 
 
 def _select_segment(
-    segments: Sequence[Segment],
+    segment_groups: Sequence[SegmentGroup],
     *,
     segment_id: Optional[int],
     name: Optional[str],
-) -> Segment:
-    """Return the workbook segment matching the provided identifier."""
+) -> SegmentGroup:
+    """Return the workbook segment group matching the provided identifier."""
 
     if segment_id is not None:
-        for segment in segments:
-            if segment.id == segment_id:
-                return segment
+        for group in segment_groups:
+            if group.id == segment_id:
+                return group
         raise ValueError(f"No segment found with ID {segment_id}")
 
     if not name:
         raise ValueError("Segment name or ID must be provided")
     target = name.strip().lower()
-    matches = [seg for seg in segments if seg.name.lower() == target]
+    matches = [grp for grp in segment_groups if grp.name.lower() == target]
     if not matches:
         raise ValueError(f"No segment found with name '{name}'")
     if len(matches) > 1:
@@ -159,12 +159,16 @@ def _slugify(value: str) -> str:
     return slug or "map"
 
 
-def _default_output_path(runner: Runner, segment: Segment, activity_id: int) -> Path:
+def _default_output_path(
+    runner: Runner, segment_group: SegmentGroup, activity_id: int
+) -> Path:
     """Return a default HTML output path for the generated map."""
 
     runner_slug = _slugify(runner.name)
-    segment_slug = _slugify(segment.name)
-    filename = f"{runner_slug}-{segment_slug}-seg{segment.id}-act{activity_id}.html"
+    segment_slug = _slugify(segment_group.name)
+    filename = (
+        f"{runner_slug}-{segment_slug}-seg{segment_group.id}-act{activity_id}.html"
+    )
     return Path("maps") / filename
 
 
@@ -209,7 +213,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         runners = read_runners(INPUT_FILE)
-        segments = read_segments(INPUT_FILE)
+        segment_groups = read_segment_groups(INPUT_FILE)
     except (ExcelFormatError, FileNotFoundError) as exc:
         logging.error("Failed to load workbook '%s': %s", INPUT_FILE, exc)
         return 1
@@ -220,8 +224,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             name=args.runner_name,
             strava_id=args.runner_id,
         )
-        segment = _select_segment(
-            segments,
+        segment_group = _select_segment(
+            segment_groups,
             segment_id=args.segment_id,
             name=args.segment_name,
         )
@@ -229,20 +233,22 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         logging.error("%s", exc)
         return 1
 
-    output_path = args.output or _default_output_path(runner, segment, args.activity_id)
+    output_path = args.output or _default_output_path(
+        runner, segment_group, args.activity_id
+    )
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     logging.info(
         "Fetching data for runner='%s' segment='%s' activity=%s",
         runner.name,
-        segment.name,
+        segment_group.name,
         args.activity_id,
     )
     try:
         _map, coverage, diagnostics = build_deviation_map_for_effort(
             runner,
             args.activity_id,
-            segment.id,
+            segment_group.id,
             threshold_m=args.threshold_m,
             output_html=output_path,
         )

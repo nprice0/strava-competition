@@ -4,78 +4,179 @@ This document outlines the work required to support "Segment Split Windows": the
 
 ---
 
-## 1. Requirements Clarification
+## 1. Requirements Summary
 
-1. Clarify workbook UX:
-   - Multiple windows will be expressed by duplicating segment rows (with optional `Window Label`); ensure workbook templates/docs make this crystal clear.
-   - Decide whether split windows share a single segment sheet output or optionally produce per-window sheets plus an aggregate.
-2. Confirm scoring rules:
-   - Only the best attempt per runner will be visible in the aggregated sheet (raw per-window attempts remain internal diagnostics).
-   - Ranks are computed from aggregated best times only (per-window placements remain implicit in diagnostics).
-3. Validate interaction with birthday bonus and default times.
-4. Determine replay/capture needs when reprocessing the same segment over overlapping windows.
+1. **Workbook UX**:
+   - Multiple windows are expressed by duplicating segment rows with the same **Segment ID** (grouping key).
+   - An optional `Window Label` column provides human-friendly tags (e.g., "Week 1", "Final Push").
+   - Output remains a single sheet per segment (when enabled), showing each runner's best time across all windows.
+2. **Scoring rules**:
+   - Each runner's fastest time across all windows is shown in the output sheet.
+   - Ranks are computed from these aggregated best times.
+   - Per-window attempts remain internal (diagnostics only).
+3. **Birthday bonus**: Can be specified per window row. Defaults to 0 if omitted.
+4. **Default time**: Applies once per segment group when a runner has no efforts in any window. Only needs to be specified on one row per segment group (if set on multiple rows, values must match).
+5. **Minimum distance**: Applies per segment group. Only needs to be specified on one row per group (if set on multiple rows, values must match).
+6. **Overlapping windows**: Allowed (e.g., weekly + monthly windows). Log a warning if windows fully overlap (likely user error).
+7. **Replay/capture**: Reprocessing the same segment over multiple windows uses cached activities; no special handling required.
+
+---
 
 ## 2. Workbook Schema Updates
 
-1. Extend the `Segment Series` sheet format to capture multiple windows by duplicating segment rows with the same ID/name (grouping key) and optionally adding a `Window Label` column for human-friendly tags that can be reused across segments (e.g., "Final Push Week").
-2. Update `excel_reader.py` validations:
-   - Parse new structure into an in-memory model: `SegmentSplitWindow` objects keyed by segment.
-   - Enforce contiguous/non-overlapping windows if required.
-3. Document the new schema in README and provide sample workbook rows.
+### 2.1 New Column
 
-## 3. Data Model & Config Changes
+Add optional `Window Label` column to the `Segment Series` sheet.
 
-1. Introduce new model classes in `models.py`, e.g., `SegmentWindow` and `SegmentSplitConfig`.
-2. Update config to toggle the feature (`SEGMENT_SPLIT_WINDOWS_ENABLED`) and optionally cap window counts.
-3. Adjust `ResultsMapping` definitions (if necessary) to distinguish base segments vs. split aggregates.
+### 2.2 Sample Workbook Rows
+
+| Segment ID | Segment Name      | Start Date | End Date   | Window Label | Default Time | Min Distance (m) | Birthday Bonus (secs) |
+| ---------- | ----------------- | ---------- | ---------- | ------------ | ------------ | ---------------- | --------------------- |
+| 12345678   | Hill Climb Sprint | 2026-01-01 | 2026-01-15 | Week 1       | 00:10:00     | 500              | 30                    |
+| 12345678   | Hill Climb Sprint | 2026-01-16 | 2026-01-31 | Week 2       |              | 500              | 30                    |
+| 12345678   | Hill Climb Sprint | 2026-02-01 | 2026-02-14 | Final Push   |              | 500              | 45                    |
+
+Notes:
+
+- Rows with the same `Segment ID` are grouped together.
+- Row order does not affect processing (efforts are filtered by date, not row order).
+- `Default Time` and `Min Distance (m)` only need to appear on one row per group (if set on multiple rows, values must match).
+- `Birthday Bonus (secs)` can vary per window (e.g., 45 seconds in "Final Push"). Defaults to 0 if omitted.
+
+### 2.3 Reader Updates (`excel_reader.py`)
+
+1. Parse rows into `SegmentWindow` objects, grouped by `Segment ID`.
+2. Validate:
+   - All rows in a group must have the same `Segment Name` (error if mismatch).
+   - If `Default Time` appears on multiple rows, values must match.
+   - If `Min Distance (m)` appears on multiple rows, values must match.
+   - Warn (don't error) if windows fully overlap.
+3. Return `List[SegmentGroup]` where each group contains one or more windows.
+
+---
+
+## 3. Data Model Changes (`models.py`)
+
+```python
+@dataclass
+class SegmentWindow:
+    """A single date window within a segment group."""
+    start_date: datetime
+    end_date: datetime
+    label: str | None = None
+    birthday_bonus_seconds: float = 0.0
+
+
+@dataclass
+class SegmentGroup:
+    """A segment with one or more date windows."""
+    id: int
+    name: str
+    windows: List[SegmentWindow]
+    default_time_seconds: float | None = None
+    min_distance_meters: float | None = None
+```
+
+**Note**: `SegmentGroup` replaces the existing `Segment` dataclass. The old `Segment` class will be deprecated and removed.
+
+### 3.1 Config Toggle
+
+Add `SEGMENT_SPLIT_WINDOWS_ENABLED` to `config.py` (default: `True` once implemented).
+
+When **enabled**: Rows with the same Segment ID are aggregated into a single output sheet showing each runner's best time across all windows.
+
+When **disabled**: Each row produces its own output sheet. If a segment ID appears only once, the sheet is named `{Segment Name}` (unchanged from current behavior). If it appears multiple times, sheets are named `{Segment Name} - {Window Label}` (or `{Segment Name} - {Start Date} to {End Date}` if no label).
+
+---
 
 ## 4. Service Layer Enhancements
 
-1. Modify `segment_service.SegmentService` to accept multiple windows per segment:
-   - Iterate per window, fetching efforts bounded by that window.
-   - Cache and reuse activities across windows to avoid duplicate API calls (consider per-runner global cache keyed by date ranges).
-2. Combine per-window results:
-   - After processing all windows, compute each runner's best adjusted time (apply birthday bonus per effort).
-   - Store diagnostics referencing the window that produced the best effort.
-3. Provide optional per-window detail rows (for debugging) controlled by config flag.
+### 4.1 Cache Strategy
+
+1. Compute union date range per segment group: `(min(window.start), max(window.end))`.
+2. Fetch activities/efforts once per runner for the union range.
+3. Filter fetched efforts by window boundaries client-side.
+4. Existing `_activity_cache` in `SegmentService` already supports this pattern.
+
+### 4.2 Processing Logic
+
+1. For each `SegmentGroup`, iterate through windows and collect efforts bounded by each window's dates.
+2. Apply birthday bonus per-window (using that window's `birthday_bonus_seconds`).
+3. Select the runner's fastest adjusted time across all windows.
+4. Store diagnostics: which window produced the best effort, per-window times if useful for debugging.
+
+### 4.3 Signature Change
+
+```python
+def process(
+    self,
+    segment_groups: Sequence[SegmentGroup],  # was: Sequence[Segment]
+    runners: Sequence[Runner],
+    ...
+) -> ResultsMapping:
+```
+
+**Note**: This is a breaking change. Update all callers (`main.py`, CLI tools, tests) in the same PR.
+
+---
 
 ## 5. Aggregation & Writer Updates
 
-1. Extend `segment_aggregation.build_segment_outputs` to:
-   - Generate one primary sheet per split segment with aggregated best times.
-   - Optionally append per-window summaries (e.g., sub-table listing each window's fastest runner).
-2. Update `excel_writer` to handle new attributes (e.g., include window name/date in summary tables).
-3. Ensure birthday highlight logic still applies to the aggregated rows.
+### 5.1 Output Structure
+
+- One sheet per segment group, named by `segment_name` (unchanged).
+- Each runner appears once with their best time across all windows.
+- `Fastest Date` column shows the date of the best effort (from whichever window).
+- `Attempts` column shows the total attempts across all windows (when enabled).
+
+### 5.2 Birthday Highlighting
+
+Applies to aggregated rows as before—if the best effort had birthday bonus applied, highlight that row.
+
+### 5.3 Optional Diagnostics
+
+Controlled by config flag: optionally include a `Best Window` column showing which window label produced the best time.
+
+---
 
 ## 6. CLI & Tooling Alignment
 
-1. Update CLI helpers (e.g., `fetch_runner_segment_efforts`) to support split window diagnostics.
-2. Provide a command to validate workbook split window definitions (dry-run parser that logs window counts and overlaps).
+1. Update CLI helpers (e.g., `fetch_runner_segment_efforts`) to accept segment groups.
+2. No additional validation command needed—existing workbook parsing will report errors.
 
-## 7. Backward Compatibility & Migration
+---
 
-1. Ensure feature is opt-in; existing workbooks without split windows continue to run unchanged.
-2. Add migration guidance: sample workbook templates, instructions for duplicating rows, etc.
-3. Consider auto-detecting split windows to warn if a segment appears multiple times without grouping metadata.
+## 7. Backward Compatibility
+
+1. **Opt-in by structure**: If a segment ID appears only once, it behaves exactly as today (single window = current behavior).
+2. Existing workbooks without duplicate segment rows continue to work unchanged.
+3. Auto-detect: When a segment ID appears multiple times, treat as split windows automatically.
+
+---
 
 ## 8. Testing Strategy
 
-1. Unit tests:
-   - `excel_reader` parsing of multiple windows.
-   - `segment_service` logic combining efforts across windows (mock Strava data).
-   - Aggregation outputs (sheet names, summaries, birthday highlighting).
-2. Integration tests:
-   - End-to-end scenario with capture data covering two windows and verifying best-time selection.
-3. Regression tests to ensure non-split segments behave exactly as before.
+1. **Unit tests**:
+   - `excel_reader`: Parse single-window segments (regression), multi-window groups, validation errors.
+   - `segment_service`: Combine efforts across windows, select best time, apply per-window birthday bonus.
+   - Aggregation: Sheet naming, ranking, birthday highlighting.
+2. **Integration tests**:
+   - End-to-end with capture data covering two windows; verify best-time selection.
+3. **Regression tests**:
+   - Ensure single-window segments produce identical output to current behavior.
+
+---
 
 ## 9. Documentation & Samples
 
-1. Update README with a dedicated "Segment Split Windows" section.
-2. Provide a sample workbook (under `samples/` or tests fixtures) demonstrating three windows.
-3. Document config flags and CLI helpers supporting the feature.
+1. Update README with "Segment Split Windows" section.
+2. Provide sample workbook (under `samples/` or test fixtures) demonstrating three windows.
+3. Document the `Window Label` column and birthday bonus override behavior.
+
+---
 
 ## 10. Rollout Considerations
 
-1. Provide feature flag toggle for staged rollout.
-2. Communicate to users (release notes) about schema change and required workbook updates.
-3. Monitor runtime performance—multiple windows increase Strava calls; consider caching or rate-limit adjustments.
+1. Feature flag (`SEGMENT_SPLIT_WINDOWS_ENABLED`) for staged rollout.
+2. Release notes explaining schema change and workbook updates.
+3. Performance: With union-range caching, API calls remain ~1 per runner per segment group (not per window).

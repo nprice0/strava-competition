@@ -10,12 +10,12 @@ from datetime import datetime, time, timedelta
 import logging
 import re
 from pathlib import Path
-from typing import Iterator, List, Optional
+from typing import Dict, Iterator, List, Optional, Tuple
 
 import pandas as pd
 
 from .errors import ExcelFormatError
-from .models import Segment, Runner
+from .models import Segment, Runner, SegmentWindow, SegmentGroup
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,6 +27,7 @@ _SEGMENT_ID_COL = "Segment ID"
 _SEGMENT_NAME_COL = "Segment Name"
 _SEGMENT_START_COL = "Start Date"
 _SEGMENT_END_COL = "End Date"
+_SEGMENT_WINDOW_LABEL_COL = "Window Label"
 _SEGMENT_DEFAULT_TIME_COL = "Default Time"
 _SEGMENT_MIN_DISTANCE_COL = "Minimum Distance (m)"
 _SEGMENT_BIRTHDAY_BONUS_COL = "Birthday Bonus (secs)"
@@ -39,6 +40,8 @@ _REQUIRED_SEGMENT_COLS = {
     _SEGMENT_MIN_DISTANCE_COL,
     _SEGMENT_BIRTHDAY_BONUS_COL,
 }
+# Window Label is optional
+_OPTIONAL_SEGMENT_COLS = {_SEGMENT_WINDOW_LABEL_COL}
 _REQUIRED_RUNNER_COLS = {
     "Name",
     "Strava ID",
@@ -361,6 +364,199 @@ def read_segments(
     return segs
 
 
+def _windows_fully_overlap(w1: SegmentWindow, w2: SegmentWindow) -> bool:
+    """Check if two windows have identical date ranges."""
+    return w1.start_date == w2.start_date and w1.end_date == w2.end_date
+
+
+def read_segment_groups(
+    filepath: str | Path, workbook: Optional[object] = None
+) -> List[SegmentGroup]:
+    """Parse segment rows into SegmentGroup objects, grouping by Segment ID.
+
+    Validates:
+    - All rows in a group must have the same Segment Name (error if mismatch).
+    - If Default Time appears on multiple rows, values must match.
+    - If Min Distance (m) appears on multiple rows, values must match.
+    - Warns (doesn't error) if windows fully overlap.
+    """
+    import warnings
+
+    filepath = _coerce_path(filepath)
+    if workbook is None:
+        _assert_file_exists(filepath)
+    df = _resolve_sheet(filepath, workbook, SEGMENTS_SHEET)
+    if df is None:
+        raise ExcelFormatError(
+            f"Sheet '{SEGMENTS_SHEET}' is required but was missing or empty"
+        )
+    _validate_columns(df, _REQUIRED_SEGMENT_COLS, SEGMENTS_SHEET)
+    df[_SEGMENT_START_COL] = pd.to_datetime(df[_SEGMENT_START_COL], errors="coerce")
+    df[_SEGMENT_END_COL] = pd.to_datetime(df[_SEGMENT_END_COL], errors="coerce")
+
+    # Check for optional Window Label column
+    has_window_label = _SEGMENT_WINDOW_LABEL_COL in df.columns
+
+    # Collect rows by segment ID
+    RawRow = Tuple[
+        int,  # segment_id
+        str,  # segment_name
+        pd.Timestamp,  # start_date
+        pd.Timestamp,  # end_date
+        str | None,  # window_label
+        float | None,  # default_time_seconds
+        float,  # min_distance_meters
+        float,  # birthday_bonus_seconds
+        str,  # row_label
+    ]
+    rows_by_id: Dict[int, List[RawRow]] = {}
+
+    columns = [
+        _SEGMENT_ID_COL,
+        _SEGMENT_NAME_COL,
+        _SEGMENT_START_COL,
+        _SEGMENT_END_COL,
+        _SEGMENT_DEFAULT_TIME_COL,
+        _SEGMENT_MIN_DISTANCE_COL,
+        _SEGMENT_BIRTHDAY_BONUS_COL,
+    ]
+    if has_window_label:
+        columns.insert(4, _SEGMENT_WINDOW_LABEL_COL)
+
+    for row_offset, row_values in enumerate(
+        df[columns].itertuples(index=False, name=None), start=2
+    ):
+        row_label = f"row {row_offset}"
+        if has_window_label:
+            (
+                seg_id,
+                seg_name,
+                start_dt,
+                end_dt,
+                window_label_raw,
+                default_time_raw,
+                min_distance_raw,
+                birthday_bonus_raw,
+            ) = row_values
+        else:
+            (
+                seg_id,
+                seg_name,
+                start_dt,
+                end_dt,
+                default_time_raw,
+                min_distance_raw,
+                birthday_bonus_raw,
+            ) = row_values
+            window_label_raw = None
+
+        # Validate date range
+        if pd.isna(start_dt) or pd.isna(end_dt):
+            raise ExcelFormatError(
+                f"Segment '{seg_name}' in {row_label} has invalid date(s) in "
+                f"'{SEGMENTS_SHEET}' sheet"
+            )
+        if start_dt > end_dt:
+            raise ExcelFormatError(
+                f"Segment '{seg_name}' in {row_label} has inverted date range "
+                f"(start={start_dt} > end={end_dt}) in '{SEGMENTS_SHEET}' sheet"
+            )
+
+        seg_id_int = int(seg_id)
+        window_label = (
+            str(window_label_raw).strip()
+            if window_label_raw is not None and not _is_blank(window_label_raw)
+            else None
+        )
+        default_time = _parse_segment_default_time(
+            default_time_raw, str(seg_name), row_label
+        )
+        min_distance = _parse_segment_min_distance(
+            min_distance_raw, str(seg_name), row_label
+        )
+        birthday_bonus_parsed = _parse_segment_birthday_bonus(
+            birthday_bonus_raw, str(seg_name), row_label
+        )
+        birthday_bonus = birthday_bonus_parsed if birthday_bonus_parsed else 0.0
+
+        row_data: RawRow = (
+            seg_id_int,
+            str(seg_name).strip(),
+            start_dt,
+            end_dt,
+            window_label,
+            default_time,
+            min_distance,
+            birthday_bonus,
+            row_label,
+        )
+        rows_by_id.setdefault(seg_id_int, []).append(row_data)
+
+    # Build SegmentGroup objects with validation
+    groups: List[SegmentGroup] = []
+    for seg_id, rows in rows_by_id.items():
+        # Validate all rows have same segment name
+        names = {r[1] for r in rows}
+        if len(names) > 1:
+            raise ExcelFormatError(
+                f"Segment ID {seg_id} has conflicting names: {sorted(names)}. "
+                f"All rows with the same Segment ID must have the same Segment Name."
+            )
+        seg_name = next(iter(names))
+
+        # Validate default_time matches if specified on multiple rows
+        default_times = [r[5] for r in rows if r[5] is not None]
+        if default_times and len(set(default_times)) > 1:
+            raise ExcelFormatError(
+                f"Segment '{seg_name}' has conflicting Default Time values: "
+                f"{sorted(set(default_times))}. Values must match across rows."
+            )
+        default_time_seconds = default_times[0] if default_times else None
+
+        # Validate min_distance matches if specified (non-zero) on multiple rows
+        min_distances = [r[6] for r in rows if r[6] > 0]
+        if min_distances and len(set(min_distances)) > 1:
+            raise ExcelFormatError(
+                f"Segment '{seg_name}' has conflicting Minimum Distance (m) values: "
+                f"{sorted(set(min_distances))}. Values must match across rows."
+            )
+        min_distance_meters = min_distances[0] if min_distances else None
+
+        # Build windows
+        windows: List[SegmentWindow] = []
+        for row in rows:
+            window = SegmentWindow(
+                start_date=row[2],
+                end_date=row[3],
+                label=row[4],
+                birthday_bonus_seconds=row[7],
+            )
+            windows.append(window)
+
+        # Warn if any windows fully overlap
+        for i, w1 in enumerate(windows):
+            for w2 in windows[i + 1 :]:
+                if _windows_fully_overlap(w1, w2):
+                    warnings.warn(
+                        f"Segment '{seg_name}' has fully overlapping windows: "
+                        f"{w1.start_date} to {w1.end_date}. This is likely a mistake.",
+                        UserWarning,
+                        stacklevel=2,
+                    )
+
+        groups.append(
+            SegmentGroup(
+                id=seg_id,
+                name=seg_name,
+                windows=windows,
+                default_time_seconds=default_time_seconds,
+                min_distance_meters=min_distance_meters,
+            )
+        )
+
+    return groups
+
+
 def read_runners(
     filepath: str | Path, workbook: Optional[object] = None
 ) -> List[Runner]:
@@ -447,6 +643,7 @@ def read_distance_windows(
 __all__ = [
     "ExcelFormatError",
     "read_segments",
+    "read_segment_groups",
     "read_runners",
     "read_distance_windows",
     "workbook_context",

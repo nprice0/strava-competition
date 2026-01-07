@@ -59,15 +59,10 @@ def test_module_wrappers_delegate_to_default_client(monkeypatch):
     def fake_resize(value):
         called["resized"] = value
 
-    monkeypatch.setattr(
-        strava_api.DEFAULT_STRAVA_CLIENT, "get_segment_efforts", fake_efforts
-    )
-    monkeypatch.setattr(
-        strava_api.DEFAULT_STRAVA_CLIENT, "get_activities", fake_activities
-    )
-    monkeypatch.setattr(
-        strava_api.DEFAULT_STRAVA_CLIENT, "set_rate_limiter", fake_resize
-    )
+    client = strava_api.get_default_client()
+    monkeypatch.setattr(client, "get_segment_efforts", fake_efforts)
+    monkeypatch.setattr(client, "get_activities", fake_activities)
+    monkeypatch.setattr(client, "set_rate_limiter", fake_resize)
 
     assert strava_api.get_segment_efforts(runner, 1, _utcnow(), _utcnow()) == ["ok"]
     assert strava_api.get_activities(runner, _utcnow(), _utcnow()) == ["activity"]

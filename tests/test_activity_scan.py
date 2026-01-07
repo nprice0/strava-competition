@@ -26,9 +26,12 @@ def runner() -> Runner:
 
 @pytest.fixture
 def segment() -> Segment:
-    now = datetime.now(timezone.utc)
+    # Use a fixed date range that covers the hardcoded test effort dates (2024-01-01 to 2024-01-05)
     return Segment(
-        id=55, name="Segment", start_date=now - timedelta(days=7), end_date=now
+        id=55,
+        name="Segment",
+        start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+        end_date=datetime(2024, 1, 7, tzinfo=timezone.utc),
     )
 
 

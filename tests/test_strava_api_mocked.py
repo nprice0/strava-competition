@@ -1,4 +1,3 @@
-import json
 from datetime import datetime
 
 import pytest
@@ -9,34 +8,13 @@ from strava_competition.models import Runner
 from strava_competition.strava_client import resources as resource_client
 from strava_competition.strava_client import segment_efforts as segment_client
 
+from conftest import FakeResp, _patch_session
 
-class FakeResp:
-    """Minimal fake response matching needed parts of requests.Response."""
 
-    def __init__(self, status_code=200, data=None, headers=None):
-        self.status_code = status_code
-        self._data = data if data is not None else []
-        self.headers = headers or {}
-
-    def json(self):
-        return self._data
-
-    @property
-    def text(self):
-        try:
-            return json.dumps(self._data)
-        except Exception:
-            return str(self._data)
-
-    @property
-    def content(self):
-        return self.text.encode()
-
-    def raise_for_status(self):
-        if 400 <= self.status_code:
-            import requests
-
-            raise requests.exceptions.HTTPError(response=self)
+@pytest.fixture(autouse=True)
+def reset_default_client(monkeypatch):
+    """Reset the default client before each test to avoid cross-test pollution."""
+    monkeypatch.setattr(strava_api, "_default_client", None)
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +40,13 @@ def disable_capture(monkeypatch):
     )
     monkeypatch.setattr(
         resource_client, "record_response", lambda *args, **kwargs: None
+    )
+    # Also disable segment_efforts replay
+    monkeypatch.setattr(
+        segment_client, "replay_list_response_with_meta", lambda *args, **kwargs: None
+    )
+    monkeypatch.setattr(
+        segment_client, "record_list_response", lambda *args, **kwargs: None
     )
 
 
@@ -104,7 +89,8 @@ def test_get_segment_efforts_pagination(monkeypatch):
             headers={"X-RateLimit-Usage": "11,100", "X-RateLimit-Limit": "100,1000"},
         )
 
-    monkeypatch.setattr(strava_api._session, "get", fake_get)
+    mock_session = type("MockSession", (), {"get": staticmethod(fake_get)})()
+    _patch_session(monkeypatch, mock_session)
     monkeypatch.setattr(
         "strava_competition.strava_client.base.get_access_token",
         lambda rt, runner_name=None: ("at1", rt),
@@ -134,7 +120,8 @@ def test_get_segment_efforts_refresh_on_401(monkeypatch):
             200, data=[{"elapsed_time": 95, "start_date_local": "2024-01-04T12:00:00Z"}]
         )
 
-    monkeypatch.setattr(strava_api._session, "get", fake_get)
+    mock_session = type("MockSession", (), {"get": staticmethod(fake_get)})()
+    _patch_session(monkeypatch, mock_session)
     monkeypatch.setattr(
         "strava_competition.strava_client.base.get_access_token",
         lambda rt, runner_name=None: ("new_access", rt),
@@ -164,7 +151,8 @@ def test_get_segment_efforts_402_json_error(monkeypatch, caplog):
             402, data=error_payload, headers={"Content-Type": "application/json"}
         )
 
-    monkeypatch.setattr(strava_api._session, "get", fake_get)
+    mock_session = type("MockSession", (), {"get": staticmethod(fake_get)})()
+    _patch_session(monkeypatch, mock_session)
     monkeypatch.setattr(
         "strava_competition.strava_client.base.get_access_token",
         lambda rt, runner_name=None: ("tok", rt),
@@ -197,7 +185,8 @@ def test_fetch_segment_geometry_offline_requires_capture(monkeypatch):
     def fail_get(*args, **kwargs):  # pragma: no cover - should never run
         raise AssertionError("HTTP call performed in offline mode")
 
-    monkeypatch.setattr(strava_api._session, "get", fail_get)
+    mock_session = type("MockSession", (), {"get": staticmethod(fail_get)})()
+    _patch_session(monkeypatch, mock_session)
 
     with pytest.raises(StravaAPIError) as excinfo:
         strava_api.fetch_segment_geometry(runner, segment_id=111)
@@ -223,7 +212,8 @@ def test_get_segment_efforts_offline_cache_miss(monkeypatch):
     def fail_get(*args, **kwargs):  # pragma: no cover - should never run
         raise AssertionError("HTTP call performed in offline mode")
 
-    monkeypatch.setattr(strava_api._session, "get", fail_get)
+    mock_session = type("MockSession", (), {"get": staticmethod(fail_get)})()
+    _patch_session(monkeypatch, mock_session)
 
     with pytest.raises(StravaAPIError) as excinfo:
         strava_api.get_segment_efforts(

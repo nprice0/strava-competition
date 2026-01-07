@@ -2,12 +2,35 @@
 
 This app reads an Excel workbook, fetches fresh Strava data, and writes a results workbook ready to share. It's built for club admins who want accurate segment leaderboards and distance summaries without living inside the Strava UI.
 
-You get:
+## Features
 
-- Per-segment leaderboards showing attempts, fastest times, and team rankings
-- Distance competition sheets for every window plus an overall summary
-- Automatic refresh-token updates so the input workbook always stays current
-- An activity-scan fallback that taps Strava's `include_all_efforts` payloads for runners without leaderboard access
+| Feature                    | Description                                                           |
+| -------------------------- | --------------------------------------------------------------------- |
+| **Segment Leaderboards**   | Per-segment sheets showing attempts, fastest times, and team rankings |
+| **Split Windows**          | Run one segment across multiple date windows; best time wins          |
+| **Distance Competitions**  | Track total distance per runner with threshold filtering              |
+| **Birthday Bonus**         | Deduct seconds from efforts on a runner's birthday                    |
+| **Activity Scan Fallback** | Rebuild results from activity payloads when segment API fails         |
+| **Token Auto-Refresh**     | OAuth tokens refreshed and written back automatically                 |
+| **Capture & Replay**       | Cache API responses for offline runs and debugging                    |
+
+---
+
+## Contents
+
+- [What it does](#what-it-does)
+- [Requirements](#requirements)
+- [Configure the app](#configure-the-app)
+- [Workbook layout](#workbook-layout)
+- [Segment Split Windows](#segment-split-windows)
+- [Birthday Bonus](#birthday-bonus)
+- [Getting refresh tokens](#getting-refresh-tokens)
+- [CLI tools](#cli-tools)
+- [Run it](#run-it)
+- [How it works](#how-it-works)
+- [Troubleshooting](#troubleshooting)
+- [Tests](#tests)
+- [Development tips](#development-tips)
 
 ---
 
@@ -105,17 +128,35 @@ Performance tuning knobs—worker counts, HTTP pools, rate limits, retry strateg
 Create a `.env` file in the project root so credentials stay out of source control:
 
 ```dotenv
+# Required credentials
 STRAVA_CLIENT_ID=<your_id>
 STRAVA_CLIENT_SECRET=<your_secret>
+
+# Activity scan fallback
 USE_ACTIVITY_SCAN_FALLBACK=true
+FORCE_ACTIVITY_SCAN_FALLBACK=false
 ACTIVITY_SCAN_MAX_ACTIVITY_PAGES=0
 ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS=true
+
+# Segment split windows
+SEGMENT_SPLIT_WINDOWS_ENABLED=true
+
+# API capture & replay
 STRAVA_API_CAPTURE_ENABLED=true
+STRAVA_API_REPLAY_ENABLED=false
+STRAVA_OFFLINE_MODE=false
 STRAVA_CAPTURE_HASH_IDENTIFIERS=true
 STRAVA_CAPTURE_ID_SALT=please_change_me
 STRAVA_CAPTURE_REDACT_PII=true
 STRAVA_CAPTURE_REDACT_FIELDS=name,email,athlete.firstname,athlete.lastname
 ```
+
+| Variable                        | Default | Description                                                    |
+| ------------------------------- | ------- | -------------------------------------------------------------- |
+| `USE_ACTIVITY_SCAN_FALLBACK`    | `true`  | Fall back to activity scan when segment API fails (402 errors) |
+| `FORCE_ACTIVITY_SCAN_FALLBACK`  | `false` | Always use activity scan, bypassing segment API entirely       |
+| `SEGMENT_SPLIT_WINDOWS_ENABLED` | `true`  | Group duplicate segment IDs into multi-window competitions     |
+| `STRAVA_OFFLINE_MODE`           | `false` | Block all live API calls (requires replay to be enabled)       |
 
 The app pulls in `.env` automatically at startup.
 
@@ -174,7 +215,7 @@ token files to version control. If you flip the flag on:
 
 All sheet names are case-sensitive; match them exactly as written below.
 
-- `Segment Series`: Segment ID, Segment Name, Start Date, End Date, Default Time,
+- `Segment Series`: Segment ID, Segment Name, Start Date, End Date, **Window Label** (optional), Default Time,
   Minimum Distance (m), **Birthday Bonus (secs)**
 - `Runners`: Name, Strava ID, Refresh Token, Segment Series Team,
   Distance Series Team, **Birthday (dd-mmm)**
@@ -184,10 +225,82 @@ Leave a team column blank and that runner quietly skips the related competition.
 
 `Default Time` accepts `HH:MM:SS`, Excel time values, or raw seconds. Every runner with no recorded effort picks up this fallback so rankings always account for the full roster.
 
+### Segment Split Windows
+
+The app supports defining **multiple date windows** for a single segment. This is useful when you want to run a segment competition across several time periods and show each runner's best effort across all windows.
+
+#### How it works
+
+Duplicate rows with the same **Segment ID** are automatically grouped together. Each row becomes a separate window, and the runner's fastest time across all windows appears in the output.
+
+| Segment ID | Segment Name      | Start Date | End Date   | Window Label | Default Time | Min Distance (m) | Birthday Bonus (secs) |
+| ---------- | ----------------- | ---------- | ---------- | ------------ | ------------ | ---------------- | --------------------- |
+| 12345678   | Hill Climb Sprint | 2026-01-01 | 2026-01-15 | Week 1       | 00:10:00     | 500              | 30                    |
+| 12345678   | Hill Climb Sprint | 2026-01-16 | 2026-01-31 | Week 2       |              |                  | 30                    |
+| 12345678   | Hill Climb Sprint | 2026-02-01 | 2026-02-14 | Final Push   |              |                  | 45                    |
+
+**Key rules:**
+
+- **Grouping key**: Rows are grouped by Segment ID (not name). All rows with the same ID must have the same Segment Name.
+- **Window Label**: Optional column for human-friendly tags (e.g., "Week 1", "Final Push"). Used in sheet names when split windows is disabled.
+- **Birthday Bonus**: Can vary per window. Defaults to 0 if omitted.
+- **Default Time / Min Distance**: Apply once per group. Only specify on one row—if set on multiple rows, values must match.
+- **Attempts**: Output shows total attempts across all windows.
+- **Overlapping windows**: Allowed but logs a warning if windows fully overlap (likely user error).
+
+#### Config toggle
+
+Set `SEGMENT_SPLIT_WINDOWS_ENABLED` in `config.py` (default: `True`).
+
+- **Enabled**: Best time across all windows → one output sheet per segment.
+- **Disabled**: Each window → separate sheet. Single-window segments use just the name; multi-window use `{Name} - {Label}` or date range.
+
 `Minimum Distance (m)` is optional per segment. Leave it blank or set it to `0`
 to disable distance filtering. When populated with a positive value the runner's
 effort distance (from Strava's payload) must meet or exceed that threshold to
 count toward rankings.
+
+---
+
+### Birthday Bonus
+
+Give runners a time advantage on their birthday. If a runner completes a segment effort on their birthday, the configured bonus (in seconds) is subtracted from their elapsed time.
+
+**How to configure:**
+
+1. In the `Runners` sheet, add the runner's birthday in `dd-MMM` format (e.g., `15-Jan`, `07-May`)
+2. In the `Segment Series` sheet, set `Birthday Bonus (secs)` to the number of seconds to deduct
+
+**Example:** If a runner's birthday is `15-Jan` and they complete a segment in 120 seconds on January 15th with a 30-second bonus configured, their adjusted time becomes 90 seconds.
+
+**Notes:**
+
+- Bonus is based on the effort's `start_date_local` (when the runner entered the segment)
+- Different windows can have different bonus values (useful for split windows)
+- If no bonus is configured (blank or 0), no adjustment is applied
+- The output indicates whether a birthday bonus was applied via the `birthday_bonus_applied` flag
+
+---
+
+### Distance Series
+
+Track cumulative running distance over time windows. This is separate from segment competitions.
+
+**Workbook columns:**
+
+| Column                  | Description                            |
+| ----------------------- | -------------------------------------- |
+| Start Date              | Beginning of the distance window       |
+| End Date                | End of the distance window             |
+| Distance Threshold (km) | Minimum distance to qualify (optional) |
+
+**How it works:**
+
+1. The app fetches each runner's activities within the date window
+2. Totals the distance from all qualifying activity types (default: runs)
+3. Produces a summary sheet with per-runner and per-team totals
+
+Runners need the `Distance Series Team` column populated in the `Runners` sheet to participate.
 
 ---
 
