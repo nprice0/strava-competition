@@ -1,5 +1,9 @@
 # Strava Segment & Distance Competition Tool
 
+**[README](README.md)** · [Features Guide](FEATURES.md)
+
+---
+
 A command-line tool that reads an Excel workbook, fetches Strava data, and produces a results workbook ready to share. Built for running club admins who want accurate segment leaderboards and distance summaries without living inside the Strava UI.
 
 ## Features
@@ -234,14 +238,14 @@ docker run --rm ^
 
 Helper scripts live under `strava_competition/tools/`:
 
-| Tool                          | Description                                                    |
-| ----------------------------- | -------------------------------------------------------------- |
-| `fetch_runner_segment_efforts` | Dump `/athlete/activities` windows with `include_all_efforts` |
-| `fetch_activity_gps`          | Fetch GPS coordinates for an activity as GPX                   |
-| `fetch_segment_gpx`           | Export a Strava segment as a GPX route file                    |
-| `clip_activity_segment`       | Slice track points from a GPX file for a segment effort        |
-| `deviation_map`               | Build an interactive map showing gate crossings and deviations |
-| `capture_gc`                  | Delete cache responses older than a retention window           |
+| Tool                           | Description                                                    |
+| ------------------------------ | -------------------------------------------------------------- |
+| `fetch_runner_segment_efforts` | Dump `/athlete/activities` windows with `include_all_efforts`  |
+| `fetch_activity_gps`           | Fetch GPS coordinates for an activity as GPX                   |
+| `fetch_segment_gpx`            | Export a Strava segment as a GPX route file                    |
+| `clip_activity_segment`        | Slice track points from a GPX file for a segment effort        |
+| `deviation_map`                | Build an interactive map showing gate crossings and deviations |
+| `capture_gc`                   | Delete cache responses older than a retention window           |
 
 Run any tool with `--help` for usage:
 

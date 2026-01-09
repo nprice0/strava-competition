@@ -1,5 +1,9 @@
 # Features Guide
 
+[README](README.md) · **[Features Guide](FEATURES.md)**
+
+---
+
 This guide explains each feature in detail and how to configure them in your workbook.
 
 ---
@@ -250,35 +254,35 @@ Quick reference for all sheet columns. The "Required" column indicates whether t
 
 ### Runners sheet
 
-| Column               | Required | Description                                             |
-| -------------------- | -------- | ------------------------------------------------------- |
-| Name                 | Yes      | Display name                                            |
-| Strava ID            | Yes      | The athlete's Strava ID                                 |
-| Refresh Token        | Yes      | OAuth refresh token                                     |
-| Segment Series Team  | Yes      | Team for segment competitions (blank = skip)            |
-| Distance Series Team | Yes      | Team for distance competitions (blank = skip)           |
+| Column               | Required | Description                                                       |
+| -------------------- | -------- | ----------------------------------------------------------------- |
+| Name                 | Yes      | Display name                                                      |
+| Strava ID            | Yes      | The athlete's Strava ID                                           |
+| Refresh Token        | Yes      | OAuth refresh token                                               |
+| Segment Series Team  | Yes      | Team for segment competitions (blank = skip)                      |
+| Distance Series Team | Yes      | Team for distance competitions (blank = skip)                     |
 | Birthday (dd-MMM)    | Yes      | Birthday for bonus calculations, e.g. `07-May` (blank = no bonus) |
 
 ### Segment Series sheet
 
-| Column                | Required | Description                                        |
-| --------------------- | -------- | -------------------------------------------------- |
-| Segment ID            | Yes      | Strava segment ID                                  |
-| Segment Name          | Yes      | Display name                                       |
-| Start Date            | Yes      | Window start datetime (Excel datetime or ISO string) |
-| End Date              | Yes      | Window end datetime                                |
-| Window Label          | No       | Label for split windows (e.g. "Week 1")            |
+| Column                | Required | Description                                             |
+| --------------------- | -------- | ------------------------------------------------------- |
+| Segment ID            | Yes      | Strava segment ID                                       |
+| Segment Name          | Yes      | Display name                                            |
+| Start Date            | Yes      | Window start datetime (Excel datetime or ISO string)    |
+| End Date              | Yes      | Window end datetime                                     |
+| Window Label          | No       | Label for split windows (e.g. "Week 1")                 |
 | Default Time          | Yes      | Fallback time for runners with no effort (blank = none) |
-| Minimum Distance (m)  | Yes      | Minimum effort distance to qualify (blank = 0)     |
-| Birthday Bonus (secs) | Yes      | Seconds deducted for birthday efforts (blank = 0)  |
-| Time Bonus (secs)     | No       | Seconds added/subtracted for all runners           |
+| Minimum Distance (m)  | Yes      | Minimum effort distance to qualify (blank = 0)          |
+| Birthday Bonus (secs) | Yes      | Seconds deducted for birthday efforts (blank = 0)       |
+| Time Bonus (secs)     | No       | Seconds added/subtracted for all runners                |
 
 ### Distance Series sheet
 
-| Column                  | Required | Description                          |
-| ----------------------- | -------- | ------------------------------------ |
-| Start Date              | Yes      | Window start datetime                |
-| End Date                | Yes      | Window end datetime                  |
+| Column                  | Required | Description                                       |
+| ----------------------- | -------- | ------------------------------------------------- |
+| Start Date              | Yes      | Window start datetime                             |
+| End Date                | Yes      | Window end datetime                               |
 | Distance Threshold (km) | Yes      | Minimum distance to qualify (blank = include all) |
 
 ---
