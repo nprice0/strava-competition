@@ -1,7 +1,3 @@
----
-title: README
----
-
 # Strava Segment & Distance Competition Tool
 
 A command-line tool that reads an Excel workbook, fetches Strava data, and produces a results workbook ready to share. Built for running club admins who want accurate segment leaderboards and distance summaries without living inside the Strava UI.
@@ -29,7 +25,7 @@ Track cumulative distance over time windows.
 
 - **Token auto-refresh** – OAuth tokens refreshed and written back automatically
 
-📖 **[See the full Features Guide](FEATURES.md)** for detailed configuration options including split windows, bonuses, and thresholds.
+📖 **[See the full Features Guide](docs/FEATURES.md)** for detailed configuration options including split windows, bonuses, and thresholds.
 
 ---
 
