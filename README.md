@@ -100,7 +100,7 @@ Track cumulative running distance over time windows. This is separate from segme
 
 ## Workbook Layout
 
-Your input workbook needs the following sheets (names are case-sensitive):
+Your input workbook needs the following sheets (names are case-sensitive). See [`examples/sample_input.xlsx`](examples/sample_input.xlsx) for a working template.
 
 ### Runners
 
