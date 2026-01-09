@@ -1,98 +1,194 @@
 ---
-description: "Python coding conventions and guidelines"
+description: "Python coding conventions for production-ready code"
 applyTo: "**/*.py"
 ---
 
-## Python Coding Conventions
+## Code Quality Standards
 
-- Follow PEP 8 and keep functions focused, descriptive, and well documented.
-- Always include type hints (`typing`/`collections.abc`) and docstrings that explain
-  inputs, outputs, side effects, and raised exceptions.
-- Provide explanatory comments when behaviour is non-obvious or design
-  trade-offs require justification.
-- Keep lines ≤ 79 characters, use 4-space indentation, and separate logical
-  blocks with blank lines.
+All code must be **production-ready**. This means:
 
-## General development guidance
+- Clean, readable, and self-documenting
+- Fully typed with no `Any` escape hatches unless justified
+- Covered by tests
+- Free of linter, type checker, and security warnings
+- Handles failures gracefully—no silent data loss
+- Logs meaningful diagnostics without exposing secrets
 
-- Optimize for readability and maintainability. Extract helpers when a block of
-  code can be named and tested in isolation.
-- Prefer explicit data structures and control flow over clever or implicit
-  constructs.
-- Keep modules cohesive. Split large modules into smaller ones with clear
-  responsibilities when they grow unwieldy.
+## Python Style
 
-## Testing expectations
+- Follow PEP 8 strictly. Lines ≤ 88 characters (ruff default).
+- 4-space indentation. No tabs.
+- Use trailing commas in multi-line structures.
+- Separate logical blocks with blank lines.
 
-- Add or update pytest coverage for every change that affects logic, including
-  edge cases (empty inputs, invalid data, boundary conditions) and happy paths.
-- Keep tests deterministic by controlling randomness, external services, and
-  timing. Use fixtures and mocks liberally.
-- Run the standard quality gates (`pytest`, `ruff`, `mypy`, `bandit`, etc.)
-  before committing. Document any temporary skips or xfails and link to a
-  follow-up issue when possible.
+## Type Hints
 
-## Error handling & resilience
+- **All** functions, methods, and class attributes must have type hints.
+- Use `typing` and `collections.abc` for complex types.
+- Prefer `X | None` over `Optional[X]` (Python 3.10+).
+- Use `TypedDict`, `NamedTuple`, or dataclasses for structured data—avoid raw dicts.
 
-- Raise explicit exceptions with helpful context. Avoid bare `except` blocks
-  and always clean up resources using context managers or `try/finally`.
-- Log enough information to debug issues without leaking secrets or sensitive
-  data. Keep logging consistent with the existing project style.
+## Docstrings
 
-## Contribution workflow
-
-- Keep commits small and focused. Mention related issues and the tests you ran
-  in commit messages or pull requests.
-- Document new environment variables, configuration knobs, CLI flags, or file
-  formats in both code comments and user-facing docs.
-- If a change affects user-visible behaviour, update relevant documentation in
-  the same pull request.
-- Flag TODOs with context (`TODO(name): reason`) and create follow-up tickets
-  for deferred work.
-
-## Example of proper documentation
-
-Follow Google or NumPy docstring style, whichever the project already uses.
+Every public function, class, and module must have a docstring:
 
 ```python
-import math
-
-
-def calculate_area(radius: float) -> float:
+def fetch_segment_efforts(
+    segment_id: int,
+    start_date: datetime,
+    end_date: datetime,
+) -> list[SegmentEffort]:
     """
-    Calculate the area of a circle given the radius.
+    Fetch all efforts for a segment within a date window.
 
-    Parameters:
-        radius (float): The radius of the circle.
+    Args:
+        segment_id: Strava segment ID.
+        start_date: Window start (inclusive).
+        end_date: Window end (inclusive).
 
     Returns:
-        float: The area of the circle, calculated as π * radius^2.
+        List of efforts ordered by elapsed time.
+
+    Raises:
+        StravaAPIError: If the API request fails.
+        RateLimitError: If rate limits are exceeded.
     """
-    return math.pi * radius ** 2
 ```
 
-## Naming, imports, and structure
+Document:
 
-- Use `snake_case` for functions/variables, `CapWords` for classes, and
-  `UPPER_CASE` for module-level constants.
-- Group imports as standard library, third-party, and local modules—each group
-  separated by a blank line. Prefer absolute imports.
-- Keep helper functions private unless they are intended entry points. Aim for
-  cohesive modules with minimal cross-dependencies.
+- What the function does (not how)
+- All parameters and return values
+- Exceptions that may be raised
+- Side effects if any
 
-## Version control & reviews
+## Naming Conventions
 
-- Write descriptive commit messages (e.g., `Fix cache eviction race`). Mention
-  the tests or tooling executed.
-- Keep pull requests focused on a single change set that includes code, tests,
-  and docs.
-- During reviews, check for adherence to these guidelines and request follow-up
-  issues for known gaps instead of silently accepting them.
+| Element             | Style              | Example                         |
+| ------------------- | ------------------ | ------------------------------- |
+| Functions/variables | `snake_case`       | `fetch_activities`              |
+| Classes             | `CapWords`         | `SegmentEffort`                 |
+| Constants           | `UPPER_CASE`       | `MAX_RETRY_COUNT`               |
+| Private members     | Leading underscore | `_parse_response`               |
+| Type aliases        | `CapWords`         | `RunnerMap = dict[str, Runner]` |
 
-## Tooling reminders
+## Imports
 
-- Run the project's required linters, type checkers, security scanners, and
-  tests before pushing. Capture the output in CI when possible.
-- Use `pre-commit` hooks (or equivalent) to keep formatting and linting
-  consistent across contributors. If the repo provides a hooks config, run
-  `pre-commit install` after cloning.
+Group imports in this order, separated by blank lines:
+
+1. Standard library
+2. Third-party packages
+3. Local modules
+
+Use absolute imports. Avoid `from module import *`.
+
+## Functions & Classes
+
+- Keep functions short and focused—one responsibility per function.
+- Prefer pure functions where possible; isolate side effects.
+- Extract helpers when a block of code can be named and tested in isolation.
+- Use dataclasses or `NamedTuple` over plain tuples or dicts for domain objects.
+- Limit classes to a single responsibility; split large classes.
+
+## Error Handling
+
+- Raise explicit, descriptive exceptions with context.
+- Never use bare `except:`—always catch specific exceptions.
+- Use context managers (`with`) for resource cleanup.
+- Fail fast: validate inputs early and raise immediately.
+- Log exceptions with enough context to debug, but never log secrets.
+
+```python
+# Good
+if not runner.refresh_token:
+    raise ValueError(f"Runner '{runner.name}' is missing a refresh token")
+
+# Bad
+try:
+    ...
+except:
+    pass
+```
+
+## Security
+
+- **Never** hardcode secrets, tokens, or credentials.
+- Load sensitive values from environment variables or `.env`.
+- Validate and sanitise all external inputs (API responses, Excel data).
+- Run `bandit` before committing; fix all warnings.
+- Treat Strava tokens as secrets—never log, print, or expose them.
+- Use HTTPS for all external requests.
+- Set timeouts on all network calls to prevent hangs.
+
+## Testing
+
+- Write tests for **every** change that affects logic.
+- Cover happy paths, edge cases, and error conditions.
+- Keep tests deterministic—mock external services, control time, seed randomness.
+- Use fixtures and factories to reduce test boilerplate.
+- Aim for fast tests; slow tests should be marked and run separately.
+- Test error paths explicitly—verify exceptions are raised with correct messages.
+- Never commit tests that are skipped or xfailed without a linked issue.
+
+Test file structure:
+
+```
+tests/
+  test_<module>.py          # Unit tests matching source modules
+  conftest.py               # Shared fixtures
+```
+
+## Quality Gates
+
+Run these before every commit:
+
+```bash
+ruff check .                # Linting
+ruff format --check .       # Formatting
+mypy .                      # Type checking
+bandit -q -r strava_competition  # Security
+pytest -q                   # Tests
+```
+
+All must pass with zero warnings. No `# type: ignore` without a comment explaining why.
+
+## Git & Pull Requests
+
+- Keep commits small and atomic—one logical change per commit.
+- Write clear commit messages: `Fix token refresh race condition`
+- Include tests and documentation updates in the same PR as code changes.
+- Link to issues where relevant.
+
+## Documentation
+
+- Update README or docstrings when behaviour changes.
+- Document new environment variables, CLI flags, or config options.
+- Add inline comments only when the _why_ isn't obvious from the code.
+
+## Code Smells to Avoid
+
+- Functions longer than 30 lines
+- More than 3 levels of nesting
+- Boolean parameters that change behaviour (`def process(data, fast=False)`)
+- Magic numbers without named constants
+- Mutable default arguments
+- Global state
+- Comments that repeat what the code says
+- Catching exceptions only to re-raise without added context
+- Ignoring return values from functions that can fail
+- Using `print()` instead of proper logging
+
+## Performance & Reliability
+
+- Cache expensive API responses (this project uses `strava_cache/`).
+- Respect Strava rate limits—use backoff and retry logic.
+- Prefer batch operations over loops with individual API calls.
+- Profile before optimising; don't guess at bottlenecks.
+- Handle partial failures—if one runner fails, continue with others.
+
+## API & Data Contracts
+
+- Define clear interfaces with typed models (dataclasses, Pydantic, TypedDict).
+- Validate API responses before processing—don't assume structure.
+- Version any serialised formats (cache files, Excel output schemas).
+- Document breaking changes in commit messages and changelogs.
