@@ -187,10 +187,10 @@ def test_capture_replay_smoke_multiple_runners(monkeypatch):
             idx = seq["value"]
         return {"runner": runner.name, "seq": idx, "context": context}
 
-    monkeypatch.setattr(resources, "record_response", fake_record_response)
-    monkeypatch.setattr(resources, "replay_response", fake_replay_response)
-    monkeypatch.setattr(resources, "STRAVA_API_CAPTURE_ENABLED", True)
-    monkeypatch.setattr(resources, "STRAVA_OFFLINE_MODE", False)
+    monkeypatch.setattr(resources, "save_response_to_cache", fake_record_response)
+    monkeypatch.setattr(resources, "get_cached_response", fake_replay_response)
+    monkeypatch.setattr(resources, "_cache_mode_saves", True)
+    monkeypatch.setattr(resources, "_cache_mode_offline", False)
     monkeypatch.setattr(ResourceAPI, "fetch_json", fake_fetch_json, raising=False)
 
     api = ResourceAPI()
@@ -209,7 +209,7 @@ def test_capture_replay_smoke_multiple_runners(monkeypatch):
     assert len(store) == len(runners)
 
     live_fetch_enabled["value"] = False
-    monkeypatch.setattr(resources, "STRAVA_OFFLINE_MODE", True)
+    monkeypatch.setattr(resources, "_cache_mode_offline", True)
 
     with ThreadPoolExecutor(max_workers=len(runners)) as executor:
         replay_pass = list(executor.map(_fetch_with_capture, runners))

@@ -1,4 +1,4 @@
-"""Activities fetcher with replay-tail refresh logic."""
+"""Activities fetcher with cache tail refresh logic."""
 
 from __future__ import annotations
 
@@ -12,19 +12,19 @@ import requests
 from cachetools import TTLCache
 
 from ..activity_types import activity_type_matches, normalize_activity_type
-from ..api_capture import record_overlay_response, record_response, CaptureRecord
+from ..api_capture import save_overlay_to_cache, save_response_to_cache, CaptureRecord
 from ..config import (
-    ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS,
-    REPLAY_EPSILON_SECONDS,
-    REPLAY_EMPTY_WINDOW_REFRESH_SECONDS,
-    REPLAY_MAX_LOOKBACK_DAYS,
-    STRAVA_API_CAPTURE_ENABLED,
-    STRAVA_API_CAPTURE_OVERWRITE,
-    STRAVA_API_REPLAY_ENABLED,
+    ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS,
+    CACHE_TAIL_OVERLAP_SECONDS,
+    CACHE_EMPTY_REFRESH_SECONDS,
+    CACHE_MAX_LOOKBACK_DAYS,
+    _cache_mode_saves,
+    STRAVA_CACHE_OVERWRITE,
+    _cache_mode_reads,
     STRAVA_BASE_URL,
-    STRAVA_CAPTURE_HASH_IDENTIFIERS,
-    STRAVA_CAPTURE_ID_SALT,
-    STRAVA_OFFLINE_MODE,
+    STRAVA_CACHE_HASH_IDENTIFIERS,
+    STRAVA_CACHE_ID_SALT,
+    _cache_mode_offline,
 )
 from ..errors import StravaAPIError
 from ..models import Runner
@@ -38,8 +38,8 @@ from ..replay_tail import (
 from ..utils import to_utc_aware
 from .base import ensure_runner_token
 from .capture import (
-    record_list_response,
-    replay_list_response_with_meta,
+    save_list_to_cache,
+    get_cached_list_with_meta,
     runner_identity,
 )
 from .pagination import fetch_page_with_retries
@@ -128,28 +128,28 @@ class ActivitiesAPI:
 
         raw_pages: List[JSONList] = []
         cached_pages: List[CachedPage] = []
-        used_replay = False
-        replay_allowed = STRAVA_API_REPLAY_ENABLED
+        used_cache = False
+        cache_available = _cache_mode_reads
 
         def fetch_page(page: int) -> JSONList:
-            nonlocal used_replay, replay_allowed
+            nonlocal used_cache, cache_available
             params = dict(base_params)
             params["page"] = page
             cache_record: Optional[CaptureRecord] = None
-            if replay_allowed:
-                cache_record = replay_list_response_with_meta(
+            if cache_available:
+                cache_record = get_cached_list_with_meta(
                     runner,
                     url,
                     params,
                     context_label="activities",
                     page=page,
-                    replay_enabled=STRAVA_API_REPLAY_ENABLED,
-                    offline_mode=STRAVA_OFFLINE_MODE,
-                    hash_identifiers=STRAVA_CAPTURE_HASH_IDENTIFIERS,
-                    salt=STRAVA_CAPTURE_ID_SALT,
+                    use_cache=_cache_mode_reads,
+                    require_cache=_cache_mode_offline,
+                    hash_identifiers=STRAVA_CACHE_HASH_IDENTIFIERS,
+                    salt=STRAVA_CACHE_ID_SALT,
                 )
                 if cache_record is not None:
-                    used_replay = True
+                    used_cache = True
                     cached_data = cast(JSONList, cache_record.response)
                     cached_pages.append(
                         CachedPage(
@@ -169,14 +169,14 @@ class ActivitiesAPI:
                 limiter=self._limiter,
             )
             if isinstance(result, list):
-                record_list_response(
+                save_list_to_cache(
                     runner,
                     url,
                     dict(params),
                     result,
-                    capture_enabled=STRAVA_API_CAPTURE_ENABLED,
-                    hash_identifiers=STRAVA_CAPTURE_HASH_IDENTIFIERS,
-                    salt=STRAVA_CAPTURE_ID_SALT,
+                    save_to_cache=_cache_mode_saves,
+                    hash_identifiers=STRAVA_CACHE_HASH_IDENTIFIERS,
+                    salt=STRAVA_CACHE_ID_SALT,
                 )
                 return result
             return []
@@ -224,8 +224,8 @@ class ActivitiesAPI:
                 page += 1
 
             raw_activities = _flatten_pages(raw_pages)
-            if used_replay and not STRAVA_OFFLINE_MODE:
-                raw_activities, refreshed = _maybe_refresh_replay_tail(
+            if used_cache and _cache_mode_saves:
+                raw_activities, refreshed = _maybe_refresh_cache_tail(
                     runner,
                     url,
                     base_params,
@@ -290,7 +290,7 @@ class ActivitiesAPI:
         params = {"include_all_efforts": "true"} if include_all_efforts else None
         url = f"{STRAVA_BASE_URL}/activities/{activity_id}"
         context = "activity_detail"
-        if include_all_efforts and ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS:
+        if include_all_efforts and ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS:
             payload = self._resources.fetch_with_capture(
                 runner,
                 url,
@@ -311,7 +311,7 @@ class ActivitiesAPI:
         )
 
 
-def _maybe_refresh_replay_tail(
+def _maybe_refresh_cache_tail(
     runner: Runner,
     url: str,
     base_params: Dict[str, Any],
@@ -336,7 +336,7 @@ def _maybe_refresh_replay_tail(
         latest_cached = start_utc
         LOGGER.info(
             (
-                "Replay cache for runner=%s had no activities and is stale "
+                "Cache for runner=%s had no activities and is stale "
                 "(age=%ds); refreshing full window"
             ),
             runner.name,
@@ -344,16 +344,16 @@ def _maybe_refresh_replay_tail(
         )
     if latest_cached >= end_utc:
         return raw_activities, False
-    if exceeds_lookback(latest_cached, REPLAY_MAX_LOOKBACK_DAYS):
+    if exceeds_lookback(latest_cached, CACHE_MAX_LOOKBACK_DAYS):
         LOGGER.info(
-            "Replay cache for runner=%s exceeds max lookback; skipping tail refresh",
+            "Cache for runner=%s exceeds max lookback; skipping tail refresh",
             runner.name,
         )
         return raw_activities, False
     runner_id = runner_identity(
         runner,
-        hash_identifiers=STRAVA_CAPTURE_HASH_IDENTIFIERS,
-        salt=STRAVA_CAPTURE_ID_SALT,
+        hash_identifiers=STRAVA_CACHE_HASH_IDENTIFIERS,
+        salt=STRAVA_CACHE_ID_SALT,
     )
     refreshed_until = _runner_refresh_deadline(runner_id)
     if refreshed_until and refreshed_until >= end_utc:
@@ -376,7 +376,7 @@ def _maybe_refresh_replay_tail(
     _persist_enriched_pages(runner, url, base_params, paged)
     _mark_runner_refreshed(runner_id, end_utc)
     LOGGER.info(
-        "Replay tail refresh runner=%s cached_latest=%s tail_end=%s live_pages=%s",
+        "Cache tail refresh runner=%s cached_latest=%s tail_end=%s live_pages=%s",
         runner.name,
         latest_cached,
         end_utc,
@@ -399,7 +399,7 @@ def _fetch_tail_pages(
     base_after = max(int(base_params.get("after", 0)), 0)
     base_after_dt = datetime.fromtimestamp(base_after, tz=timezone.utc)
     after_dt = max(
-        base_after_dt, latest_cached - timedelta(seconds=REPLAY_EPSILON_SECONDS)
+        base_after_dt, latest_cached - timedelta(seconds=CACHE_TAIL_OVERLAP_SECONDS)
     )
     after_dt = max(after_dt, window_start)
     if after_dt >= window_end:
@@ -427,14 +427,14 @@ def _fetch_tail_pages(
         if not data:
             break
         tail_pages.append(data)
-        record_list_response(
+        save_list_to_cache(
             runner,
             url,
             dict(params),
             data,
-            capture_enabled=STRAVA_API_CAPTURE_ENABLED,
-            hash_identifiers=STRAVA_CAPTURE_HASH_IDENTIFIERS,
-            salt=STRAVA_CAPTURE_ID_SALT,
+            save_to_cache=_cache_mode_saves,
+            hash_identifiers=STRAVA_CACHE_HASH_IDENTIFIERS,
+            salt=STRAVA_CACHE_ID_SALT,
         )
         if len(data) < per_page:
             break
@@ -448,16 +448,16 @@ def _persist_enriched_pages(
     base_params: Dict[str, Any],
     page_payloads: List[JSONList],
 ) -> None:
-    if not STRAVA_API_CAPTURE_ENABLED:
+    if not _cache_mode_saves:
         LOGGER.warning(
-            "Capture disabled; cannot persist enriched replay data for runner=%s",
+            "Cache saving disabled; cannot persist enriched cache data for runner=%s",
             runner.name,
         )
         return
     identity = runner_identity(
         runner,
-        hash_identifiers=STRAVA_CAPTURE_HASH_IDENTIFIERS,
-        salt=STRAVA_CAPTURE_ID_SALT,
+        hash_identifiers=STRAVA_CACHE_HASH_IDENTIFIERS,
+        salt=STRAVA_CACHE_ID_SALT,
     )
     template = {
         "after": base_params.get("after"),
@@ -484,20 +484,20 @@ def _write_page_overlay(
     params: Dict[str, Any],
     payload: JSONList,
 ) -> None:
-    if STRAVA_API_CAPTURE_OVERWRITE:
-        record_response("GET", url, identity, payload, params=params)
+    if STRAVA_CACHE_OVERWRITE:
+        save_response_to_cache("GET", url, identity, payload, params=params)
     else:
-        record_overlay_response("GET", url, identity, payload, params=params)
+        save_overlay_to_cache("GET", url, identity, payload, params=params)
 
 
 def _stale_empty_cache_age(pages: Sequence[CachedPage]) -> float | None:
-    if REPLAY_EMPTY_WINDOW_REFRESH_SECONDS <= 0:
+    if CACHE_EMPTY_REFRESH_SECONDS <= 0:
         return None
     capture_ts = _latest_capture_timestamp(pages)
     if capture_ts is None:
         return None
     age = (datetime.now(timezone.utc) - capture_ts).total_seconds()
-    if age >= REPLAY_EMPTY_WINDOW_REFRESH_SECONDS:
+    if age >= CACHE_EMPTY_REFRESH_SECONDS:
         return age
     return None
 

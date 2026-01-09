@@ -21,7 +21,7 @@ from ..models import Runner
 from ..strava_api import get_activities
 from ..auth import TokenError
 from ..distance_aggregation import build_distance_outputs
-from ..config import REPLAY_MAX_PARALLELISM
+from ..config import CACHE_REFRESH_PARALLELISM
 
 DistanceWindow = Tuple[datetime, datetime, float | None]
 ActivityRow = Dict[str, Any]
@@ -117,7 +117,7 @@ class DistanceService:
             Tuple of (cache, failed_runner_names).
         """
         cache: ActivityCache = {}
-        max_parallel = max(1, REPLAY_MAX_PARALLELISM)
+        max_parallel = max(1, CACHE_REFRESH_PARALLELISM)
         batch_size = min(max_parallel, len(runners))
         failed_runners: set[str] = set()
         failure_lock = threading.Lock()

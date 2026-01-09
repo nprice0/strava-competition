@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import List
 
 import pytest
+
+import warnings
 
 from strava_competition.activity_scan.scanner import ActivityEffortScanner
 from strava_competition.activity_scan.models import ActivityScanResult
@@ -14,7 +16,7 @@ from strava_competition.errors import StravaAPIError
 from strava_competition.models import Runner, Segment
 from strava_competition.services.segment_service import SegmentService
 
-TEST_CAPTURE_DIR = Path(__file__).resolve().parent / "strava_api_capture"
+TEST_CAPTURE_DIR = Path(__file__).resolve().parent / "strava_cache"
 
 
 @pytest.fixture
@@ -27,56 +29,60 @@ def runner() -> Runner:
 @pytest.fixture
 def segment() -> Segment:
     # Use a fixed date range that covers the hardcoded test effort dates (2024-01-01 to 2024-01-05)
-    return Segment(
-        id=55,
-        name="Segment",
-        start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
-        end_date=datetime(2024, 1, 7, tzinfo=timezone.utc),
-    )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        return Segment(
+            id=55,
+            name="Segment",
+            start_date=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            end_date=datetime(2024, 1, 7, tzinfo=timezone.utc),
+        )
 
 
 @pytest.fixture
 def capture_replay_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Force API capture to use the vendored fixtures under tests/strava_api_capture."""
+    """Force API cache to use the vendored fixtures under tests/strava_cache."""
 
     from strava_competition import api_capture, config, strava_api
 
     monkeypatch.setattr(
-        config, "STRAVA_API_CAPTURE_DIR", str(TEST_CAPTURE_DIR), raising=False
+        config, "STRAVA_CACHE_DIR", str(TEST_CAPTURE_DIR), raising=False
     )
-    monkeypatch.setattr(config, "STRAVA_API_REPLAY_ENABLED", True, raising=False)
-    monkeypatch.setattr(config, "STRAVA_API_CAPTURE_ENABLED", False, raising=False)
-    monkeypatch.setattr(config, "STRAVA_CAPTURE_HASH_IDENTIFIERS", False, raising=False)
-    monkeypatch.setattr(config, "STRAVA_OFFLINE_MODE", True, raising=False)
+    monkeypatch.setattr(config, "_cache_mode_reads", True, raising=False)
+    monkeypatch.setattr(config, "_cache_mode_saves", False, raising=False)
+    monkeypatch.setattr(config, "STRAVA_CACHE_HASH_IDENTIFIERS", False, raising=False)
+    monkeypatch.setattr(config, "_cache_mode_offline", True, raising=False)
 
-    monkeypatch.setenv("STRAVA_API_CAPTURE_DIR", str(TEST_CAPTURE_DIR))
-    monkeypatch.setenv("STRAVA_API_REPLAY_ENABLED", "true")
-    monkeypatch.setenv("STRAVA_API_CAPTURE_ENABLED", "false")
-    monkeypatch.setenv("STRAVA_CAPTURE_HASH_IDENTIFIERS", "false")
-    monkeypatch.setenv("STRAVA_OFFLINE_MODE", "true")
+    monkeypatch.setenv("STRAVA_CACHE_DIR", str(TEST_CAPTURE_DIR))
+    monkeypatch.setenv("STRAVA_API_CACHE_MODE", "offline")
+    monkeypatch.setenv("STRAVA_CACHE_HASH_IDENTIFIERS", "false")
 
     monkeypatch.setattr(
-        api_capture, "STRAVA_API_CAPTURE_DIR", str(TEST_CAPTURE_DIR), raising=False
+        api_capture, "STRAVA_CACHE_DIR", str(TEST_CAPTURE_DIR), raising=False
     )
-    monkeypatch.setattr(api_capture, "STRAVA_API_REPLAY_ENABLED", True, raising=False)
-    monkeypatch.setattr(api_capture, "STRAVA_API_CAPTURE_ENABLED", False, raising=False)
+    monkeypatch.setattr(api_capture, "_use_cache", True, raising=False)
+    monkeypatch.setattr(api_capture, "_save_to_cache", False, raising=False)
     monkeypatch.setattr(api_capture, "_CAPTURE", api_capture.APICapture())
-    monkeypatch.setattr(strava_api, "STRAVA_OFFLINE_MODE", True, raising=False)
+    monkeypatch.setattr(strava_api, "_cache_mode_offline", True, raising=False)
     monkeypatch.setattr(
-        strava_api, "STRAVA_CAPTURE_HASH_IDENTIFIERS", False, raising=False
+        strava_api, "STRAVA_CACHE_HASH_IDENTIFIERS", False, raising=False
     )
 
     import strava_competition.strava_client.activities as activities_client
     import strava_competition.strava_client.capture as capture_client
+    import strava_competition.strava_client.base as base_client
 
-    monkeypatch.setattr(activities_client, "STRAVA_OFFLINE_MODE", True, raising=False)
+    monkeypatch.setattr(activities_client, "_cache_mode_offline", True, raising=False)
+    monkeypatch.setattr(activities_client, "_cache_mode_reads", True, raising=False)
+    monkeypatch.setattr(activities_client, "_cache_mode_saves", False, raising=False)
     monkeypatch.setattr(
-        activities_client, "STRAVA_CAPTURE_HASH_IDENTIFIERS", False, raising=False
+        activities_client, "STRAVA_CACHE_HASH_IDENTIFIERS", False, raising=False
     )
-    monkeypatch.setattr(capture_client, "STRAVA_OFFLINE_MODE", True, raising=False)
+    monkeypatch.setattr(capture_client, "_cache_mode_offline", True, raising=False)
     monkeypatch.setattr(
-        capture_client, "STRAVA_CAPTURE_HASH_IDENTIFIERS", False, raising=False
+        capture_client, "STRAVA_CACHE_HASH_IDENTIFIERS", False, raising=False
     )
+    monkeypatch.setattr(base_client.config, "_cache_mode_offline", True, raising=False)
 
 
 def test_activity_scanner_finds_fastest_effort(

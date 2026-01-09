@@ -48,6 +48,7 @@ class _ValidatedEffort:
     effort: dict
     birthday_bonus_applied: bool
     distance_m: float | None
+    time_bonus_applied: bool = False
 
 
 class SegmentService:
@@ -302,9 +303,11 @@ class SegmentService:
                 return None
 
             # Fetch efforts for this window
-            # Try Strava API first if not payment_required
+            # Try Strava API first if not payment_required and not forcing activity scan
             efforts: List[dict] | None = None
-            if not getattr(runner, "payment_required", False):
+            if not FORCE_ACTIVITY_SCAN_FALLBACK and not getattr(
+                runner, "payment_required", False
+            ):
                 try:
                     efforts = get_segment_efforts(
                         runner,
@@ -330,14 +333,20 @@ class SegmentService:
                     runner, temp_segment, cancel_event
                 )
                 if scan_result:
+                    # Apply time bonus to scan result (birthday bonus already applied)
+                    adjusted_time, time_bonus_was_applied = self._apply_time_bonus(
+                        window,
+                        scan_result.fastest_time,
+                    )
                     # Convert scan result to validated effort for comparison
                     scan_validated = _ValidatedEffort(
-                        adjusted_elapsed=scan_result.fastest_time,
+                        adjusted_elapsed=adjusted_time,
                         raw_elapsed=scan_result.fastest_time,
                         start_date=scan_result.fastest_date,
                         effort={"id": scan_result.diagnostics.get("fastest_effort_id")},
                         birthday_bonus_applied=scan_result.birthday_bonus_applied,
                         distance_m=scan_result.fastest_distance_m,
+                        time_bonus_applied=time_bonus_was_applied,
                     )
                     all_validated.append((window, scan_validated))
                     total_attempts += scan_result.attempts
@@ -358,6 +367,7 @@ class SegmentService:
             "best_window_end": best_window.end_date.isoformat(),
             "best_effort_id": best_effort.effort.get("id"),
             "birthday_bonus_applied": best_effort.birthday_bonus_applied,
+            "time_bonus_applied": best_effort.time_bonus_applied,
         }
         if best_effort.distance_m is not None:
             diagnostics["fastest_distance_m"] = best_effort.distance_m
@@ -370,6 +380,7 @@ class SegmentService:
             fastest_time=best_effort.adjusted_elapsed,
             fastest_date=best_effort.start_date,
             birthday_bonus_applied=best_effort.birthday_bonus_applied,
+            time_bonus_applied=best_effort.time_bonus_applied,
             source="strava",
             diagnostics=diagnostics,
             fastest_distance_m=best_effort.distance_m,
@@ -441,6 +452,11 @@ class SegmentService:
                 elapsed_f,
                 start_dt,
             )
+            # Apply time bonus on top
+            adjusted_elapsed, time_bonus_was_applied = self._apply_time_bonus(
+                window,
+                adjusted_elapsed,
+            )
             valid.append(
                 _ValidatedEffort(
                     adjusted_elapsed=adjusted_elapsed,
@@ -449,6 +465,7 @@ class SegmentService:
                     effort=effort,
                     birthday_bonus_applied=bonus_applied,
                     distance_m=effort_distance,
+                    time_bonus_applied=time_bonus_was_applied,
                 )
             )
 
@@ -469,6 +486,23 @@ class SegmentService:
             return float(elapsed_seconds), False
         adjusted = max(0.0, float(elapsed_seconds) - birthday_bonus_seconds)
         return adjusted, True
+
+    def _apply_time_bonus(
+        self,
+        window: SegmentWindow,
+        elapsed_seconds: float,
+    ) -> tuple[float, bool]:
+        """Apply window-specific time bonus.
+
+        Positive values subtract time (reward), negative values add time (penalty).
+        Returns (adjusted_time, was_applied).
+        """
+        adjustment = window.time_bonus_seconds
+        if adjustment == 0.0:
+            return elapsed_seconds, False
+        # Positive = subtract, negative = add
+        adjusted = elapsed_seconds - adjustment
+        return max(0.0, adjusted), True
 
     def _inject_default_group_results(
         self,
@@ -586,14 +620,19 @@ class SegmentService:
         """Submit concurrent Strava API calls for each runner's segment efforts.
 
         Runners marked as payment_required skip the API and go directly to
-        the fallback queue for activity-scan processing.
+        the fallback queue for activity-scan processing. When
+        FORCE_ACTIVITY_SCAN_FALLBACK is True, all runners go to the fallback
+        queue and no API calls are made.
         """
         future_to_runner: Dict[Future, Runner] = {}
         fallback_queue: List[Runner] = []
         for runner in runners:
             if cancel_event and cancel_event.is_set():
                 break
-            if getattr(runner, "payment_required", False):
+            # Skip API calls entirely when forcing activity scan fallback
+            if FORCE_ACTIVITY_SCAN_FALLBACK or getattr(
+                runner, "payment_required", False
+            ):
                 fallback_queue.append(runner)
                 continue
             future = executor.submit(
@@ -862,6 +901,7 @@ class SegmentService:
             "fastest_effort_id": scan.fastest_effort_id,
             "moving_time": scan.moving_time,
             "birthday_bonus_applied": scan.birthday_bonus_applied,
+            "time_bonus_applied": scan.time_bonus_applied,
         }
         if scan.filtered_efforts_below_distance:
             diagnostics["filtered_efforts_below_distance"] = (
@@ -876,6 +916,7 @@ class SegmentService:
             fastest_time=scan.fastest_elapsed,
             fastest_date=scan.fastest_start_date,
             birthday_bonus_applied=scan.birthday_bonus_applied,
+            time_bonus_applied=scan.time_bonus_applied,
             source="activity_scan",
             diagnostics=diagnostics,
             fastest_distance_m=scan.fastest_distance_m,
@@ -960,6 +1001,7 @@ class SegmentService:
             "best_effort_id": fastest.effort.get("id"),
             "moving_time": fastest.effort.get("moving_time"),
             "birthday_bonus_applied": fastest.birthday_bonus_applied,
+            "time_bonus_applied": fastest.time_bonus_applied,
         }
         if fastest_distance_m is not None:
             diagnostics["fastest_distance_m"] = fastest_distance_m
@@ -976,6 +1018,7 @@ class SegmentService:
             fastest_time=fastest.adjusted_elapsed,
             fastest_date=fastest.start_date,
             birthday_bonus_applied=fastest.birthday_bonus_applied,
+            time_bonus_applied=fastest.time_bonus_applied,
             source="strava",
             diagnostics=diagnostics,
             fastest_distance_m=fastest_distance_m,

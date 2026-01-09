@@ -13,7 +13,10 @@ from strava_competition.tools.geometry.preprocessing import (
     prepare_activity,
     prepare_geometry,
 )
-from strava_competition.tools.geometry.visualization import create_deviation_map
+from strava_competition.tools.geometry.visualization import (
+    create_deviation_map,
+    _DIVERGENCE_COLOR,
+)
 from strava_competition.tools.geometry.validation import compute_coverage
 
 
@@ -83,7 +86,9 @@ def test_create_deviation_map_highlights_divergence(
         for child in map_object._children.values()
         if isinstance(child, folium.vector_layers.PolyLine)
     }
-    assert "#900700" in polyline_colors, "Divergent section should be highlighted"
+    assert _DIVERGENCE_COLOR in polyline_colors, (
+        "Divergent section should be highlighted"
+    )
 
     html = output_path.read_text(encoding="utf-8")
     assert "Max deviation" in html

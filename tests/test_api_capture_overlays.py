@@ -6,10 +6,10 @@ from strava_competition import api_capture
 
 
 def test_overlay_preferred_over_base(tmp_path, monkeypatch) -> None:
-    monkeypatch.setattr(api_capture, "STRAVA_API_CAPTURE_DIR", str(tmp_path))
-    monkeypatch.setattr(api_capture, "STRAVA_API_CAPTURE_ENABLED", True)
-    monkeypatch.setattr(api_capture, "STRAVA_API_REPLAY_ENABLED", True)
-    monkeypatch.setattr(api_capture, "STRAVA_API_CAPTURE_OVERWRITE", True)
+    monkeypatch.setattr(api_capture, "STRAVA_CACHE_DIR", str(tmp_path))
+    monkeypatch.setattr(api_capture, "_cache_mode_saves", True)
+    monkeypatch.setattr(api_capture, "_cache_mode_reads", True)
+    monkeypatch.setattr(api_capture, "STRAVA_CACHE_OVERWRITE", True)
 
     capture = api_capture.APICapture()
     key = api_capture.CaptureKey(

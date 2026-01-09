@@ -80,71 +80,78 @@ CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
 
 
 # ---------------------------------------------------------------------------
-# API capture / replay settings
+# API cache settings
 # ---------------------------------------------------------------------------
-# Enable writing Strava API responses to disk for offline replay. This should
-# only be used in trusted environments because payloads include personal data
-# such as activity names and potentially tokens.
-STRAVA_API_CAPTURE_ENABLED = _env_bool("STRAVA_API_CAPTURE_ENABLED", True)
+# Cache mode controls how the app interacts with Strava API responses on disk.
+#   live    = Always call Strava, never use or save cache
+#   cache   = Use cache + fetch new data since last run (default)
+#   offline = Cache only, fail if data is missing
+STRAVA_API_CACHE_MODE = os.getenv("STRAVA_API_CACHE_MODE", "cache").strip().lower()
 
-# Enable serving responses from disk instead of calling Strava. When enabled,
-# missing files result in a cache miss and a live request when capture is also
-# enabled; otherwise the code raises an exception.
-STRAVA_API_REPLAY_ENABLED = _env_bool("STRAVA_API_REPLAY_ENABLED", True)
+if STRAVA_API_CACHE_MODE not in {"live", "cache", "offline"}:
+    raise ValueError(
+        f"Invalid STRAVA_API_CACHE_MODE: '{STRAVA_API_CACHE_MODE}'. "
+        "Must be 'live', 'cache', or 'offline'."
+    )
+
+# Derived flags for internal use
+_cache_mode_saves = STRAVA_API_CACHE_MODE == "cache"
+_cache_mode_reads = STRAVA_API_CACHE_MODE in {"cache", "offline"}
+_cache_mode_offline = STRAVA_API_CACHE_MODE == "offline"
 
 # Maximum age (days) before a cached activity response is considered stale and
 # automatically refreshed from the live API. Set to 0 to disable the TTL.
-REPLAY_CACHE_TTL_DAYS = _env_int("REPLAY_CACHE_TTL_DAYS", 90)
+CACHE_TTL_DAYS = _env_int("CACHE_TTL_DAYS", 90)
 
 # When replayed activity windows contain no entries, force a live refetch after
 # this many seconds to avoid missing newly recorded efforts. Set to 0 to disable.
-REPLAY_EMPTY_WINDOW_REFRESH_SECONDS = _env_int(
-    "REPLAY_EMPTY_WINDOW_REFRESH_SECONDS", 1 * 3600
-)
+CACHE_EMPTY_REFRESH_SECONDS = _env_int("CACHE_EMPTY_REFRESH_SECONDS", 1 * 3600)
 
 # Guardrail limiting how far back a replayed cache may attempt to "tail" fill
 # before falling back to a full live fetch. Set to 0 to disable.
-REPLAY_MAX_LOOKBACK_DAYS = _env_int("REPLAY_MAX_LOOKBACK_DAYS", 365)
+CACHE_MAX_LOOKBACK_DAYS = _env_int("CACHE_MAX_LOOKBACK_DAYS", 365)
 
 # Small overlap (seconds) applied when requesting the live tail window to avoid
 # missing activities that start near the cached boundary.
-REPLAY_EPSILON_SECONDS = _env_int("REPLAY_EPSILON_SECONDS", 60)
+CACHE_TAIL_OVERLAP_SECONDS = _env_int("CACHE_TAIL_OVERLAP_SECONDS", 60)
 
-# Directory (absolute or relative) where captured responses are stored. The
+# Directory (absolute or relative) where cached responses are stored. The
 # recorder organises files into subfolders using the request signature hash.
-STRAVA_API_CAPTURE_DIR = os.getenv("STRAVA_API_CAPTURE_DIR", "strava_api_capture")
+STRAVA_CACHE_DIR = os.getenv("STRAVA_CACHE_DIR", "strava_cache")
 
-# Overwrite an existing capture file when recording new data. Defaults to
+# Overwrite an existing cache file when recording new data. Defaults to
 # False to keep the first successful response unless behaviour is explicitly
 # requested otherwise.
-STRAVA_API_CAPTURE_OVERWRITE = _env_bool("STRAVA_API_CAPTURE_OVERWRITE", False)
+STRAVA_CACHE_OVERWRITE = _env_bool("STRAVA_CACHE_OVERWRITE", False)
 
-# Hash capture identifiers (runner IDs, etc.) before writing file paths.
-STRAVA_CAPTURE_HASH_IDENTIFIERS = _env_bool("STRAVA_CAPTURE_HASH_IDENTIFIERS", True)
-STRAVA_CAPTURE_ID_SALT = os.getenv("STRAVA_CAPTURE_ID_SALT", "")
+# Hash cache identifiers (runner IDs, etc.) before writing file paths.
+STRAVA_CACHE_HASH_IDENTIFIERS = _env_bool("STRAVA_CACHE_HASH_IDENTIFIERS", True)
+STRAVA_CACHE_ID_SALT = os.getenv("STRAVA_CACHE_ID_SALT", "")
 
 # Redact sensitive fields before persisting payloads to disk.
-STRAVA_CAPTURE_REDACT_PII = _env_bool("STRAVA_CAPTURE_REDACT_PII", True)
-_redact_defaults = "access_token,refresh_token,token,athlete,email"
-STRAVA_CAPTURE_REDACT_FIELDS = {
+# Supports dot-notation for nested fields (e.g., "athlete.firstname").
+# Simple field names match at any nesting level.
+STRAVA_CACHE_REDACT_PII = _env_bool("STRAVA_CACHE_REDACT_PII", True)
+_redact_defaults = (
+    # Tokens and credentials
+    "access_token,refresh_token,token,"
+    # Email anywhere
+    "email,"
+    # Bare field names (match at any nesting level)
+    "firstname,username,sex,profile,profile_medium,"
+    # Specific athlete paths
+    "athlete.firstname,athlete.username,athlete.email,"
+    "athlete.sex,athlete.profile,athlete.profile_medium"
+)
+STRAVA_CACHE_REDACT_FIELDS = {
     field.strip().lower()
-    for field in os.getenv("STRAVA_CAPTURE_REDACT_FIELDS", _redact_defaults).split(",")
+    for field in os.getenv("STRAVA_CACHE_REDACT_FIELDS", _redact_defaults).split(",")
     if field.strip()
 }
 
-# Automatically prune capture files older than this many days. Set to 0 to
+# Automatically prune cache files older than this many days. Set to 0 to
 # disable automatic retention (manual pruning via capture_gc remains available).
-STRAVA_CAPTURE_AUTO_PRUNE_DAYS = _env_int("STRAVA_CAPTURE_AUTO_PRUNE_DAYS", 0)
-
-# Token responses include highly sensitive data and typically do not need to
-# be captured for offline analysis. Disable capture/replay for the OAuth token
-# exchange unless explicitly opted in.
-STRAVA_TOKEN_CAPTURE_ENABLED = _env_bool("STRAVA_TOKEN_CAPTURE_ENABLED", False)
-
-# When enabled, the tool never makes live Strava requests; a cache miss raises
-# an error instead of falling back to HTTP. Useful for deterministic offline
-# runs.
-STRAVA_OFFLINE_MODE = _env_bool("STRAVA_OFFLINE_MODE", False)
+STRAVA_CACHE_AUTO_PRUNE_DAYS = _env_int("STRAVA_CACHE_AUTO_PRUNE_DAYS", 0)
 
 # ---------------------------------------------------------------------------
 # Performance tuning
@@ -153,7 +160,7 @@ STRAVA_OFFLINE_MODE = _env_bool("STRAVA_OFFLINE_MODE", False)
 MAX_WORKERS = 4
 
 # Maximum parallel Strava runner fetches when preloading activity windows.
-REPLAY_MAX_PARALLELISM = _env_int("REPLAY_MAX_PARALLELISM", 4)
+CACHE_REFRESH_PARALLELISM = _env_int("CACHE_REFRESH_PARALLELISM", 4)
 
 # HTTP session pool sizes for concurrent requests.
 HTTP_POOL_CONNECTIONS = 20
@@ -266,8 +273,8 @@ if (
 ):
     ACTIVITY_SCAN_MAX_ACTIVITY_PAGES = None
 
-ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS = _env_bool(
-    "ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS", True
+ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS = _env_bool(
+    "ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS", True
 )
 
 # When True, always bypass Strava efforts and use activity scan. Useful for debugging.

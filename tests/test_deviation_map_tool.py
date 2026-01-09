@@ -6,6 +6,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import folium
+import pytest
+import warnings
 
 from strava_competition.models import Runner, Segment
 from strava_competition.tools.geometry.models import ActivityTrack, SegmentGeometry
@@ -33,12 +35,15 @@ def _build_stub_activity() -> ActivityTrack:
     return ActivityTrack(activity_id=456, points=points, timestamps_s=timestamps)
 
 
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
 def test_build_deviation_map_for_effort(tmp_path: Path) -> None:
     """Ensure the helper produces an interactive map and saves output."""
 
     runner = Runner(name="Test Runner", strava_id="1", refresh_token="token")
     now = datetime.now(timezone.utc)
-    segment = Segment(id=123, name="Stub Segment", start_date=now, end_date=now)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        segment = Segment(id=123, name="Stub Segment", start_date=now, end_date=now)
     segment_geometry = _build_stub_segment()
     activity_track = _build_stub_activity()
 

@@ -1,10 +1,10 @@
-"""Modular Strava client components (rate limiter, session, capture helpers)."""
+"""Modular Strava client components (rate limiter, session, cache helpers)."""
 
 from .capture import (  # noqa: F401
-    record_list_response,
-    replay_list_response,
-    replay_list_response_with_meta,
+    get_cached_list,
+    get_cached_list_with_meta,
     runner_identity,
+    save_list_to_cache,
 )
 from .rate_limiter import RateLimiter  # noqa: F401
 from .resources import ResourceAPI  # noqa: F401

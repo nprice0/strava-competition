@@ -17,10 +17,10 @@ def fixture_temp_capture(
     """Return an APICapture configured to read/write within a temp directory."""
 
     capture_dir = tmp_path / "captures"
-    monkeypatch.setattr(api_capture, "STRAVA_API_CAPTURE_DIR", str(capture_dir))
-    monkeypatch.setattr(api_capture, "STRAVA_API_CAPTURE_ENABLED", True)
-    monkeypatch.setattr(api_capture, "STRAVA_API_REPLAY_ENABLED", True)
-    monkeypatch.setattr(api_capture, "STRAVA_API_CAPTURE_OVERWRITE", True)
+    monkeypatch.setattr(api_capture, "STRAVA_CACHE_DIR", str(capture_dir))
+    monkeypatch.setattr(api_capture, "_cache_mode_saves", True)
+    monkeypatch.setattr(api_capture, "_cache_mode_reads", True)
+    monkeypatch.setattr(api_capture, "STRAVA_CACHE_OVERWRITE", True)
     return api_capture.APICapture()
 
 
@@ -54,7 +54,7 @@ def test_capture_creates_subdirectories(
         body=None,
     )
     temp_capture.store(key, {"value": 42})
-    base_dir = Path(api_capture.STRAVA_API_CAPTURE_DIR)
+    base_dir = Path(api_capture.STRAVA_CACHE_DIR)
     # The capture builds a nested folder structure using the signature prefix.
     files = list(base_dir.rglob("*.json"))
     assert files, "expected at least one capture file"

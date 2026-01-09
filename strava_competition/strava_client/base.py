@@ -28,12 +28,12 @@ def _get_runner_lock(runner_id: str) -> threading.Lock:
 def ensure_runner_token(runner: Runner) -> None:
     """Ensure the runner has a valid access token, refreshing when needed."""
 
-    if config.STRAVA_OFFLINE_MODE:
+    if config._cache_mode_offline:
         if not getattr(runner, "access_token", None) and not getattr(
             runner, "_skip_token_logged", False
         ):
             LOGGER.info(
-                "Skipping Strava token refresh for runner=%s (STRAVA_OFFLINE_MODE)",
+                "Skipping Strava token refresh for runner=%s (STRAVA_API_CACHE_MODE=offline)",
                 getattr(runner, "name", "?"),
             )
             setattr(runner, "_skip_token_logged", True)

@@ -20,7 +20,6 @@ import pytest
 
 from strava_competition import excel_reader
 from strava_competition.errors import ExcelFormatError
-from strava_competition.models import SegmentGroup, SegmentWindow
 from strava_competition.services.segment_service import SegmentService
 
 
@@ -653,3 +652,387 @@ class TestSheetNaming:
 
             assert "Hill Climb - 2024-01-01 to 2024-01-15" in results
             assert "Hill Climb - 2024-01-16 to 2024-01-31" in results
+
+
+# ---------------------------------------------------------------------------
+# Time Bonus Tests
+# ---------------------------------------------------------------------------
+
+
+class TestTimeBonusParsing:
+    """Tests for parsing Time Bonus (secs) column in excel_reader."""
+
+    def test_time_bonus_empty_defaults_to_zero(self):
+        """Empty Time Bonus (secs) cell defaults to 0.0."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Time Bonus (secs)": None,
+                    }
+                ],
+            )
+            groups = excel_reader.read_segment_groups(path)
+            assert groups[0].windows[0].time_bonus_seconds == 0.0
+
+    def test_time_bonus_positive_value_parsed(self):
+        """Positive Time Bonus (secs) is parsed correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Time Bonus (secs)": 30,
+                    }
+                ],
+            )
+            groups = excel_reader.read_segment_groups(path)
+            assert groups[0].windows[0].time_bonus_seconds == 30.0
+
+    def test_time_bonus_negative_value_parsed(self):
+        """Negative Time Bonus (secs) is parsed correctly (penalty)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Time Bonus (secs)": -5,
+                    }
+                ],
+            )
+            groups = excel_reader.read_segment_groups(path)
+            assert groups[0].windows[0].time_bonus_seconds == -5.0
+
+    def test_time_bonus_decimal_value_parsed(self):
+        """Decimal Time Bonus (secs) is parsed correctly."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Time Bonus (secs)": 5.5,
+                    }
+                ],
+            )
+            groups = excel_reader.read_segment_groups(path)
+            assert groups[0].windows[0].time_bonus_seconds == 5.5
+
+    def test_time_bonus_invalid_value_logs_warning_defaults_zero(self, caplog):
+        """Invalid Time Bonus (secs) logs warning and defaults to 0.0."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Time Bonus (secs)": "invalid",
+                    }
+                ],
+            )
+            import logging
+
+            with caplog.at_level(logging.WARNING):
+                groups = excel_reader.read_segment_groups(path)
+            assert groups[0].windows[0].time_bonus_seconds == 0.0
+            assert "Invalid time bonus value" in caplog.text
+
+    def test_different_windows_have_different_time_bonuses(self):
+        """Different windows can have different time bonus values."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 15),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Time Bonus (secs)": 10,
+                        "Window Label": "Week 1",
+                    },
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 16),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Time Bonus (secs)": -5,
+                        "Window Label": "Week 2",
+                    },
+                ],
+            )
+            groups = excel_reader.read_segment_groups(path)
+            assert len(groups[0].windows) == 2
+            bonuses = {w.time_bonus_seconds for w in groups[0].windows}
+            assert bonuses == {10.0, -5.0}
+
+
+class TestTimeBonusApplication:
+    """Tests for time bonus application in SegmentService."""
+
+    def test_positive_bonus_subtracts_time(self, monkeypatch):
+        """Positive time bonus subtracts seconds from elapsed time (reward)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Time Bonus (secs)": 30,
+                    }
+                ],
+            )
+            groups = excel_reader.read_segment_groups(path)
+            runners = excel_reader.read_runners(path)
+
+            import strava_competition.services.segment_service as mod
+
+            def fake_get_efforts(runner, segment_id, start_date, end_date):
+                return [
+                    {
+                        "elapsed_time": 100,
+                        "start_date_local": "2024-01-15T10:00:00Z",
+                    }
+                ]
+
+            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
+            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
+            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+
+            service = SegmentService(max_workers=1)
+            results = service.process_groups(groups, runners)
+
+            alice_result = results["Hill Climb"]["Red"][0]
+            # 100 - 30 = 70
+            assert alice_result.fastest_time == 70.0
+
+    def test_negative_bonus_adds_time(self, monkeypatch):
+        """Negative time bonus adds seconds to elapsed time (penalty)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Time Bonus (secs)": -5,
+                    }
+                ],
+            )
+            groups = excel_reader.read_segment_groups(path)
+            runners = excel_reader.read_runners(path)
+
+            import strava_competition.services.segment_service as mod
+
+            def fake_get_efforts(runner, segment_id, start_date, end_date):
+                return [
+                    {
+                        "elapsed_time": 100,
+                        "start_date_local": "2024-01-15T10:00:00Z",
+                    }
+                ]
+
+            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
+            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
+            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+
+            service = SegmentService(max_workers=1)
+            results = service.process_groups(groups, runners)
+
+            alice_result = results["Hill Climb"]["Red"][0]
+            # 100 - (-5) = 105
+            assert alice_result.fastest_time == 105.0
+
+    def test_time_bonus_stacks_with_birthday_bonus(self, monkeypatch):
+        """Time bonus stacks with birthday bonus (both applied)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 10,  # birthday bonus
+                        "Time Bonus (secs)": 5,  # time bonus
+                    }
+                ],
+            )
+            groups = excel_reader.read_segment_groups(path)
+            runners = excel_reader.read_runners(path)
+
+            import strava_competition.services.segment_service as mod
+
+            # Effort on Alice's birthday (Jan 15)
+            def fake_get_efforts(runner, segment_id, start_date, end_date):
+                return [
+                    {
+                        "elapsed_time": 100,
+                        "start_date_local": "2024-01-15T10:00:00Z",  # Alice's birthday
+                    }
+                ]
+
+            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
+            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
+            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+
+            service = SegmentService(max_workers=1)
+            results = service.process_groups(groups, runners)
+
+            alice_result = results["Hill Climb"]["Red"][0]
+            # 100 - 10 (birthday) - 5 (time) = 85
+            assert alice_result.fastest_time == 85.0
+            assert alice_result.birthday_bonus_applied is True
+
+    def test_time_bonus_floors_at_zero(self, monkeypatch):
+        """Adjusted time cannot go below zero."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Time Bonus (secs)": 200,  # larger than elapsed time
+                    }
+                ],
+            )
+            groups = excel_reader.read_segment_groups(path)
+            runners = excel_reader.read_runners(path)
+
+            import strava_competition.services.segment_service as mod
+
+            def fake_get_efforts(runner, segment_id, start_date, end_date):
+                return [
+                    {
+                        "elapsed_time": 100,
+                        "start_date_local": "2024-01-15T10:00:00Z",
+                    }
+                ]
+
+            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
+            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
+            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+
+            service = SegmentService(max_workers=1)
+            results = service.process_groups(groups, runners)
+
+            alice_result = results["Hill Climb"]["Red"][0]
+            # 100 - 200 = -100, but floored at 0
+            assert alice_result.fastest_time == 0.0
+
+    def test_time_bonus_in_diagnostics(self, monkeypatch):
+        """time_bonus_applied appears in result diagnostics."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Time Bonus (secs)": 10,
+                    }
+                ],
+            )
+            groups = excel_reader.read_segment_groups(path)
+            runners = excel_reader.read_runners(path)
+
+            import strava_competition.services.segment_service as mod
+
+            def fake_get_efforts(runner, segment_id, start_date, end_date):
+                return [
+                    {
+                        "elapsed_time": 100,
+                        "start_date_local": "2024-01-15T10:00:00Z",
+                    }
+                ]
+
+            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
+            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
+            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+
+            service = SegmentService(max_workers=1)
+            results = service.process_groups(groups, runners)
+
+            alice_result = results["Hill Climb"]["Red"][0]
+            assert alice_result.diagnostics.get("time_bonus_applied") is True

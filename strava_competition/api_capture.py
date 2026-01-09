@@ -1,10 +1,10 @@
-"""Utilities for recording and replaying Strava API responses.
+"""Utilities for caching and retrieving Strava API responses.
 
 The Strava competition tooling occasionally needs to run without making live
-HTTP requests. This module provides a lightweight capture/replay layer that can
+HTTP requests. This module provides a lightweight cache layer that can
 persist JSON responses to disk and optionally serve them back on subsequent
-runs. The behaviour is controlled through configuration flags declared in
-``config.py``.
+runs. The behaviour is controlled through the STRAVA_API_CACHE_MODE setting
+declared in ``config.py``.
 """
 
 from __future__ import annotations
@@ -20,13 +20,13 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from .config import (
-    STRAVA_API_CAPTURE_DIR,
-    STRAVA_API_CAPTURE_ENABLED,
-    STRAVA_API_CAPTURE_OVERWRITE,
-    STRAVA_API_REPLAY_ENABLED,
-    STRAVA_CAPTURE_REDACT_PII,
-    STRAVA_CAPTURE_REDACT_FIELDS,
-    STRAVA_CAPTURE_AUTO_PRUNE_DAYS,
+    STRAVA_CACHE_DIR,
+    _cache_mode_saves,
+    STRAVA_CACHE_OVERWRITE,
+    _cache_mode_reads,
+    STRAVA_CACHE_REDACT_PII,
+    STRAVA_CACHE_REDACT_FIELDS,
+    STRAVA_CACHE_AUTO_PRUNE_DAYS,
 )
 from .tools.capture_gc import prune_directory
 from .utils import json_dumps_sorted
@@ -61,32 +61,32 @@ class APICapture:
     """Persistent store for Strava API JSON responses."""
 
     def __init__(self) -> None:
-        base = Path(STRAVA_API_CAPTURE_DIR)
+        base = Path(STRAVA_CACHE_DIR)
         self._base_dir = base if base.is_absolute() else Path.cwd() / base
-        self._record_enabled = STRAVA_API_CAPTURE_ENABLED
-        self._replay_enabled = STRAVA_API_REPLAY_ENABLED
-        self._overwrite = STRAVA_API_CAPTURE_OVERWRITE
+        self._save_to_cache = _cache_mode_saves
+        self._use_cache = _cache_mode_reads
+        self._overwrite = STRAVA_CACHE_OVERWRITE
         self._lock = threading.Lock()
         self._apply_retention_policy()
-        if self._record_enabled or self._replay_enabled:
+        if self._save_to_cache or self._use_cache:
             self._base_dir.mkdir(parents=True, exist_ok=True)
             _LOGGER.info(
-                "API capture initialised dir=%s record=%s replay=%s overwrite=%s",
+                "API cache initialised dir=%s save=%s read=%s overwrite=%s",
                 self._base_dir,
-                self._record_enabled,
-                self._replay_enabled,
+                self._save_to_cache,
+                self._use_cache,
                 self._overwrite,
             )
 
     def enabled_for_record(self) -> bool:
-        """Return True when recording responses to disk."""
+        """Return True when saving responses to disk."""
 
-        return self._record_enabled
+        return self._save_to_cache
 
     def enabled_for_replay(self) -> bool:
-        """Return True when replaying responses from disk."""
+        """Return True when reading responses from disk."""
 
-        return self._replay_enabled
+        return self._use_cache
 
     def _validate_signature(self, signature: str) -> None:
         """Validate signature contains only safe hex characters."""
@@ -168,9 +168,9 @@ class APICapture:
         )
 
     def fetch_record(self, key: CaptureKey) -> Optional["CaptureRecord"]:
-        """Return cached response + metadata when replay is active."""
+        """Return cached response + metadata when cache reading is active."""
 
-        if not self._replay_enabled:
+        if not self._use_cache:
             return None
         signature = self._signature(key)
         overlay = self._load_record(
@@ -187,9 +187,9 @@ class APICapture:
         return None if record is None else record.response
 
     def store(self, key: CaptureKey, response: Any) -> None:
-        """Persist a JSON response when recording is active."""
+        """Persist a JSON response when cache saving is active."""
 
-        if not self._record_enabled:
+        if not self._save_to_cache:
             return
         signature = self._signature(key)
         path = self._file_path(str(signature))
@@ -205,9 +205,9 @@ class APICapture:
         _LOGGER.debug("Captured response signature=%s path=%s", signature, path)
 
     def store_overlay(self, key: CaptureKey, response: Any) -> None:
-        """Persist an enriched response that should override the base capture."""
+        """Persist an enriched response that should override the base cache."""
 
-        if not self._record_enabled:
+        if not self._save_to_cache:
             return
         signature = self._signature(key)
         path = self._overlay_path(signature)
@@ -222,7 +222,7 @@ class APICapture:
         _LOGGER.debug("Overlay stored signature=%s path=%s", signature, path)
 
     def _apply_retention_policy(self) -> None:
-        days = STRAVA_CAPTURE_AUTO_PRUNE_DAYS
+        days = STRAVA_CACHE_AUTO_PRUNE_DAYS
         if days <= 0:
             return
         try:
@@ -244,24 +244,41 @@ class APICapture:
 _CAPTURE = APICapture()
 
 
-def _redact_payload(value: Any) -> Any:
-    if not STRAVA_CAPTURE_REDACT_PII:
+def _redact_payload(value: Any, path: str = "") -> Any:
+    """Recursively redact sensitive fields from a payload.
+
+    Supports both simple field names (match at any level) and dot-notation
+    paths (e.g., "athlete.firstname" only matches firstname inside athlete).
+    """
+    if not STRAVA_CACHE_REDACT_PII:
         return value
     if isinstance(value, dict):
         redacted: Dict[str, Any] = {}
         for key, item in value.items():
             lowered = key.lower() if isinstance(key, str) else key
-            if isinstance(lowered, str) and lowered in STRAVA_CAPTURE_REDACT_FIELDS:
+            if not isinstance(lowered, str):
+                redacted[key] = _redact_payload(item, path)
+                continue
+            # Build the full dot-path for this key
+            full_path = f"{path}.{lowered}" if path else lowered
+            # Check if this field should be redacted:
+            # 1. Exact path match (e.g., "athlete.firstname")
+            # 2. Simple field name match at any level (e.g., "email")
+            should_redact = (
+                full_path in STRAVA_CACHE_REDACT_FIELDS
+                or lowered in STRAVA_CACHE_REDACT_FIELDS
+            )
+            if should_redact:
                 redacted[key] = "***redacted***"
             else:
-                redacted[key] = _redact_payload(item)
+                redacted[key] = _redact_payload(item, full_path)
         return redacted
     if isinstance(value, list):
-        return [_redact_payload(item) for item in value]
+        return [_redact_payload(item, path) for item in value]
     return value
 
 
-def replay_response(
+def get_cached_response(
     method: str,
     url: str,
     identity: str,
@@ -269,7 +286,7 @@ def replay_response(
     params: Optional[Dict[str, Any]] = None,
     body: Optional[Dict[str, Any]] = None,
 ) -> Optional[Any]:
-    """Return a cached response if replay mode is active."""
+    """Return a cached response if cache reading is active."""
 
     return _CAPTURE.fetch(
         CaptureKey(method=method, url=url, identity=identity, params=params, body=body)
@@ -286,7 +303,7 @@ class CaptureRecord:
     source: str
 
 
-def replay_response_with_meta(
+def get_cached_response_with_meta(
     method: str,
     url: str,
     identity: str,
@@ -294,14 +311,14 @@ def replay_response_with_meta(
     params: Optional[Dict[str, Any]] = None,
     body: Optional[Dict[str, Any]] = None,
 ) -> Optional[CaptureRecord]:
-    """Return cached response and metadata when replay mode is active."""
+    """Return cached response and metadata when cache reading is active."""
 
     return _CAPTURE.fetch_record(
         CaptureKey(method=method, url=url, identity=identity, params=params, body=body)
     )
 
 
-def record_response(
+def save_response_to_cache(
     method: str,
     url: str,
     identity: str,
@@ -310,7 +327,7 @@ def record_response(
     params: Optional[Dict[str, Any]] = None,
     body: Optional[Dict[str, Any]] = None,
 ) -> None:
-    """Persist a JSON serialisable response when capture mode is active."""
+    """Persist a JSON serialisable response when cache saving is active."""
 
     _CAPTURE.store(
         CaptureKey(method=method, url=url, identity=identity, params=params, body=body),
@@ -318,7 +335,7 @@ def record_response(
     )
 
 
-def record_overlay_response(
+def save_overlay_to_cache(
     method: str,
     url: str,
     identity: str,
@@ -335,10 +352,10 @@ def record_overlay_response(
     )
 
 
-def capture_modes() -> Dict[str, bool]:
-    """Expose current capture flags for diagnostics."""
+def cache_modes() -> Dict[str, bool]:
+    """Expose current cache flags for diagnostics."""
 
     return {
-        "record": _CAPTURE.enabled_for_record(),
-        "replay": _CAPTURE.enabled_for_replay(),
+        "save": _CAPTURE.enabled_for_record(),
+        "read": _CAPTURE.enabled_for_replay(),
     }

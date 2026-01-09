@@ -9,7 +9,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import requests
 
 from .config import (
-    ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS,
+    ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS,
     REQUEST_TIMEOUT,
     STRAVA_BASE_URL,
 )
@@ -206,7 +206,7 @@ class StravaClient:
         params = {"include_all_efforts": "true"} if include_all_efforts else None
         url = f"{STRAVA_BASE_URL}/activities/{activity_id}"
         context = "activity_detail"
-        if include_all_efforts and ACTIVITY_SCAN_CAPTURE_INCLUDE_ALL_EFFORTS:
+        if include_all_efforts and ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS:
             payload = self._resources.fetch_with_capture(runner, url, params, context)
         else:
             payload = self._resources.fetch_json(runner, url, params, context)

@@ -31,22 +31,22 @@ def no_sleep_rate_limiter(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def disable_capture(monkeypatch):
-    """Force replay misses and prevent filesystem writes during unit tests."""
+    """Force cache misses and prevent filesystem writes during unit tests."""
 
-    monkeypatch.setattr(resource_client, "STRAVA_OFFLINE_MODE", False)
-    monkeypatch.setattr(segment_client, "STRAVA_OFFLINE_MODE", False)
+    monkeypatch.setattr(resource_client, "_cache_mode_offline", False)
+    monkeypatch.setattr(segment_client, "_cache_mode_offline", False)
     monkeypatch.setattr(
-        resource_client, "replay_response", lambda *args, **kwargs: None
+        resource_client, "get_cached_response", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(
-        resource_client, "record_response", lambda *args, **kwargs: None
+        resource_client, "save_response_to_cache", lambda *args, **kwargs: None
     )
     # Also disable segment_efforts replay
     monkeypatch.setattr(
-        segment_client, "replay_list_response_with_meta", lambda *args, **kwargs: None
+        segment_client, "get_cached_list_with_meta", lambda *args, **kwargs: None
     )
     monkeypatch.setattr(
-        segment_client, "record_list_response", lambda *args, **kwargs: None
+        segment_client, "save_list_to_cache", lambda *args, **kwargs: None
     )
 
 

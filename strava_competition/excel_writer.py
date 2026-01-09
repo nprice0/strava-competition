@@ -20,7 +20,9 @@ from .segment_aggregation import (
     FASTEST_SEC_COL,
     FASTEST_FMT_COL,
     FASTEST_DATE_COL,
+    FASTEST_DISTANCE_COL,
     BIRTHDAY_ATTR,
+    TIME_BONUS_ATTR,
 )
 
 SEGMENTS_SHEET = "Segment Series"
@@ -44,8 +46,11 @@ __all__ = [
 
 ResultsMapping = SegResultsMapping
 SUMMARY_HEADER_FONT = Font(bold=True)
-HEADER_FILL = PatternFill(patternType="solid", fgColor="FFFF40FF")
-BIRTHDAY_FILL = PatternFill(patternType="solid", fgColor="FF8EFA00")
+HEADER_FILL = PatternFill(patternType="solid", fgColor="FFFF00FF")
+DISTANCE_HEADER_FILL = PatternFill(patternType="solid", fgColor="FFFF6600")
+BIRTHDAY_FILL = PatternFill(patternType="solid", fgColor="FFFFD89C")
+TIME_BONUS_FILL = PatternFill(patternType="solid", fgColor="FFC9EFEA")
+BOTH_BONUS_FILL = PatternFill(patternType="solid", fgColor="FFEFB5EF")
 HEADER_BORDER = Border(
     left=Side(style="thin", color="000000"),
     right=Side(style="thin", color="000000"),
@@ -179,7 +184,7 @@ def _write_segment_sheets(
         if ws is None:
             continue
         _style_header_row(ws, 1, len(df.columns))
-        _apply_birthday_bonus_fill(ws, df)
+        _apply_bonus_fills(ws, df)
         summary_df = getattr(df, "attrs", {}).get("segment_summary")
         if isinstance(summary_df, pd.DataFrame) and not summary_df.empty:
             _append_segment_summary(ws, summary_df)
@@ -221,6 +226,7 @@ def _write_distance_sheets(
         )
         ws = _get_worksheet(writer, sheet_name)
         if ws is not None:
+            _style_header_row(ws, 1, len(dfw.columns), fill=DISTANCE_HEADER_FILL)
             _autosize(ws)
 
 
@@ -273,22 +279,34 @@ def _append_segment_summary(ws: Worksheet, summary_df: pd.DataFrame) -> None:
         ws.append(list(row))
 
 
-def _style_header_row(ws: Worksheet, row_idx: int, max_col: int | None = None) -> None:
+def _style_header_row(
+    ws: Worksheet,
+    row_idx: int,
+    max_col: int | None = None,
+    fill: PatternFill | None = None,
+) -> None:
     if row_idx <= 0:
         return
     max_col = max_col or ws.max_column
-    fill = PatternFill(patternType="solid", fgColor="FFFF40FF")
+    fill = fill or HEADER_FILL
     for col_idx in range(1, max_col + 1):
         cell = ws.cell(row=row_idx, column=col_idx)
         cell.fill = fill
         cell.border = HEADER_BORDER
 
 
-def _apply_birthday_bonus_fill(ws: Worksheet, df: pd.DataFrame) -> None:
+def _apply_bonus_fills(ws: Worksheet, df: pd.DataFrame) -> None:
+    """Apply fill colors to cells based on birthday and/or time bonus.
+
+    - Birthday bonus only: BIRTHDAY_FILL (peach)
+    - Time bonus only: TIME_BONUS_FILL (mint)
+    - Both bonuses: BOTH_BONUS_FILL (lavender)
+    """
     if ws is None or df is None:
         return
-    bonus_rows = getattr(df, "attrs", {}).get(BIRTHDAY_ATTR)
-    if not bonus_rows:
+    birthday_rows = set(getattr(df, "attrs", {}).get(BIRTHDAY_ATTR) or [])
+    time_bonus_rows = set(getattr(df, "attrs", {}).get(TIME_BONUS_ATTR) or [])
+    if not birthday_rows and not time_bonus_rows:
         return
     columns = list(df.columns)
 
@@ -302,18 +320,29 @@ def _apply_birthday_bonus_fill(ws: Worksheet, df: pd.DataFrame) -> None:
         _col_index(FASTEST_SEC_COL),
         _col_index(FASTEST_FMT_COL),
         _col_index(FASTEST_DATE_COL),
+        _col_index(FASTEST_DISTANCE_COL),
     ]
     target_cols = [idx for idx in target_cols if idx is not None]
     if not target_cols:
         return
-    for row_idx in bonus_rows:
+
+    all_rows = birthday_rows | time_bonus_rows
+    for row_idx in all_rows:
         try:
             excel_row = int(row_idx) + 2  # account for header row
         except (TypeError, ValueError):
             continue
+        has_birthday = row_idx in birthday_rows
+        has_time_bonus = row_idx in time_bonus_rows
+        if has_birthday and has_time_bonus:
+            fill = BOTH_BONUS_FILL
+        elif has_birthday:
+            fill = BIRTHDAY_FILL
+        else:
+            fill = TIME_BONUS_FILL
         for col_idx in target_cols:
             cell = ws.cell(row=excel_row, column=col_idx)
-            cell.fill = BIRTHDAY_FILL
+            cell.fill = fill
 
 
 def _normalise_value(value: object) -> str:

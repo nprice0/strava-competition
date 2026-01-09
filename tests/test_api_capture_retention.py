@@ -33,17 +33,17 @@ def test_auto_prune_removes_old_files(monkeypatch, tmp_path, reload_capture_modu
     old_file = _write_capture(tmp_path / "aa" / "bb" / "old.json", age_days=20)
     fresh_file = _write_capture(tmp_path / "aa" / "bb" / "fresh.json", age_days=1)
 
-    monkeypatch.setenv("STRAVA_API_CAPTURE_ENABLED", "true")
-    monkeypatch.setenv("STRAVA_CAPTURE_AUTO_PRUNE_DAYS", "7")
-    monkeypatch.setenv("STRAVA_API_CAPTURE_DIR", str(tmp_path))
+    monkeypatch.setenv("STRAVA_API_CACHE_MODE", "cache")
+    monkeypatch.setenv("STRAVA_CACHE_AUTO_PRUNE_DAYS", "7")
+    monkeypatch.setenv("STRAVA_CACHE_DIR", str(tmp_path))
 
     reload_capture_modules()
 
     assert not old_file.exists()
     assert fresh_file.exists()
 
-    monkeypatch.delenv("STRAVA_CAPTURE_AUTO_PRUNE_DAYS", raising=False)
-    monkeypatch.delenv("STRAVA_API_CAPTURE_DIR", raising=False)
-    monkeypatch.setenv("STRAVA_API_CAPTURE_ENABLED", "false")
+    monkeypatch.delenv("STRAVA_CACHE_AUTO_PRUNE_DAYS", raising=False)
+    monkeypatch.delenv("STRAVA_CACHE_DIR", raising=False)
+    monkeypatch.setenv("STRAVA_API_CACHE_MODE", "live")
 
     reload_capture_modules()

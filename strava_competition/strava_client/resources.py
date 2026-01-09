@@ -1,4 +1,4 @@
-"""Generic JSON resource fetcher with capture/replay support."""
+"""Generic JSON resource fetcher with cache support."""
 
 from __future__ import annotations
 
@@ -8,13 +8,13 @@ from typing import Any, Dict, Optional
 
 import requests
 
-from ..api_capture import record_response, replay_response
+from ..api_capture import get_cached_response, save_response_to_cache
 from ..config import (
     REQUEST_TIMEOUT,
-    STRAVA_API_CAPTURE_ENABLED,
     STRAVA_BACKOFF_MAX_SECONDS,
     STRAVA_MAX_RETRIES,
-    STRAVA_OFFLINE_MODE,
+    _cache_mode_offline,
+    _cache_mode_saves,
 )
 from ..errors import StravaAPIError
 from ..models import Runner
@@ -138,7 +138,7 @@ class ResourceAPI:
     ) -> Any:
         params_for_capture = dict(params) if params else None
         identity = runner_identity(runner)
-        cached = replay_response(
+        cached = get_cached_response(
             "GET",
             url,
             identity,
@@ -146,23 +146,23 @@ class ResourceAPI:
         )
         if cached is not None:
             LOGGER.debug(
-                "Replay hit for %s runner=%s type=%s",
+                "Cache hit for %s runner=%s type=%s",
                 context,
                 runner.name,
                 type(cached).__name__,
             )
             return cached
-        if STRAVA_OFFLINE_MODE:
+        if _cache_mode_offline:
             message = (
                 f"{context} cache miss for runner {runner.name} while "
-                "STRAVA_OFFLINE_MODE is enabled"
+                "STRAVA_API_CACHE_MODE=offline is enabled"
             )
             LOGGER.error(message)
             raise StravaAPIError(message)
 
         data = self.fetch_json(runner, url, params, context)
-        if STRAVA_API_CAPTURE_ENABLED:
-            record_response(
+        if _cache_mode_saves:
+            save_response_to_cache(
                 "GET",
                 url,
                 identity,
