@@ -1,8 +1,8 @@
-# Features Guide
-
-[README](README.md) · **[Features Guide](FEATURES.md)**
-
 ---
+title: Features Guide
+---
+
+# Features Guide
 
 This guide explains each feature in detail and how to configure them in your workbook.
 
