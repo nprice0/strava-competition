@@ -31,6 +31,7 @@ _SEGMENT_WINDOW_LABEL_COL = "Window Label"
 _SEGMENT_DEFAULT_TIME_COL = "Default Time"
 _SEGMENT_MIN_DISTANCE_COL = "Minimum Distance (m)"
 _SEGMENT_BIRTHDAY_BONUS_COL = "Birthday Bonus (secs)"
+_SEGMENT_TIME_BONUS_COL = "Time Bonus (secs)"
 _REQUIRED_SEGMENT_COLS = {
     _SEGMENT_ID_COL,
     _SEGMENT_NAME_COL,
@@ -40,8 +41,8 @@ _REQUIRED_SEGMENT_COLS = {
     _SEGMENT_MIN_DISTANCE_COL,
     _SEGMENT_BIRTHDAY_BONUS_COL,
 }
-# Window Label is optional
-_OPTIONAL_SEGMENT_COLS = {_SEGMENT_WINDOW_LABEL_COL}
+# Window Label and Time Bonus are optional
+_OPTIONAL_SEGMENT_COLS = {_SEGMENT_WINDOW_LABEL_COL, _SEGMENT_TIME_BONUS_COL}
 _REQUIRED_RUNNER_COLS = {
     "Name",
     "Strava ID",
@@ -221,6 +222,29 @@ def _parse_segment_birthday_bonus(
     return float(seconds)
 
 
+def _parse_time_bonus_seconds(value: object, row_label: str) -> float:
+    """Parse time bonus seconds from cell value, defaulting to 0.0.
+
+    Logs a warning for invalid non-blank values. Unlike birthday bonus,
+    negative values are allowed (they add time as a penalty).
+    """
+    if _is_blank(value):
+        return 0.0
+    if isinstance(value, (int, float)) and not pd.isna(value):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            return float(value)
+        except ValueError:
+            pass
+    LOGGER.warning(
+        "Invalid time bonus value '%s' in %s; defaulting to 0.0",
+        value,
+        row_label,
+    )
+    return 0.0
+
+
 def _parse_segment_min_distance(value: object, seg_name: str, row_label: str) -> float:
     if _is_blank(value):
         return 0.0
@@ -396,6 +420,8 @@ def read_segment_groups(
 
     # Check for optional Window Label column
     has_window_label = _SEGMENT_WINDOW_LABEL_COL in df.columns
+    # Check for optional Time Bonus column
+    has_time_bonus = _SEGMENT_TIME_BONUS_COL in df.columns
 
     # Collect rows by segment ID
     RawRow = Tuple[
@@ -407,6 +433,7 @@ def read_segment_groups(
         float | None,  # default_time_seconds
         float,  # min_distance_meters
         float,  # birthday_bonus_seconds
+        float,  # time_bonus_seconds
         str,  # row_label
     ]
     rows_by_id: Dict[int, List[RawRow]] = {}
@@ -422,32 +449,61 @@ def read_segment_groups(
     ]
     if has_window_label:
         columns.insert(4, _SEGMENT_WINDOW_LABEL_COL)
+    if has_time_bonus:
+        columns.append(_SEGMENT_TIME_BONUS_COL)
 
     for row_offset, row_values in enumerate(
         df[columns].itertuples(index=False, name=None), start=2
     ):
         row_label = f"row {row_offset}"
         if has_window_label:
-            (
-                seg_id,
-                seg_name,
-                start_dt,
-                end_dt,
-                window_label_raw,
-                default_time_raw,
-                min_distance_raw,
-                birthday_bonus_raw,
-            ) = row_values
+            if has_time_bonus:
+                (
+                    seg_id,
+                    seg_name,
+                    start_dt,
+                    end_dt,
+                    window_label_raw,
+                    default_time_raw,
+                    min_distance_raw,
+                    birthday_bonus_raw,
+                    time_bonus_raw,
+                ) = row_values
+            else:
+                (
+                    seg_id,
+                    seg_name,
+                    start_dt,
+                    end_dt,
+                    window_label_raw,
+                    default_time_raw,
+                    min_distance_raw,
+                    birthday_bonus_raw,
+                ) = row_values
+                time_bonus_raw = None
         else:
-            (
-                seg_id,
-                seg_name,
-                start_dt,
-                end_dt,
-                default_time_raw,
-                min_distance_raw,
-                birthday_bonus_raw,
-            ) = row_values
+            if has_time_bonus:
+                (
+                    seg_id,
+                    seg_name,
+                    start_dt,
+                    end_dt,
+                    default_time_raw,
+                    min_distance_raw,
+                    birthday_bonus_raw,
+                    time_bonus_raw,
+                ) = row_values
+            else:
+                (
+                    seg_id,
+                    seg_name,
+                    start_dt,
+                    end_dt,
+                    default_time_raw,
+                    min_distance_raw,
+                    birthday_bonus_raw,
+                ) = row_values
+                time_bonus_raw = None
             window_label_raw = None
 
         # Validate date range
@@ -478,6 +534,7 @@ def read_segment_groups(
             birthday_bonus_raw, str(seg_name), row_label
         )
         birthday_bonus = birthday_bonus_parsed if birthday_bonus_parsed else 0.0
+        time_bonus = _parse_time_bonus_seconds(time_bonus_raw, row_label)
 
         row_data: RawRow = (
             seg_id_int,
@@ -488,6 +545,7 @@ def read_segment_groups(
             default_time,
             min_distance,
             birthday_bonus,
+            time_bonus,
             row_label,
         )
         rows_by_id.setdefault(seg_id_int, []).append(row_data)
@@ -530,6 +588,7 @@ def read_segment_groups(
                 end_date=row[3],
                 label=row[4],
                 birthday_bonus_seconds=row[7],
+                time_bonus_seconds=row[8],
             )
             windows.append(window)
 

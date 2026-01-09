@@ -32,6 +32,9 @@ class SegmentWindow:
     end_date: datetime
     label: str | None = None
     birthday_bonus_seconds: float = 0.0
+    time_bonus_seconds: float = (
+        0.0  # per-window bonus (positive=subtract, negative=add)
+    )
 
 
 @dataclass
@@ -68,6 +71,7 @@ class SegmentResult:
     fastest_time: float
     fastest_date: Optional[datetime]
     birthday_bonus_applied: bool = False
+    time_bonus_applied: bool = False
     source: str = "strava"
     diagnostics: Dict[str, Any] = field(default_factory=dict)
     fastest_distance_m: float | None = None

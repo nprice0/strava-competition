@@ -10,6 +10,7 @@ This app reads an Excel workbook, fetches fresh Strava data, and writes a result
 | **Split Windows**          | Run one segment across multiple date windows; best time wins          |
 | **Distance Competitions**  | Track total distance per runner with threshold filtering              |
 | **Birthday Bonus**         | Deduct seconds from efforts on a runner's birthday                    |
+| **Time Bonus**             | Add or subtract seconds for all runners in a specific window          |
 | **Activity Scan Fallback** | Rebuild results from activity payloads when segment API fails         |
 | **Token Auto-Refresh**     | OAuth tokens refreshed and written back automatically                 |
 | **Capture & Replay**       | Cache API responses for offline runs and debugging                    |
@@ -24,6 +25,7 @@ This app reads an Excel workbook, fetches fresh Strava data, and writes a result
 - [Workbook layout](#workbook-layout)
 - [Segment Split Windows](#segment-split-windows)
 - [Birthday Bonus](#birthday-bonus)
+- [Time Bonus](#time-bonus)
 - [Getting refresh tokens](#getting-refresh-tokens)
 - [CLI tools](#cli-tools)
 - [Run it](#run-it)
@@ -47,8 +49,7 @@ Optional sheets like team or distance summaries only appear when you feed in the
 
 Here’s the workbook-to-results path that both the segment and distance flows follow.
 
-```mermaid
-flowchart LR
+```mermaid%%{init: {'look': 'handDrawn', 'theme': 'base', 'themeVariables': {'primaryColor': '#ddd6fe', 'primaryTextColor': '#1e1b4b', 'primaryBorderColor': '#8b5cf6', 'lineColor': '#6b7280', 'secondaryColor': '#fce7f3', 'tertiaryColor': '#e0f2fe'}}}%%flowchart LR
   subgraph Input
     Excel[(Excel workbook)]
     Config[Config & .env]
@@ -216,18 +217,19 @@ The app supports defining **multiple date windows** for a single segment. This i
 
 Duplicate rows with the same **Segment ID** are automatically grouped together. Each row becomes a separate window, and the runner's fastest time across all windows appears in the output.
 
-| Segment ID | Segment Name      | Start Date | End Date   | Window Label | Default Time | Min Distance (m) | Birthday Bonus (secs) |
-| ---------- | ----------------- | ---------- | ---------- | ------------ | ------------ | ---------------- | --------------------- |
-| 12345678   | Hill Climb Sprint | 2026-01-01 | 2026-01-15 | Week 1       | 00:10:00     | 500              | 30                    |
-| 12345678   | Hill Climb Sprint | 2026-01-16 | 2026-01-31 | Week 2       |              |                  | 30                    |
-| 12345678   | Hill Climb Sprint | 2026-02-01 | 2026-02-14 | Final Push   |              |                  | 45                    |
+| Segment ID | Segment Name      | Start Date | End Date   | Window Label | Default Time | Minimum Distance (m) | Birthday Bonus (secs) | Time Bonus (secs) |
+| ---------- | ----------------- | ---------- | ---------- | ------------ | ------------ | -------------------- | --------------------- | ----------------- |
+| 12345678   | Hill Climb Sprint | 2026-01-01 | 2026-01-15 | Week 1       | 00:10:00     | 500                  | 30                    |                   |
+| 12345678   | Hill Climb Sprint | 2026-01-16 | 2026-01-31 | Week 2       |              |                      | 30                    | -5                |
+| 12345678   | Hill Climb Sprint | 2026-02-01 | 2026-02-14 | Final Push   |              |                      | 45                    | 15                |
 
 **Key rules:**
 
 - **Grouping key**: Rows are grouped by Segment ID (not name). All rows with the same ID must have the same Segment Name.
 - **Window Label**: Optional column for human-friendly tags (e.g., "Week 1", "Final Push"). Used in sheet names when split windows is disabled.
 - **Birthday Bonus**: Can vary per window. Defaults to 0 if omitted.
-- **Default Time / Min Distance**: Apply once per group. Only specify on one row—if set on multiple rows, values must match.
+- **Time Bonus**: Optional per-window adjustment. Positive values subtract time (reward), negative values add time (penalty).
+- **Default Time / Minimum Distance**: Apply once per group. Only specify on one row—if set on multiple rows, values must match.
 - **Attempts**: Output shows total attempts across all windows.
 - **Overlapping windows**: Allowed but logs a warning if windows fully overlap (likely user error).
 
@@ -262,6 +264,35 @@ Give runners a time advantage on their birthday. If a runner completes a segment
 - Different windows can have different bonus values (useful for split windows)
 - If no bonus is configured (blank or 0), no adjustment is applied
 - The output indicates whether a birthday bonus was applied via the `birthday_bonus_applied` flag
+
+---
+
+### Time Bonus
+
+Apply a time bonus (positive or negative) to all runners who complete an effort within a specific window. Unlike birthday bonus, this applies to everyone—not just those on their birthday.
+
+**How to configure:**
+
+In the `Segment Series` sheet, add the `Time Bonus (secs)` column:
+
+- Leave empty or blank for no adjustment
+- **Positive values** subtract time (reward/bonus)
+- **Negative values** add time (penalty)
+
+**Use cases:**
+
+- **Incentivise unlikely days:** e.g., 30-second bonus for running on Christmas Day
+- **Short promotional windows:** e.g., bonus for a 1-hour window on New Year's Eve
+- **Compensate for conditions:** e.g., penalty for a course diversion or adverse weather
+
+**Example:** A window with `Time Bonus (secs) = 15` means all runners in that window get 15 seconds subtracted from their time. A value of `-5` adds 5 seconds (penalty).
+
+**Notes:**
+
+- Stacks with birthday bonus (applied after birthday bonus)
+- Decimal values supported (e.g., `5.5`)
+- Adjusted time floors at 0.0 seconds (cannot go negative)
+- Does **not** apply to default time—only actual efforts
 
 ---
 

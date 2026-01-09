@@ -7,6 +7,11 @@ import pytest
 from openpyxl import load_workbook
 
 from strava_competition import excel_writer, excel_reader
+from strava_competition.excel_writer import (
+    BIRTHDAY_FILL,
+    TIME_BONUS_FILL,
+    BOTH_BONUS_FILL,
+)
 from strava_competition.services.segment_service import SegmentService
 
 
@@ -182,4 +187,219 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
     for col_idx in (fastest_sec_idx, fastest_fmt_idx, fastest_date_idx):
         fill = ws.cell(row=alice_row_idx, column=col_idx).fill
         assert fill is not None
-        assert fill.fgColor.rgb in ("FF8EFA00", "008EFA00")
+        # Verify birthday fill is applied using the constant (not hardcoded color)
+        assert fill.fgColor.rgb == BIRTHDAY_FILL.fgColor.rgb
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_time_bonus_fill_applied(monkeypatch):
+    """Verify TIME_BONUS_FILL is applied to runners with time bonus only."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        in_path = os.path.join(tmpdir, "input.xlsx")
+        out_path = os.path.join(tmpdir, "out.xlsx")
+
+        # Create workbook with time bonus but no birthday bonus
+        segs = pd.DataFrame(
+            [
+                {
+                    "Segment ID": 101,
+                    "Segment Name": "Hill Climb",
+                    "Start Date": datetime(2024, 1, 1),
+                    "End Date": datetime(2024, 1, 31),
+                    "Default Time": None,
+                    "Minimum Distance (m)": 0,
+                    "Birthday Bonus (secs)": 0,  # No birthday bonus
+                    "Time Bonus (secs)": 10,  # Time bonus enabled
+                }
+            ]
+        )
+        runners = pd.DataFrame(
+            [
+                {
+                    "Name": "Bob",
+                    "Strava ID": 2,
+                    "Refresh Token": "rt2",
+                    "Segment Series Team": "Blue",
+                    "Distance Series Team": None,
+                    "Birthday (dd-mmm)": "01-Jul",  # Birthday NOT in window
+                },
+            ]
+        )
+        with pd.ExcelWriter(in_path, engine="openpyxl") as w:
+            segs.to_excel(w, sheet_name="Segment Series", index=False)
+            runners.to_excel(w, sheet_name="Runners", index=False)
+
+        segments = excel_reader.read_segment_groups(in_path)
+        runners_list = excel_reader.read_runners(in_path)
+
+        def fake_get_efforts(runner, segment_id, start_date, end_date):
+            return [{"elapsed_time": 100, "start_date_local": "2024-01-15T09:00:00Z"}]
+
+        import strava_competition.services.segment_service as segment_service_mod
+
+        monkeypatch.setattr(
+            segment_service_mod, "get_segment_efforts", fake_get_efforts
+        )
+        monkeypatch.setattr(segment_service_mod, "get_activities", lambda *a, **k: [])
+        monkeypatch.setattr(segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+        monkeypatch.setattr(segment_service_mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+
+        service = SegmentService(max_workers=1)
+        results = service.process_groups(segments, runners_list)
+        excel_writer.write_results(out_path, results)
+
+        wb = load_workbook(out_path, data_only=True)
+        ws = wb["Hill Climb"]
+
+        # Find Bob's row and verify time bonus fill is applied
+        headers = [cell.value for cell in ws[1]]
+        fastest_sec_idx = headers.index("Fastest Time (sec)") + 1
+        bob_row_idx = None
+        for row_idx in range(2, ws.max_row + 1):
+            if ws.cell(row=row_idx, column=2).value == "Bob":
+                bob_row_idx = row_idx
+                break
+
+        assert bob_row_idx is not None
+        fill = ws.cell(row=bob_row_idx, column=fastest_sec_idx).fill
+        assert fill is not None
+        assert fill.fgColor.rgb == TIME_BONUS_FILL.fgColor.rgb
+        wb.close()
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_both_bonus_fill_applied(monkeypatch):
+    """Verify BOTH_BONUS_FILL is applied when birthday and time bonus both apply."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        in_path = os.path.join(tmpdir, "input.xlsx")
+        out_path = os.path.join(tmpdir, "out.xlsx")
+
+        # Create workbook with both bonuses
+        segs = pd.DataFrame(
+            [
+                {
+                    "Segment ID": 101,
+                    "Segment Name": "Hill Climb",
+                    "Start Date": datetime(2024, 1, 1),
+                    "End Date": datetime(2024, 1, 31),
+                    "Default Time": None,
+                    "Minimum Distance (m)": 0,
+                    "Birthday Bonus (secs)": 5,  # Birthday bonus enabled
+                    "Time Bonus (secs)": 10,  # Time bonus enabled
+                }
+            ]
+        )
+        runners = pd.DataFrame(
+            [
+                {
+                    "Name": "Carol",
+                    "Strava ID": 3,
+                    "Refresh Token": "rt3",
+                    "Segment Series Team": "Green",
+                    "Distance Series Team": None,
+                    "Birthday (dd-mmm)": "15-Jan",  # Birthday IN window
+                },
+            ]
+        )
+        with pd.ExcelWriter(in_path, engine="openpyxl") as w:
+            segs.to_excel(w, sheet_name="Segment Series", index=False)
+            runners.to_excel(w, sheet_name="Runners", index=False)
+
+        segments = excel_reader.read_segment_groups(in_path)
+        runners_list = excel_reader.read_runners(in_path)
+
+        def fake_get_efforts(runner, segment_id, start_date, end_date):
+            # Effort on Carol's birthday
+            return [{"elapsed_time": 100, "start_date_local": "2024-01-15T09:00:00Z"}]
+
+        import strava_competition.services.segment_service as segment_service_mod
+
+        monkeypatch.setattr(
+            segment_service_mod, "get_segment_efforts", fake_get_efforts
+        )
+        monkeypatch.setattr(segment_service_mod, "get_activities", lambda *a, **k: [])
+        monkeypatch.setattr(segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+        monkeypatch.setattr(segment_service_mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+
+        service = SegmentService(max_workers=1)
+        results = service.process_groups(segments, runners_list)
+        excel_writer.write_results(out_path, results)
+
+        wb = load_workbook(out_path, data_only=True)
+        ws = wb["Hill Climb"]
+
+        # Find Carol's row and verify both-bonus fill is applied
+        headers = [cell.value for cell in ws[1]]
+        fastest_sec_idx = headers.index("Fastest Time (sec)") + 1
+        carol_row_idx = None
+        for row_idx in range(2, ws.max_row + 1):
+            if ws.cell(row=row_idx, column=2).value == "Carol":
+                carol_row_idx = row_idx
+                break
+
+        assert carol_row_idx is not None
+        fill = ws.cell(row=carol_row_idx, column=fastest_sec_idx).fill
+        assert fill is not None
+        assert fill.fgColor.rgb == BOTH_BONUS_FILL.fgColor.rgb
+        wb.close()
+
+
+@pytest.mark.filterwarnings("ignore::DeprecationWarning")
+def test_time_bonus_applied_field_set(monkeypatch):
+    """Verify time_bonus_applied field is set on SegmentResult."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        in_path = os.path.join(tmpdir, "input.xlsx")
+
+        segs = pd.DataFrame(
+            [
+                {
+                    "Segment ID": 101,
+                    "Segment Name": "Hill Climb",
+                    "Start Date": datetime(2024, 1, 1),
+                    "End Date": datetime(2024, 1, 31),
+                    "Default Time": None,
+                    "Minimum Distance (m)": 0,
+                    "Birthday Bonus (secs)": 0,
+                    "Time Bonus (secs)": 15,
+                }
+            ]
+        )
+        runners = pd.DataFrame(
+            [
+                {
+                    "Name": "Dave",
+                    "Strava ID": 4,
+                    "Refresh Token": "rt4",
+                    "Segment Series Team": "Red",
+                    "Distance Series Team": None,
+                    "Birthday (dd-mmm)": "01-Dec",
+                },
+            ]
+        )
+        with pd.ExcelWriter(in_path, engine="openpyxl") as w:
+            segs.to_excel(w, sheet_name="Segment Series", index=False)
+            runners.to_excel(w, sheet_name="Runners", index=False)
+
+        segments = excel_reader.read_segment_groups(in_path)
+        runners_list = excel_reader.read_runners(in_path)
+
+        def fake_get_efforts(runner, segment_id, start_date, end_date):
+            return [{"elapsed_time": 100, "start_date_local": "2024-01-10T09:00:00Z"}]
+
+        import strava_competition.services.segment_service as segment_service_mod
+
+        monkeypatch.setattr(
+            segment_service_mod, "get_segment_efforts", fake_get_efforts
+        )
+        monkeypatch.setattr(segment_service_mod, "get_activities", lambda *a, **k: [])
+        monkeypatch.setattr(segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+        monkeypatch.setattr(segment_service_mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+
+        service = SegmentService(max_workers=1)
+        results = service.process_groups(segments, runners_list)
+
+        dave_result = results["Hill Climb"]["Red"][0]
+        # Verify the field is set directly on SegmentResult
+        assert dave_result.time_bonus_applied is True
+        # Verify adjusted time: 100 - 15 = 85
+        assert dave_result.fastest_time == 85.0

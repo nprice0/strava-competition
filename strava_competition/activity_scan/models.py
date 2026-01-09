@@ -22,4 +22,5 @@ class ActivityScanResult:
     effort_ids: List[int | str] = field(default_factory=list)
     inspected_activities: List[Dict[str, object]] = field(default_factory=list)
     birthday_bonus_applied: bool = False
+    time_bonus_applied: bool = False
     filtered_efforts_below_distance: int = 0

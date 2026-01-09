@@ -27,6 +27,8 @@ RANK_COL = "Rank"
 TEAM_RANK_COL = "Team Rank"
 BIRTHDAY_FLAG_COL = "_birthday_bonus_applied"
 BIRTHDAY_ATTR = "birthday_bonus_rows"
+TIME_BONUS_FLAG_COL = "_time_bonus_applied"
+TIME_BONUS_ATTR = "time_bonus_rows"
 
 SUMMARY_TEAM_COL = "Team"
 SUMMARY_TOTAL_FASTEST_COL = "Total Fastest time"
@@ -121,6 +123,7 @@ def _rows_for_segment(
                     FASTEST_DATE_COL: r.fastest_date,
                     FASTEST_DISTANCE_COL: _format_fastest_distance(distance_value),
                     BIRTHDAY_FLAG_COL: r.birthday_bonus_applied,
+                    TIME_BONUS_FLAG_COL: r.time_bonus_applied,
                 }
             )
     return rows
@@ -361,6 +364,16 @@ def build_segment_outputs(
             df = df.drop(columns=[BIRTHDAY_FLAG_COL])
             if bonus_rows:
                 df.attrs[BIRTHDAY_ATTR] = bonus_rows
+        if TIME_BONUS_FLAG_COL in df.columns:
+            column_values = df[TIME_BONUS_FLAG_COL].tolist()
+            time_bonus_rows = [
+                idx for idx, flag in enumerate(column_values) if bool(flag)
+            ]
+            if time_bonus_rows:
+                df.attrs[TIME_BONUS_ATTR] = time_bonus_rows
+            df = df.drop(columns=[TIME_BONUS_FLAG_COL])
+            if time_bonus_rows:
+                df.attrs[TIME_BONUS_ATTR] = time_bonus_rows
         team_rank_totals = _compute_team_rank_totals(df)
         summary_df = _build_segment_team_summary(team_data, team_rank_totals)
         if not summary_df.empty:
