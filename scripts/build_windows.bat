@@ -31,7 +31,7 @@ echo Installing build dependencies...
 pip install pyinstaller --quiet
 pip install -r requirements.txt --quiet
 
-REM Run the build script
+REM Run the build script from repo root (ensures run.py is found)
 echo.
 echo Running build process...
 python scripts/build_windows.py
