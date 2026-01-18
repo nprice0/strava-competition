@@ -59,12 +59,12 @@ if callable(_load_dotenv):
 # ---------------------------------------------------------------------------
 # Input/Output
 # ---------------------------------------------------------------------------
-# Paths can be absolute or relative. Default to data/ subfolder.
-INPUT_FILE = "data/competition_input.xlsx"
-OUTPUT_FILE = "data/competition_results"
+# Paths can be absolute or relative. Default to current directory for distribution.
+INPUT_FILE = os.getenv("INPUT_FILE", "competition_input.xlsx")
+OUTPUT_FILE = os.getenv("OUTPUT_FILE", "competition_results")
 
 # Append _YYYYMMDD_HHMMSS to the output name when True.
-OUTPUT_FILE_TIMESTAMP_ENABLED = True
+OUTPUT_FILE_TIMESTAMP_ENABLED = _env_bool("OUTPUT_FILE_TIMESTAMP_ENABLED", True)
 
 
 # ---------------------------------------------------------------------------
