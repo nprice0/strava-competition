@@ -13,7 +13,6 @@ Or use the build script:
 import os
 from pathlib import Path
 
-os.chdir(project_root)
 # Change to project root (spec file is in scripts/)
 spec_dir = os.path.dirname(os.path.abspath(SPEC))
 project_root = str(Path(spec_dir).parent)
