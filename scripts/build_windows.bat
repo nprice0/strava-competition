@@ -10,6 +10,14 @@ echo.
 REM Change to project root (parent of scripts folder)
 cd /d "%~dp0.."
 
+REM Ensure spec file exists
+if not exist "scripts\strava_competition.spec" (
+    echo ERROR: scripts\strava_competition.spec not found.
+    echo Please run this script from the repository root and ensure the file exists.
+    pause
+    exit /b 1
+)
+
 REM Check if Python is available
 python --version >nul 2>&1
 if errorlevel 1 (
