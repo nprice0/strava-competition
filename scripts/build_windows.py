@@ -19,6 +19,8 @@ The output will be in the 'dist' folder at project root.
 """
 
 import ast
+import importlib
+import logging
 import os
 import re
 import secrets
@@ -29,52 +31,55 @@ from datetime import datetime
 from pathlib import Path
 from zipfile import ZipFile
 
-# Ensure we're working from project root
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
 SCRIPT_DIR = Path(__file__).parent
 PROJECT_ROOT = SCRIPT_DIR.parent
-os.chdir(PROJECT_ROOT)
+SPEC_FILE = SCRIPT_DIR / "strava_competition.spec"
+REQUIREMENTS_FILE = PROJECT_ROOT / "requirements.txt"
+SOURCE_DIR = PROJECT_ROOT / "strava_competition"
+DIST_DIR = PROJECT_ROOT / "dist"
+BUILD_DIR = PROJECT_ROOT / "build"
 
+MIN_PYTHON_VERSION = (3, 10)
+EXECUTABLE_NAME = "StravaCompetition.exe"
+APP_NAME = "Strava Competition Tool"
 
-def get_spec_hidden_imports() -> set[str]:
-    """Parse hidden_imports from the spec file."""
-    spec_file = SCRIPT_DIR / "strava_competition.spec"
-    if not spec_file.exists():
-        return set()
+# Packages required for the build (subset of requirements.txt)
+REQUIRED_BUILD_PACKAGES = [
+    "pandas",
+    "openpyxl",
+    "requests",
+    "flask",
+    "shapely",
+    "pyproj",
+]
 
-    content = spec_file.read_text()
-    # Find the hidden_imports list
-    match = re.search(r"hidden_imports\s*=\s*\[(.*?)\]", content, re.DOTALL)
-    if not match:
-        return set()
+# Dev-only packages to exclude when checking requirements coverage
+DEV_ONLY_PACKAGES = frozenset(
+    {
+        "pytest",
+        "ruff",
+        "mypy",
+        "bandit",
+        "types-cachetools",
+        "types-requests",
+    }
+)
 
-    imports = set()
-    for line in match.group(1).split("\n"):
-        # Extract quoted strings
-        for m in re.findall(r"'([^']+)'", line):
-            imports.add(m.split(".")[0])  # Get top-level package
-    return imports
+# Map import names to PyPI package names (where they differ)
+IMPORT_TO_PACKAGE_MAP: dict[str, str] = {
+    "cv2": "opencv-python",
+    "PIL": "pillow",
+    "sklearn": "scikit-learn",
+    "yaml": "pyyaml",
+    "dotenv": "python-dotenv",
+}
 
-
-def get_requirements_packages() -> set[str]:
-    """Parse packages from requirements.txt."""
-    req_file = Path("requirements.txt")
-    if not req_file.exists():
-        return set()
-
-    packages = set()
-    for line in req_file.read_text().splitlines():
-        line = line.strip()
-        if line and not line.startswith("#"):
-            # Extract package name (before any version specifier)
-            pkg = re.split(r"[<>=!~\[]", line)[0].strip().lower()
-            if pkg:
-                packages.add(pkg)
-    return packages
-
-
-def get_code_imports() -> set[str]:
-    """Scan all Python files for third-party imports."""
-    stdlib = {
+# Python standard library modules (common subset)
+STDLIB_MODULES = frozenset(
+    {
         "abc",
         "argparse",
         "ast",
@@ -121,164 +126,235 @@ def get_code_imports() -> set[str]:
         "xml",
         "zipfile",
     }
+)
 
-    imports = set()
-    for py_file in Path("strava_competition").rglob("*.py"):
+# Environment variables to include in distribution
+ESSENTIAL_ENV_VARS = ("STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET")
+
+# ---------------------------------------------------------------------------
+# Logging setup
+# ---------------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+)
+logger = logging.getLogger(__name__)
+
+# Ensure we're working from project root
+os.chdir(PROJECT_ROOT)
+
+
+def get_spec_hidden_imports() -> set[str]:
+    """
+    Parse hidden_imports from the spec file.
+
+    Returns:
+        Set of top-level package names declared in the spec file.
+    """
+    if not SPEC_FILE.exists():
+        return set()
+
+    content = SPEC_FILE.read_text()
+    match = re.search(r"hidden_imports\s*=\s*\[(.*?)\]", content, re.DOTALL)
+    if not match:
+        return set()
+
+    imports: set[str] = set()
+    for line in match.group(1).split("\n"):
+        for module in re.findall(r"'([^']+)'", line):
+            imports.add(module.split(".")[0])  # Get top-level package
+    return imports
+
+
+def get_requirements_packages() -> set[str]:
+    """
+    Parse package names from requirements.txt.
+
+    Returns:
+        Set of lowercase package names from requirements.
+    """
+    if not REQUIREMENTS_FILE.exists():
+        return set()
+
+    packages: set[str] = set()
+    for line in REQUIREMENTS_FILE.read_text().splitlines():
+        line = line.strip()
+        if line and not line.startswith("#"):
+            # Extract package name (before any version specifier)
+            pkg = re.split(r"[<>=!~\[]", line)[0].strip().lower()
+            if pkg:
+                packages.add(pkg)
+    return packages
+
+
+def get_code_imports() -> set[str]:
+    """
+    Scan all Python files in the source directory for third-party imports.
+
+    Returns:
+        Set of third-party package names imported in the codebase.
+    """
+    imports: set[str] = set()
+
+    for py_file in SOURCE_DIR.rglob("*.py"):
         try:
             tree = ast.parse(py_file.read_text())
             for node in ast.walk(tree):
                 if isinstance(node, ast.Import):
                     for alias in node.names:
                         imports.add(alias.name.split(".")[0])
-                elif isinstance(node, ast.ImportFrom):
-                    if node.module:
-                        imports.add(node.module.split(".")[0])
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imports.add(node.module.split(".")[0])
         except SyntaxError:
-            pass
+            logger.warning("  Skipping %s (syntax error)", py_file)
 
     # Filter out stdlib and local imports
-    imports -= stdlib
+    imports -= STDLIB_MODULES
     imports -= {"strava_competition"}
     return imports
 
 
 def check_imports() -> None:
-    """Check if all imported packages are in the spec file."""
-    print("\nChecking imports...")
+    """
+    Check if all imported packages are covered in the spec file.
+
+    Prints warnings for any imports found in code but not in hidden_imports.
+    This helps catch missing dependencies before distribution.
+    """
+    logger.info("\nChecking imports...")
 
     spec_imports = get_spec_hidden_imports()
     code_imports = get_code_imports()
     requirements = get_requirements_packages()
 
-    # Map common import names to package names
-    import_to_package = {
-        "cv2": "opencv-python",
-        "PIL": "pillow",
-        "sklearn": "scikit-learn",
-        "yaml": "pyyaml",
-        "dotenv": "python-dotenv",
-    }
-
     # Find imports used in code but not in spec
     missing_from_spec = code_imports - spec_imports
 
     if missing_from_spec:
-        print("\n⚠️  Imports found in code but not in spec file hidden_imports:")
+        logger.warning(
+            "\n⚠️  Imports found in code but not in spec file hidden_imports:"
+        )
         for imp in sorted(missing_from_spec):
-            pkg_name = import_to_package.get(imp, imp)
-            in_req = (
+            pkg_name = IMPORT_TO_PACKAGE_MAP.get(imp, imp)
+            status = (
                 "✓ in requirements.txt"
                 if pkg_name.lower() in requirements
                 else "⚠️ not in requirements.txt"
             )
-            print(f"    '{imp}',  # {in_req}")
-        print(
+            logger.warning("    '%s',  # %s", imp, status)
+        logger.info(
             "\n  Add these to hidden_imports in scripts/strava_competition.spec if needed."
         )
-        print("  (Some may be auto-detected by PyInstaller)")
+        logger.info("  (Some may be auto-detected by PyInstaller)")
     else:
-        print("  ✓ All code imports appear to be covered in spec file")
+        logger.info("  ✓ All code imports appear to be covered in spec file")
 
-    # Also check requirements vs spec
-    req_not_in_spec = (
-        requirements
-        - spec_imports
-        - {"pytest", "ruff", "mypy", "bandit", "types-cachetools", "types-requests"}
-    )
+    # Also check requirements vs spec (excluding dev-only packages)
+    req_not_in_spec = requirements - spec_imports - DEV_ONLY_PACKAGES
     if req_not_in_spec:
-        print(
+        logger.info(
             "\n  Note: These requirements.txt packages aren't explicitly in hidden_imports:"
         )
         for pkg in sorted(req_not_in_spec):
-            print(f"    {pkg}")
-        print("  (PyInstaller usually auto-detects these)")
+            logger.info("    %s", pkg)
+        logger.info("  (PyInstaller usually auto-detects these)")
 
 
 def check_prerequisites() -> bool:
-    """Verify all prerequisites are met."""
-    print("Checking prerequisites...")
+    """
+    Verify all prerequisites are met for building.
+
+    Returns:
+        True if all prerequisites are satisfied, False otherwise.
+    """
+    logger.info("Checking prerequisites...")
 
     # Check Python version
-    if sys.version_info < (3, 10):
-        print(f"ERROR: Python 3.10+ required, found {sys.version}")
+    if sys.version_info < MIN_PYTHON_VERSION:
+        logger.error(
+            "ERROR: Python %d.%d+ required, found %s",
+            MIN_PYTHON_VERSION[0],
+            MIN_PYTHON_VERSION[1],
+            sys.version,
+        )
         return False
-    print(f"  ✓ Python {sys.version_info.major}.{sys.version_info.minor}")
+    logger.info("  ✓ Python %d.%d", sys.version_info.major, sys.version_info.minor)
 
     # Check PyInstaller
     try:
-        import PyInstaller
-
-        print(f"  ✓ PyInstaller {PyInstaller.__version__}")
+        pyinstaller = importlib.import_module("PyInstaller")
+        logger.info("  ✓ PyInstaller %s", pyinstaller.__version__)
     except ImportError:
-        print("  ✗ PyInstaller not found. Install with: pip install pyinstaller")
+        logger.error("  ✗ PyInstaller not found. Install with: pip install pyinstaller")
         return False
 
     # Check key dependencies
-    required = ["pandas", "openpyxl", "requests", "flask", "shapely", "pyproj"]
-    for pkg in required:
+    for pkg in REQUIRED_BUILD_PACKAGES:
         try:
-            __import__(pkg)
-            print(f"  ✓ {pkg}")
+            importlib.import_module(pkg)
+            logger.info("  ✓ %s", pkg)
         except ImportError:
-            print(f"  ✗ {pkg} not found. Install dependencies first.")
+            logger.error("  ✗ %s not found. Install dependencies first.", pkg)
             return False
 
     return True
 
 
 def clean_build_dirs() -> None:
-    """Remove previous build artifacts."""
-    print("\nCleaning previous builds...")
-    for dir_name in ["build", "dist"]:
-        dir_path = Path(dir_name)
+    """Remove previous build artifacts from build/ and dist/ directories."""
+    logger.info("\nCleaning previous builds...")
+    for dir_path in [BUILD_DIR, DIST_DIR]:
         if dir_path.exists():
             shutil.rmtree(dir_path)
-            print(f"  Removed {dir_name}/")
+            logger.info("  Removed %s/", dir_path.name)
 
 
 def run_pyinstaller() -> bool:
-    """Run PyInstaller to create the executable."""
-    print("\nBuilding executable with PyInstaller...")
-    print("  This may take several minutes...\n")
+    """
+    Run PyInstaller to create the executable.
 
-    spec_file = SCRIPT_DIR / "strava_competition.spec"
-    if not spec_file.exists():
-        print(f"ERROR: {spec_file} not found")
-        print("  Generate one with: pyi-makespec --onefile run.py")
+    Returns:
+        True if build succeeded, False otherwise.
+    """
+    logger.info("\nBuilding executable with PyInstaller...")
+    logger.info("  This may take several minutes...\n")
+
+    if not SPEC_FILE.exists():
+        logger.error("ERROR: %s not found", SPEC_FILE)
+        logger.error("  Generate one with: pyi-makespec --onefile run.py")
         return False
 
     result = subprocess.run(
-        [sys.executable, "-m", "PyInstaller", "--clean", str(spec_file)],
-        capture_output=False,
+        [sys.executable, "-m", "PyInstaller", "--clean", str(SPEC_FILE)],
+        check=False,
     )
 
     return result.returncode == 0
 
 
 def create_minimal_env(source_env: Path) -> str:
-    """Create a minimal .env with only essential variables."""
-    # Variables to include in distribution
-    essential_vars = {
-        "STRAVA_CLIENT_ID",
-        "STRAVA_CLIENT_SECRET",
-        "STRAVA_CACHE_ID_SALT",
-        "INPUT_FILE",
-        "OUTPUT_FILE",
-    }
+    """
+    Create a minimal .env with only essential variables for distribution.
 
+    Args:
+        source_env: Path to the source .env file containing credentials.
+
+    Returns:
+        String content for the minimal .env file.
+    """
     lines = ["# Strava Competition Tool - Configuration\n\n"]
 
-    # Read existing values from source
-    existing = {}
+    # Parse existing values from source
+    existing: dict[str, str] = {}
     for line in source_env.read_text().splitlines():
         stripped = line.strip()
         if stripped and not stripped.startswith("#") and "=" in stripped:
-            var_name = stripped.split("=")[0].strip()
+            var_name = stripped.split("=", maxsplit=1)[0].strip()
             existing[var_name] = line
 
     # Add credentials section
     lines.append("# Strava API Credentials\n")
-    for var in ["STRAVA_CLIENT_ID", "STRAVA_CLIENT_SECRET"]:
+    for var in ESSENTIAL_ENV_VARS:
         if var in existing:
             lines.append(existing[var] + "\n")
     lines.append("\n")
@@ -298,70 +374,82 @@ def create_minimal_env(source_env: Path) -> str:
 
 
 def create_distribution_package() -> Path | None:
-    """Create the final distribution zip file."""
-    print("\nCreating distribution package...")
+    """
+    Create the final distribution zip file.
 
-    dist_dir = Path("dist")
-    exe_path = dist_dir / "StravaCompetition.exe"
+    Returns:
+        Path to the created zip file, or None if creation failed.
+    """
+    logger.info("\nCreating distribution package...")
+
+    exe_path = DIST_DIR / EXECUTABLE_NAME
 
     if not exe_path.exists():
-        print(f"ERROR: Executable not found at {exe_path}")
+        logger.error("ERROR: Executable not found at %s", exe_path)
         return None
 
-    # Create a distribution folder
+    # Create a distribution folder with timestamp
     timestamp = datetime.now().strftime("%Y%m%d")
     package_name = f"StravaCompetition_Windows_{timestamp}"
-    package_dir = dist_dir / package_name
+    package_dir = DIST_DIR / package_name
     package_dir.mkdir(exist_ok=True)
 
     # Copy executable
-    shutil.copy(exe_path, package_dir / "StravaCompetition.exe")
-    print(f"  Copied executable")
+    shutil.copy(exe_path, package_dir / EXECUTABLE_NAME)
+    logger.info("  Copied executable")
 
     # Copy sample input file if exists
-    sample_input = Path("data/competition_input.xlsx")
+    sample_input = PROJECT_ROOT / "data" / "competition_input.xlsx"
     if sample_input.exists():
         shutil.copy(sample_input, package_dir / "competition_input_SAMPLE.xlsx")
-        print(f"  Copied sample input file")
+        logger.info("  Copied sample input file")
 
     # Create minimal .env with only essential credentials
-    env_source = Path(".env")
+    env_source = PROJECT_ROOT / ".env"
     if env_source.exists():
         env_content = create_minimal_env(env_source)
         (package_dir / ".env").write_text(env_content)
-        print(f"  Created .env with credentials")
+        logger.info("  Created .env with credentials")
     else:
-        print(f"  WARNING: .env not found - users will need to create their own")
+        logger.warning(
+            "  WARNING: .env not found - users will need to create their own"
+        )
 
     # Create README
-    readme_content = create_readme_content()
+    readme_content = _create_readme_content()
     (package_dir / "README.txt").write_text(readme_content)
-    print(f"  Created README.txt")
+    logger.info("  Created README.txt")
 
     # Create run batch file
-    batch_content = create_batch_file()
+    batch_content = _create_batch_file()
     (package_dir / "Run_Strava_Competition.bat").write_text(batch_content)
-    print(f"  Created Run_Strava_Competition.bat")
+    logger.info("  Created Run_Strava_Competition.bat")
 
     # Create zip file
-    zip_path = dist_dir / f"{package_name}.zip"
+    zip_path = DIST_DIR / f"{package_name}.zip"
     with ZipFile(zip_path, "w") as zf:
         for file_path in package_dir.rglob("*"):
             if file_path.is_file():
                 arcname = file_path.relative_to(package_dir)
                 zf.write(file_path, arcname)
 
-    print(f"\n✓ Distribution package created: {zip_path}")
-    print(f"  Size: {zip_path.stat().st_size / (1024 * 1024):.1f} MB")
+    size_mb = zip_path.stat().st_size / (1024 * 1024)
+    logger.info("\n✓ Distribution package created: %s", zip_path)
+    logger.info("  Size: %.1f MB", size_mb)
 
     return zip_path
 
 
-def create_readme_content() -> str:
-    """Generate README content for end users."""
-    return """
+def _create_readme_content() -> str:
+    """
+    Generate README content for end users.
+
+    Returns:
+        Plain-text README content for the distribution.
+    """
+    return f"""
 ================================================================================
-                    STRAVA SEGMENT COMPETITION TOOL
+                    {APP_NAME.upper()}
 ================================================================================
 
 HOW TO USE
@@ -398,13 +486,18 @@ IF SOMETHING GOES WRONG
 """
 
 
-def create_batch_file() -> str:
-    """Generate a Windows batch file for easy execution."""
-    return """@echo off
-title Strava Segment Competition Tool
+def _create_batch_file() -> str:
+    """
+    Generate a Windows batch file for easy execution.
+
+    Returns:
+        Batch file content string.
+    """
+    return f"""@echo off
+title {APP_NAME}
 echo.
 echo ============================================
-echo    STRAVA SEGMENT COMPETITION TOOL
+echo    {APP_NAME.upper()}
 echo ============================================
 echo.
 
@@ -419,11 +512,11 @@ if not exist "competition_input.xlsx" (
     exit /b 1
 )
 
-echo Starting Strava Competition Tool...
+echo Starting {APP_NAME}...
 echo Logs will be saved to the 'logs' folder.
 echo.
 
-StravaCompetition.exe
+{EXECUTABLE_NAME}
 
 echo.
 echo ============================================
@@ -438,10 +531,15 @@ pause > nul
 
 
 def main() -> int:
-    """Main build process."""
-    print("=" * 60)
-    print("  STRAVA COMPETITION TOOL - WINDOWS BUILD")
-    print("=" * 60)
+    """
+    Main build process.
+
+    Returns:
+        Exit code: 0 for success, 1 for failure.
+    """
+    logger.info("=" * 60)
+    logger.info("  %s - WINDOWS BUILD", APP_NAME.upper())
+    logger.info("=" * 60)
 
     if not check_prerequisites():
         return 1
@@ -449,27 +547,26 @@ def main() -> int:
     clean_build_dirs()
 
     if not run_pyinstaller():
-        print("\n✗ PyInstaller build failed")
+        logger.error("\n✗ PyInstaller build failed")
         return 1
 
     package_path = create_distribution_package()
     if not package_path:
         return 1
 
-    print("\n" + "=" * 60)
-    print("  BUILD COMPLETE!")
-    print("=" * 60)
-    print(f"\nDistribute: {package_path}")
-    print("\nInstructions for users:")
-    print("  1. Extract the zip file")
-    print("  2. Copy their competition_input.xlsx to the folder")
-    print("  3. Double-click 'Run_Strava_Competition.bat'")
+    logger.info("\n" + "=" * 60)
+    logger.info("  BUILD COMPLETE!")
+    logger.info("=" * 60)
+    logger.info("\nDistribute: %s", package_path)
+    logger.info("\nInstructions for users:")
+    logger.info("  1. Extract the zip file")
+    logger.info("  2. Copy their competition_input.xlsx to the folder")
+    logger.info("  3. Double-click 'Run_Strava_Competition.bat'")
 
     return 0
 
 
 if __name__ == "__main__":
-    # Check for --check-imports flag
     if "--check-imports" in sys.argv:
         check_imports()
         sys.exit(0)

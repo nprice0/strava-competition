@@ -7,40 +7,39 @@ This guide explains how to build and distribute the Strava Competition Tool for 
 ### Prerequisites (Build Machine)
 
 You need a Windows machine (or Windows VM) with:
+
 - Python 3.10 or later
-- All project dependencies installed
-- PyInstaller
+- All project dependencies installed (`pip install -r requirements.txt`)
+- PyInstaller (`pip install pyinstaller`)
 
 ### Option 1: Automated Build (Recommended)
 
-1. Open Command Prompt in the project directory
-2. Run the build script:
-   ```batch
-   build_windows.bat
-   ```
+From the project root:
 
-Or run the Python build script directly:
-```batch
-pip install pyinstaller
-python build_windows.py
-```
+1. Open Command Prompt or PowerShell
+2. Run the build script:
+
+- Windows: `scripts\build_windows.bat`
+- Or: `python scripts/build_windows.py`
 
 ### Option 2: Manual Build
 
 ```batch
 pip install pyinstaller
-pyinstaller --clean strava_competition.spec
+pyinstaller --clean scripts/strava_competition.spec
 ```
 
 ### Build Output
 
 After building, you'll find:
+
 - `dist/StravaCompetition.exe` - The standalone executable
 - `dist/StravaCompetition_Windows_YYYYMMDD.zip` - Ready-to-distribute package
 
 ## Distribution Package Contents
 
 The zip file includes:
+
 - `StravaCompetition.exe` - Main application
 - `Run_Strava_Competition.bat` - Easy launcher with pre-flight checks
 - `.env` - Pre-configured Strava API credentials
@@ -52,11 +51,13 @@ The zip file includes:
 Share these instructions with your users:
 
 ### Step 1: Extract the Package
+
 1. Download the zip file
 2. Right-click and select "Extract All..."
 3. Choose a location (e.g., `C:\StravaCompetition`)
 
 ### Step 2: Add Your Input File
+
 1. Copy your `competition_input.xlsx` to the extracted folder
 2. The file **must** be named exactly `competition_input.xlsx`
 3. Ensure it contains:
@@ -65,6 +66,7 @@ Share these instructions with your users:
    - **Distance Windows** sheet (optional)
 
 ### Step 3: Run the Tool
+
 1. Double-click `Run_Strava_Competition.bat`
 2. A command window will open showing progress
 3. Wait for processing to complete
@@ -75,31 +77,42 @@ That's it! No API setup required - credentials are pre-configured.
 ## Troubleshooting
 
 ### "Windows protected your PC" Warning
+
 This is normal for unsigned executables:
+
 1. Click "More info"
 2. Click "Run anyway"
 
 ### Check the Logs
+
 Every run creates a log file in the `logs` folder:
+
 - Log files are named `strava_competition_YYYYMMDD_HHMMSS.log`
 - They contain detailed information about what happened
 - Ask users to send you the log file if they have issues
 
 ### Window Closes Immediately
+
 The app now pauses on errors, but if it still closes:
+
 1. Check the `logs` folder for the latest log file
 2. Open it in Notepad to see what went wrong
 
 ### Antivirus False Positives
+
 PyInstaller executables sometimes trigger antivirus warnings:
+
 - Add an exception for the folder
 - Or download from a trusted source (your shared drive, etc.)
 
 ### Missing .env File
+
 The .env file with API credentials should be included in the distribution. If it's missing, contact the administrator for a new package.
 
 ### API Rate Limits
+
 Strava has API rate limits. If you hit them:
+
 - Wait 15 minutes and try again
 - The tool caches responses to minimize API calls
 
@@ -108,10 +121,12 @@ Strava has API rate limits. If you hit them:
 To cross-compile for Windows from macOS/Linux, you have a few options:
 
 ### Option 1: Use a Windows VM
+
 - Install VirtualBox/VMware with Windows
 - Build natively on Windows
 
 ### Option 2: Use GitHub Actions
+
 Create `.github/workflows/build-windows.yml`:
 
 ```yaml
@@ -120,7 +135,7 @@ name: Build Windows Executable
 on:
   push:
     tags:
-      - 'v*'
+      - "v*"
   workflow_dispatch:
 
 jobs:
@@ -128,20 +143,20 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
-      
+
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      
+          python-version: "3.10"
+
       - name: Install dependencies
         run: |
           pip install pyinstaller
           pip install -r requirements.txt
-      
+
       - name: Build executable
-        run: python build_windows.py
-      
+        run: python scripts/build_windows.py
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -150,6 +165,7 @@ jobs:
 ```
 
 ### Option 3: Use Docker with Wine (Advanced)
+
 Not recommended due to complexity, but possible with wine-based PyInstaller.
 
 ## Security Considerations
@@ -162,6 +178,7 @@ Not recommended due to complexity, but possible with wine-based PyInstaller.
 ## Updating the Application
 
 To update:
+
 1. Make code changes
 2. Increment version (if tracked)
 3. Rebuild with `build_windows.bat`
