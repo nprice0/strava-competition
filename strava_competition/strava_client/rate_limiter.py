@@ -62,8 +62,18 @@ class RateLimiter:
             time.sleep(jitter)
 
     def after_response(
-        self, headers: Mapping[str, object] | None, status_code: int | None
-    ) -> None:
+        self,
+        headers: Mapping[str, object] | None,
+        status_code: int | None,
+    ) -> tuple[bool, str]:
+        """Process response and apply throttling if needed.
+
+        Returns:
+            Tuple of (throttled, rate_info) where:
+            - throttled: True if rate limited (429 or approaching limit)
+            - rate_info: String with rate limit status for logging, e.g.
+              "(15-min: 95/100, daily: 450/1000)" or empty string if unavailable
+        """
         throttle = False
         short_used = short_limit = daily_used = daily_limit = None
         if headers:
@@ -87,32 +97,23 @@ class RateLimiter:
                         exc,
                     )
 
-        # Build rate limit info for log messages
+        # Build rate limit info for caller's log messages
         rate_info = ""
         if short_used is not None and short_limit is not None:
-            rate_info = f" (15-min: {short_used}/{short_limit}"
+            rate_info = f"(15-min: {short_used}/{short_limit}"
             if daily_used is not None and daily_limit is not None:
                 rate_info += f", daily: {daily_used}/{daily_limit}"
             rate_info += ")"
 
         if status_code == 429:
             throttle = True
-            logging.warning(
-                "Rate limit: 429%s. Throttling %ss.",
-                rate_info,
-                RATE_LIMIT_THROTTLE_SECONDS,
-            )
         elif (
             short_used is not None
             and short_limit is not None
             and short_used >= max(short_limit - self._near_limit_buffer, 0)
         ):
             throttle = True
-            logging.info(
-                "Approaching short-window limit%s. Throttling %ss.",
-                rate_info,
-                RATE_LIMIT_THROTTLE_SECONDS,
-            )
+
         if throttle:
             with self._cond:
                 self._throttle_until = time.time() + RATE_LIMIT_THROTTLE_SECONDS
@@ -120,6 +121,8 @@ class RateLimiter:
             self._in_flight = max(0, self._in_flight - 1)
             if self._in_flight < self._max_allowed:
                 self._cond.notify()
+
+        return throttle, rate_info
 
     def snapshot(self) -> dict[str, float | int]:  # pragma: no cover - debug helper
         """Return current limiter stats (used by tests and diagnostics)."""

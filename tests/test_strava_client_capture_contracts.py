@@ -30,10 +30,11 @@ class StubLimiter:
         self,
         headers: dict[str, object] | None,
         status_code: int | None,
-    ) -> None:
+    ) -> tuple[bool, str]:
         """Track limiter releases and metadata."""
 
         self.after_calls.append((headers, status_code))
+        return False, ""
 
 
 class FakeResponse:

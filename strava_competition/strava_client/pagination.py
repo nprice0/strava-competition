@@ -68,19 +68,22 @@ def fetch_page_with_retries(
             _log_giveup(runner.name, context_label, page, attempts, exc, segment_id)
             return []
         else:
-            limiter.after_response(resp.headers, resp.status_code)
+            throttled, rate_info = limiter.after_response(
+                resp.headers, resp.status_code
+            )
+            if throttled:
+                LOGGER.warning(
+                    "%s runner=%s page=%s rate limited %s; throttling %ss",
+                    context_label,
+                    runner.name,
+                    page,
+                    rate_info,
+                    RATE_LIMIT_THROTTLE_SECONDS,
+                )
 
         is_html = "text/html" in (resp.headers.get("Content-Type", "").lower())
-        # Always retry 429s - rate limits are transient and should not count against
-        # the retry budget.
+        # Always retry 429s - rate limiter already set throttle and we logged above.
         if resp.status_code == 429:
-            LOGGER.warning(
-                "%s runner=%s page=%s rate limited (429); throttling %ss",
-                context_label,
-                runner.name,
-                page,
-                RATE_LIMIT_THROTTLE_SECONDS,
-            )
             time.sleep(RATE_LIMIT_THROTTLE_SECONDS)
             continue
 

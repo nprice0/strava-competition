@@ -24,7 +24,7 @@ def no_sleep_rate_limiter(monkeypatch):
             return
 
         def after_response(self, headers, status_code):
-            return
+            return False, ""
 
     monkeypatch.setattr(strava_api, "_limiter", NoopLimiter())
 

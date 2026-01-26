@@ -29,11 +29,14 @@ class RecordingLimiter(RateLimiter):
             self.max_observed = max(self.max_observed, self._current)
 
     def after_response(
-        self, headers: Mapping[str, object] | None, status_code: int | None
-    ) -> None:
-        super().after_response(headers, status_code)
+        self,
+        headers: Mapping[str, object] | None,
+        status_code: int | None,
+    ) -> tuple[bool, str]:
+        result = super().after_response(headers, status_code)
         with self._observed_lock:
             self._current = max(0, self._current - 1)
+        return result
 
 
 class ParallelSession:

@@ -83,7 +83,17 @@ class ResourceAPI:
                 LOGGER.error(message)
                 raise StravaAPIError(message) from exc
             else:
-                self._limiter.after_response(response.headers, response.status_code)
+                throttled, rate_info = self._limiter.after_response(
+                    response.headers, response.status_code
+                )
+                if throttled:
+                    LOGGER.warning(
+                        "%s runner=%s rate limited %s; throttling %ss",
+                        context,
+                        runner.name,
+                        rate_info,
+                        RATE_LIMIT_THROTTLE_SECONDS,
+                    )
 
             if response.status_code == 401 and not attempted_refresh:
                 LOGGER.info(
@@ -104,14 +114,9 @@ class ResourceAPI:
                 can_retry=can_retry,
             )
             if action == "retry":
-                # Use longer throttle for 429 rate limits, short backoff for others
+                # Use longer throttle for 429 rate limits, short backoff for others.
+                # We already logged the 429 above when after_response returned throttled.
                 if response.status_code == 429:
-                    LOGGER.warning(
-                        "%s runner=%s rate limited (429); throttling %ss",
-                        context,
-                        runner.name,
-                        RATE_LIMIT_THROTTLE_SECONDS,
-                    )
                     time.sleep(RATE_LIMIT_THROTTLE_SECONDS)
                 else:
                     time.sleep(backoff)

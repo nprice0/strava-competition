@@ -46,14 +46,8 @@ def classify_response_status(
         return f"{message} | {detail}" if detail else message
 
     # Always retry 429s - rate limits are transient and should not count against
-    # the retry budget. The rate limiter will handle throttling.
+    # the retry budget. The rate limiter handles logging and throttling.
     if status == 429:
-        logging.warning(
-            "%s rate limited (429) runner=%s attempt=%s; will retry",
-            context,
-            runner.name,
-            attempt,
-        )
         return "retry", None
 
     if status == 402:
