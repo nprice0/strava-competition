@@ -7,6 +7,7 @@ that avoids leaking secrets, and defensive JSON parsing.
 
 from __future__ import annotations
 import logging
+import time
 from typing import TYPE_CHECKING, Tuple
 
 from requests.exceptions import RequestException
@@ -14,8 +15,9 @@ from requests.exceptions import RequestException
 from .config import (
     CLIENT_ID,
     CLIENT_SECRET,
-    STRAVA_OAUTH_URL,
+    RATE_LIMIT_THROTTLE_SECONDS,
     REQUEST_TIMEOUT,
+    STRAVA_OAUTH_URL,
     _cache_mode_offline,
 )
 
@@ -90,13 +92,25 @@ def get_access_token(
             "Use STRAVA_API_CACHE_MODE=cache or live to authenticate."
         )
 
-    try:
-        resp = _get_session().post(
-            STRAVA_OAUTH_URL, data=payload, timeout=REQUEST_TIMEOUT
-        )
-    except RequestException as e:  # Network / connection / timeout
-        logger.error("Token request transport error: %s", e)
-        raise TokenError("Transport failure during token refresh") from e
+    # Retry loop for 429 rate limits - always retry with throttle delay
+    while True:
+        try:
+            resp = _get_session().post(
+                STRAVA_OAUTH_URL, data=payload, timeout=REQUEST_TIMEOUT
+            )
+        except RequestException as e:  # Network / connection / timeout
+            logger.error("Token request transport error: %s", e)
+            raise TokenError("Transport failure during token refresh") from e
+
+        # Always retry 429s - rate limits are transient
+        if resp.status_code == 429:
+            logger.warning(
+                "Token refresh rate limited (429); throttling %ss",
+                RATE_LIMIT_THROTTLE_SECONDS,
+            )
+            time.sleep(RATE_LIMIT_THROTTLE_SECONDS)
+            continue
+        break
 
     status = resp.status_code
     logger.debug("Token endpoint status=%s", status)

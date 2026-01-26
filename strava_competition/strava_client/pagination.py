@@ -8,7 +8,12 @@ from typing import Any, Dict, List, Optional, TypeAlias, cast
 
 import requests
 
-from ..config import REQUEST_TIMEOUT, STRAVA_BACKOFF_MAX_SECONDS, STRAVA_MAX_RETRIES
+from ..config import (
+    RATE_LIMIT_THROTTLE_SECONDS,
+    REQUEST_TIMEOUT,
+    STRAVA_BACKOFF_MAX_SECONDS,
+    STRAVA_MAX_RETRIES,
+)
 from ..models import Runner
 from .base import auth_headers
 from .rate_limiter import RateLimiter
@@ -66,17 +71,17 @@ def fetch_page_with_retries(
             limiter.after_response(resp.headers, resp.status_code)
 
         is_html = "text/html" in (resp.headers.get("Content-Type", "").lower())
-        if resp.status_code == 429 and attempts < STRAVA_MAX_RETRIES:
+        # Always retry 429s - rate limits are transient and should not count against
+        # the retry budget.
+        if resp.status_code == 429:
             LOGGER.warning(
-                "429 Too Many Requests for %s runner=%s page=%s attempt=%s; backing off %.1fs",
+                "%s runner=%s page=%s rate limited (429); throttling %ss",
                 context_label,
                 runner.name,
                 page,
-                attempts,
-                backoff,
+                RATE_LIMIT_THROTTLE_SECONDS,
             )
-            time.sleep(backoff)
-            backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+            time.sleep(RATE_LIMIT_THROTTLE_SECONDS)
             continue
 
         try:

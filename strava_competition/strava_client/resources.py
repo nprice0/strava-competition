@@ -10,6 +10,7 @@ import requests
 
 from ..api_capture import get_cached_response, save_response_to_cache
 from ..config import (
+    RATE_LIMIT_THROTTLE_SECONDS,
     REQUEST_TIMEOUT,
     STRAVA_BACKOFF_MAX_SECONDS,
     STRAVA_MAX_RETRIES,
@@ -103,8 +104,18 @@ class ResourceAPI:
                 can_retry=can_retry,
             )
             if action == "retry":
-                time.sleep(backoff)
-                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+                # Use longer throttle for 429 rate limits, short backoff for others
+                if response.status_code == 429:
+                    LOGGER.warning(
+                        "%s runner=%s rate limited (429); throttling %ss",
+                        context,
+                        runner.name,
+                        RATE_LIMIT_THROTTLE_SECONDS,
+                    )
+                    time.sleep(RATE_LIMIT_THROTTLE_SECONDS)
+                else:
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
                 continue
             if action == "raise" and error is not None:
                 raise error
