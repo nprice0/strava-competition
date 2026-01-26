@@ -1,3 +1,5 @@
+import pandas as pd
+
 from strava_competition.segment_aggregation import build_segment_outputs
 from strava_competition.models import SegmentResult
 
@@ -22,7 +24,9 @@ def test_build_segment_outputs_includes_summary_and_ranking(segment_results):
     }.issubset(climb_df.columns)
     assert climb_df["Fastest Distance (m)"].notna().any()
     # Ranking: fastest_time -> 110 (Carl), 115 (Ben), 120 (Alice)
-    ranks = {row.Runner: row.Rank for row in climb_df.itertuples() if row.Runner}
+    ranks = {
+        row.Runner: row.Rank for row in climb_df.itertuples() if pd.notna(row.Runner)
+    }
     # Validate ordering irrespective of which team produced fastest time
     assert min(ranks.values()) == 1
     assert len(ranks) == 3
