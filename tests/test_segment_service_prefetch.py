@@ -152,16 +152,12 @@ class TestPrefetchIntegration:
     """Integration tests for prefetch flow."""
 
     @patch("strava_competition.services.segment_service.get_activities")
-    @patch("strava_competition.services.segment_service.get_activity_with_efforts")
-    def test_prefetch_populates_cache(self, mock_detail, mock_activities):
-        """Prefetch retrieves activities and details for all runners."""
-        mock_activities.return_value = [{"id": 1}, {"id": 2}]
-        mock_detail.return_value = {
-            "id": 1,
-            "start_date": "2026-01-10T10:00:00Z",
-            "type": "Run",
-            "segment_efforts": [{"segment": {"id": 999}}],
-        }
+    def test_prefetch_populates_cache(self, mock_activities):
+        """Prefetch retrieves activity list (details fetched lazily later)."""
+        mock_activities.return_value = [
+            {"id": 1, "start_date": "2026-01-10T10:00:00Z", "type": "Run"},
+            {"id": 2, "start_date": "2026-01-15T10:00:00Z", "type": "Run"},
+        ]
 
         service = SegmentService(max_workers=1)
         runner = Mock(strava_id=123, segment_team="Team A", name="Test Runner")
@@ -175,7 +171,8 @@ class TestPrefetchIntegration:
         assert 123 in cache
         assert len(cache[123].activities) == 2  # Two activities
         mock_activities.assert_called_once()
-        assert mock_detail.call_count == 2  # Detail for each activity
+        # Details are NOT fetched upfront (lazy loading)
+        # segment_efforts will be empty until _find_efforts_from_cache fetches them
 
     @patch("strava_competition.services.segment_service.get_activities")
     @patch("strava_competition.services.segment_service.time.sleep")

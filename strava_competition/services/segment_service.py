@@ -1372,7 +1372,7 @@ class SegmentService:
 
             # Pacing delay between batches (not after the last one)
             if batch_start + batch_size < len(eligible_runners):
-                delay = random.uniform(1.0, 2.0)  # nosec B311
+                delay = random.uniform(2.0, 4.0)  # nosec B311
                 self._log.debug(
                     "Prefetch batch %d/%d complete; pacing delay %.1fs",
                     batch_num,
@@ -1435,7 +1435,11 @@ class SegmentService:
         cancel_event: threading.Event | None,
         max_retries: int = 3,
     ) -> RunnerActivityCache:
-        """Prefetch with retry on rate limits, falling back to disk cache."""
+        """Prefetch activity list only (not details) with retry on rate limits.
+
+        Activity details with segment_efforts are fetched lazily when needed,
+        not upfront. This avoids O(activities) API calls during prefetch.
+        """
         last_error: str | None = None
 
         for attempt in range(1, max_retries + 1):
@@ -1449,9 +1453,27 @@ class SegmentService:
                 # This already checks disk cache internally before hitting API
                 activities_raw = get_activities(runner, start_date, end_date)
                 if activities_raw is not None:
-                    # Success - continue to fetch details
-                    return self._fetch_activity_details(
-                        runner, activities_raw, cancel_event
+                    # Store activity summaries - details fetched lazily later
+                    prefetched: List[PrefetchedActivity] = []
+                    for act in activities_raw:
+                        activity_id = act.get("id")
+                        if not isinstance(activity_id, int):
+                            continue
+                        prefetched.append(
+                            PrefetchedActivity(
+                                activity_id=activity_id,
+                                start_date=parse_iso_datetime(
+                                    act.get("start_date_local") or act.get("start_date")
+                                ),
+                                activity_type=act.get("type", ""),
+                                raw_data=act,
+                                # segment_efforts populated lazily when needed
+                                segment_efforts=tuple(),
+                            )
+                        )
+                    return RunnerActivityCache(
+                        runner_id=runner.strava_id,
+                        activities=prefetched,
                     )
             except StravaAPIError as exc:
                 last_error = str(exc)
@@ -1499,6 +1521,7 @@ class SegmentService:
         """Fetch details with segment efforts for each activity.
 
         Called by _prefetch_runner_activities after successful activities list fetch.
+        Includes pacing between requests to avoid rate limiting.
 
         Args:
             runner: The runner whose activities we're fetching.
@@ -1509,14 +1532,30 @@ class SegmentService:
             RunnerActivityCache with all activities and their segment efforts.
         """
         prefetched: List[PrefetchedActivity] = []
+        consecutive_errors = 0
+        max_consecutive_errors = 3
 
-        for activity_summary in activities_raw:
+        for idx, activity_summary in enumerate(activities_raw):
             if cancel_event and cancel_event.is_set():
+                break
+
+            # Stop if we hit too many consecutive errors (likely rate limited)
+            if consecutive_errors >= max_consecutive_errors:
+                self._log.warning(
+                    "Stopping detail fetch for %s after %d consecutive errors",
+                    runner.name,
+                    consecutive_errors,
+                )
                 break
 
             activity_id = activity_summary.get("id")
             if not activity_id:
                 continue
+
+            # Pacing: add delay between requests (not before the first one)
+            if idx > 0:
+                delay = random.uniform(0.3, 0.6)  # nosec B311
+                time.sleep(delay)
 
             try:
                 detail = get_activity_with_efforts(
@@ -1537,14 +1576,26 @@ class SegmentService:
                         segment_efforts=tuple(segment_efforts),
                     )
                 )
+                consecutive_errors = 0  # Reset on success
             except StravaAPIError as exc:
-                # Log but continue - partial data is better than none
-                self._log.debug(
-                    "Failed to fetch detail for activity %s runner=%s: %s",
-                    activity_id,
-                    runner.name,
-                    exc,
-                )
+                consecutive_errors += 1
+                error_msg = str(exc)
+                if "429" in error_msg:
+                    # Rate limited - back off significantly
+                    self._log.warning(
+                        "Rate limited fetching activity %s for %s; backing off",
+                        activity_id,
+                        runner.name,
+                    )
+                    time.sleep(2.0 * consecutive_errors)  # Exponential-ish backoff
+                else:
+                    # Other error - log and continue
+                    self._log.debug(
+                        "Failed to fetch detail for activity %s runner=%s: %s",
+                        activity_id,
+                        runner.name,
+                        exc,
+                    )
 
         return RunnerActivityCache(
             runner_id=runner.strava_id,
@@ -1601,10 +1652,11 @@ class SegmentService:
         end_date: datetime,
         cache: PrefetchCache,
     ) -> List[Dict[str, Any]]:
-        """Find segment efforts for a runner from the prefetch cache.
+        """Find segment efforts for a runner, fetching activity details lazily.
 
-        Filters cached activities by date window and matches segment ID
-        in embedded segment_efforts.
+        First filters cached activities by date window, then fetches activity
+        details (with segment_efforts) only for activities in the window.
+        This is O(activities_in_window) not O(all_activities).
 
         Args:
             runner: The runner to look up.
@@ -1622,33 +1674,41 @@ class SegmentService:
 
         matching_efforts: List[Dict[str, Any]] = []
 
+        # Normalize window dates for comparison
+        window_start = (
+            start_date.replace(tzinfo=None)
+            if hasattr(start_date, "tzinfo") and start_date.tzinfo
+            else start_date
+        )
+        window_end = (
+            end_date.replace(tzinfo=None)
+            if hasattr(end_date, "tzinfo") and end_date.tzinfo
+            else end_date
+        )
+
         for activity in runner_cache.activities:
             # Filter by activity date within window
             if activity.start_date is None:
                 continue
 
-            # Normalize to naive for comparison (segment dates are naive)
             activity_date = (
                 activity.start_date.replace(tzinfo=None)
                 if activity.start_date.tzinfo
                 else activity.start_date
             )
-            window_start = (
-                start_date.replace(tzinfo=None)
-                if hasattr(start_date, "tzinfo") and start_date.tzinfo
-                else start_date
-            )
-            window_end = (
-                end_date.replace(tzinfo=None)
-                if hasattr(end_date, "tzinfo") and end_date.tzinfo
-                else end_date
-            )
 
             if activity_date < window_start or activity_date > window_end:
                 continue
 
+            # Lazy fetch: get activity details if we don't have segment_efforts
+            segment_efforts = activity.segment_efforts
+            if not segment_efforts:
+                segment_efforts = self._get_activity_efforts_lazy(
+                    runner, activity.activity_id
+                )
+
             # Find matching segment efforts within this activity
-            for effort in activity.segment_efforts:
+            for effort in segment_efforts:
                 effort_segment = effort.get("segment", {})
                 effort_segment_id = effort_segment.get("id") or effort.get("segment_id")
 
@@ -1669,6 +1729,30 @@ class SegmentService:
                     matching_efforts.append(effort)
 
         return matching_efforts
+
+    def _get_activity_efforts_lazy(
+        self,
+        runner: Runner,
+        activity_id: int,
+    ) -> tuple[Dict[str, Any], ...]:
+        """Fetch activity details lazily to get segment_efforts.
+
+        Uses disk cache if available, otherwise fetches from API.
+        Returns empty tuple on failure (graceful degradation).
+        """
+        try:
+            detail = get_activity_with_efforts(
+                runner, activity_id, include_all_efforts=True
+            )
+            return tuple(detail.get("segment_efforts", []) or [])
+        except StravaAPIError as exc:
+            self._log.debug(
+                "Lazy fetch failed for activity %s runner=%s: %s",
+                activity_id,
+                runner.name,
+                exc,
+            )
+            return tuple()
 
     def _process_segment_with_cache(
         self,
