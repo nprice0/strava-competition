@@ -65,40 +65,54 @@ class RateLimiter:
         self, headers: Mapping[str, object] | None, status_code: int | None
     ) -> None:
         throttle = False
+        short_used = short_limit = daily_used = daily_limit = None
+        if headers:
+            usage = headers.get("X-RateLimit-Usage")
+            limit = headers.get("X-RateLimit-Limit")
+            if usage and limit:
+                try:
+                    usage_parts = str(usage).split(",")
+                    limit_parts = str(limit).split(",")
+                    short_used = int(usage_parts[0])
+                    short_limit = int(limit_parts[0])
+                    if len(usage_parts) > 1 and len(limit_parts) > 1:
+                        daily_used = int(usage_parts[1])
+                        daily_limit = int(limit_parts[1])
+                except (ValueError, TypeError, IndexError) as exc:
+                    short_used = short_limit = daily_used = daily_limit = None
+                    logging.debug(
+                        "Failed to parse rate limit headers usage=%s limit=%s: %s",
+                        usage,
+                        limit,
+                        exc,
+                    )
+
+        # Build rate limit info for log messages
+        rate_info = ""
+        if short_used is not None and short_limit is not None:
+            rate_info = f" (15-min: {short_used}/{short_limit}"
+            if daily_used is not None and daily_limit is not None:
+                rate_info += f", daily: {daily_used}/{daily_limit}"
+            rate_info += ")"
+
         if status_code == 429:
             throttle = True
             logging.warning(
-                "Rate limit: 429. Throttling %ss.", RATE_LIMIT_THROTTLE_SECONDS
+                "Rate limit: 429%s. Throttling %ss.",
+                rate_info,
+                RATE_LIMIT_THROTTLE_SECONDS,
             )
-        else:
-            short_used = short_limit = None
-            if headers:
-                usage = headers.get("X-RateLimit-Usage")
-                limit = headers.get("X-RateLimit-Limit")
-                if usage and limit:
-                    try:
-                        short_used = int(str(usage).split(",")[0])
-                        short_limit = int(str(limit).split(",")[0])
-                    except (ValueError, TypeError) as exc:
-                        short_used = short_limit = None
-                        logging.debug(
-                            "Failed to parse rate limit headers usage=%s limit=%s: %s",
-                            usage,
-                            limit,
-                            exc,
-                        )
-            if (
-                short_used is not None
-                and short_limit is not None
-                and short_used >= max(short_limit - self._near_limit_buffer, 0)
-            ):
-                throttle = True
-                logging.info(
-                    "Approaching short-window limit (%s/%s). Throttling %ss.",
-                    short_used,
-                    short_limit,
-                    RATE_LIMIT_THROTTLE_SECONDS,
-                )
+        elif (
+            short_used is not None
+            and short_limit is not None
+            and short_used >= max(short_limit - self._near_limit_buffer, 0)
+        ):
+            throttle = True
+            logging.info(
+                "Approaching short-window limit%s. Throttling %ss.",
+                rate_info,
+                RATE_LIMIT_THROTTLE_SECONDS,
+            )
         if throttle:
             with self._cond:
                 self._throttle_until = time.time() + RATE_LIMIT_THROTTLE_SECONDS
