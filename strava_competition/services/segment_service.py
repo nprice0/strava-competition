@@ -120,7 +120,9 @@ class SegmentService:
         applies fallback strategies for runners without direct API access.
         """
         if SEGMENT_PREFETCH_ENABLED:
-            return self._process_with_prefetch(segments, runners, cancel_event, progress)
+            return self._process_with_prefetch(
+                segments, runners, cancel_event, progress
+            )
         return self._process_legacy(segments, runners, cancel_event, progress)
 
     def _process_legacy(
@@ -190,7 +192,9 @@ class SegmentService:
         try:
             for seg_index, segment in enumerate(segments, start=1):
                 if cancel_event and cancel_event.is_set():
-                    self._log.info("Cancellation requested; aborting segment processing")
+                    self._log.info(
+                        "Cancellation requested; aborting segment processing"
+                    )
                     break
 
                 if segment.start_date > segment.end_date:
@@ -234,7 +238,9 @@ class SegmentService:
             return self._process_groups_with_prefetch(
                 segment_groups, runners, cancel_event, progress
             )
-        return self._process_groups_legacy(segment_groups, runners, cancel_event, progress)
+        return self._process_groups_legacy(
+            segment_groups, runners, cancel_event, progress
+        )
 
     def _process_groups_legacy(
         self,

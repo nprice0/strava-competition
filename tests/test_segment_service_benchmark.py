@@ -68,9 +68,14 @@ class TestAPICallReduction:
 class TestPerformanceComparison:
     """Compare performance characteristics of prefetch vs legacy."""
 
-    @patch("strava_competition.services.segment_service.SEGMENT_PREFETCH_ENABLED", False)
+    @patch(
+        "strava_competition.services.segment_service.SEGMENT_PREFETCH_ENABLED", False
+    )
     @patch("strava_competition.services.segment_service.get_segment_efforts")
-    @patch("strava_competition.services.segment_service.FORCE_ACTIVITY_SCAN_FALLBACK", False)
+    @patch(
+        "strava_competition.services.segment_service.FORCE_ACTIVITY_SCAN_FALLBACK",
+        False,
+    )
     def test_legacy_mode_still_works(self, mock_efforts):
         """Legacy mode functions correctly when prefetch disabled."""
         mock_efforts.return_value = [
