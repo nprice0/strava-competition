@@ -172,7 +172,8 @@ REQUEST_TIMEOUT = 15
 
 # Rate limiter settings.
 # RATE_LIMIT_MAX_CONCURRENT caps total in-flight requests.
-RATE_LIMIT_MAX_CONCURRENT = 8
+# Strava's 15-minute limit is 100 requests; keep this low to avoid 429 bursts.
+RATE_LIMIT_MAX_CONCURRENT = 4
 # RATE_LIMIT_JITTER_RANGE adds random delay (seconds) to smooth bursts.
 RATE_LIMIT_JITTER_RANGE = (0.05, 0.2)
 # RATE_LIMIT_NEAR_LIMIT_BUFFER starts throttling when this close to the short-window limit.
