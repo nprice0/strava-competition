@@ -1572,19 +1572,23 @@ class SegmentService:
 
             # Note: We may not have detailed efforts cached if we only cached the list
             # This is a known limitation - stale data may lack segment_efforts
-            return [
-                PrefetchedActivity(
-                    activity_id=act.get("id"),
-                    start_date=parse_iso_datetime(
-                        act.get("start_date_local") or act.get("start_date")
-                    ),
-                    activity_type=act.get("type", ""),
-                    raw_data=act,
-                    segment_efforts=tuple(act.get("segment_efforts", []) or []),
+            result: List[PrefetchedActivity] = []
+            for act in cached_raw:
+                activity_id = act.get("id")
+                if not isinstance(activity_id, int):
+                    continue
+                result.append(
+                    PrefetchedActivity(
+                        activity_id=activity_id,
+                        start_date=parse_iso_datetime(
+                            act.get("start_date_local") or act.get("start_date")
+                        ),
+                        activity_type=act.get("type", ""),
+                        raw_data=act,
+                        segment_efforts=tuple(act.get("segment_efforts", []) or []),
+                    )
                 )
-                for act in cached_raw
-                if act.get("id")
-            ]
+            return result
         except Exception as exc:
             self._log.debug("Disk cache lookup failed for %s: %s", runner.name, exc)
             return []
@@ -1698,8 +1702,12 @@ class SegmentService:
             if progress:
                 try:
                     progress(segment.name, count, total_runners)
-                except Exception:
-                    pass
+                except Exception:  # noqa: BLE001
+                    self._log.debug(
+                        "Progress callback failed for segment %s",
+                        segment.name,
+                        exc_info=True,
+                    )
 
         for runner in eligible_runners:
             if cancel_event and cancel_event.is_set():
