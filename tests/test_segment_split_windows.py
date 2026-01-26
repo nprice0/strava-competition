@@ -377,6 +377,7 @@ class TestProcessGroups:
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
             monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+            monkeypatch.setattr(mod, "SEGMENT_PREFETCH_ENABLED", False)
 
             service = SegmentService(max_workers=1)
             results = service.process_groups(groups, runners)
@@ -438,6 +439,7 @@ class TestProcessGroups:
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
             monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+            monkeypatch.setattr(mod, "SEGMENT_PREFETCH_ENABLED", False)
 
             service = SegmentService(max_workers=1)
             results = service.process_groups(groups, runners)
@@ -511,6 +513,7 @@ class TestProcessGroups:
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
             monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+            monkeypatch.setattr(mod, "SEGMENT_PREFETCH_ENABLED", False)
 
             service = SegmentService(max_workers=1)
             results = service.process_groups(groups, runners)
@@ -558,6 +561,7 @@ class TestSheetNaming:
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
             monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", False)
+            monkeypatch.setattr(mod, "SEGMENT_PREFETCH_ENABLED", False)
 
             service = SegmentService(max_workers=1)
             results = service.process_groups(groups, runners)
@@ -603,6 +607,7 @@ class TestSheetNaming:
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
             monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", False)
+            monkeypatch.setattr(mod, "SEGMENT_PREFETCH_ENABLED", False)
 
             service = SegmentService(max_workers=1)
             results = service.process_groups(groups, runners)
@@ -646,6 +651,7 @@ class TestSheetNaming:
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
             monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", False)
+            monkeypatch.setattr(mod, "SEGMENT_PREFETCH_ENABLED", False)
 
             service = SegmentService(max_workers=1)
             results = service.process_groups(groups, runners)
@@ -852,6 +858,7 @@ class TestTimeBonusApplication:
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
             monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+            monkeypatch.setattr(mod, "SEGMENT_PREFETCH_ENABLED", False)
 
             service = SegmentService(max_workers=1)
             results = service.process_groups(groups, runners)
@@ -896,6 +903,7 @@ class TestTimeBonusApplication:
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
             monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+            monkeypatch.setattr(mod, "SEGMENT_PREFETCH_ENABLED", False)
 
             service = SegmentService(max_workers=1)
             results = service.process_groups(groups, runners)
@@ -941,6 +949,7 @@ class TestTimeBonusApplication:
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
             monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+            monkeypatch.setattr(mod, "SEGMENT_PREFETCH_ENABLED", False)
 
             service = SegmentService(max_workers=1)
             results = service.process_groups(groups, runners)
@@ -986,6 +995,7 @@ class TestTimeBonusApplication:
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
             monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+            monkeypatch.setattr(mod, "SEGMENT_PREFETCH_ENABLED", False)
 
             service = SegmentService(max_workers=1)
             results = service.process_groups(groups, runners)
@@ -1030,6 +1040,7 @@ class TestTimeBonusApplication:
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
             monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+            monkeypatch.setattr(mod, "SEGMENT_PREFETCH_ENABLED", False)
 
             service = SegmentService(max_workers=1)
             results = service.process_groups(groups, runners)

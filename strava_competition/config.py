@@ -195,6 +195,12 @@ STRAVA_BACKOFF_MAX_SECONDS = 4.0
 # disabled, each row produces its own output sheet.
 SEGMENT_SPLIT_WINDOWS_ENABLED = _env_bool("SEGMENT_SPLIT_WINDOWS_ENABLED", True)
 
+# Enable prefetch optimisation for segment processing. When enabled, activities
+# are fetched once per runner across the union date range of all segments,
+# reducing API calls from O(runners × segments) to O(runners).
+# Set to False to use legacy per-segment fetching.
+SEGMENT_PREFETCH_ENABLED = _env_bool("SEGMENT_PREFETCH_ENABLED", True)
+
 
 # ---------------------------------------------------------------------------
 # Distance competition options

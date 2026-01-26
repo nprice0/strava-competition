@@ -101,6 +101,9 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
         monkeypatch.setattr(
             segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False, raising=False
         )
+        monkeypatch.setattr(
+            segment_service_mod, "SEGMENT_PREFETCH_ENABLED", False, raising=False
+        )
 
         service = SegmentService(max_workers=2)
         results = service.process(segments, runners)
@@ -243,6 +246,7 @@ def test_time_bonus_fill_applied(monkeypatch):
         monkeypatch.setattr(segment_service_mod, "get_activities", lambda *a, **k: [])
         monkeypatch.setattr(segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
         monkeypatch.setattr(segment_service_mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+        monkeypatch.setattr(segment_service_mod, "SEGMENT_PREFETCH_ENABLED", False)
 
         service = SegmentService(max_workers=1)
         results = service.process_groups(segments, runners_list)
@@ -320,6 +324,7 @@ def test_both_bonus_fill_applied(monkeypatch):
         monkeypatch.setattr(segment_service_mod, "get_activities", lambda *a, **k: [])
         monkeypatch.setattr(segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
         monkeypatch.setattr(segment_service_mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+        monkeypatch.setattr(segment_service_mod, "SEGMENT_PREFETCH_ENABLED", False)
 
         service = SegmentService(max_workers=1)
         results = service.process_groups(segments, runners_list)
@@ -394,6 +399,7 @@ def test_time_bonus_applied_field_set(monkeypatch):
         monkeypatch.setattr(segment_service_mod, "get_activities", lambda *a, **k: [])
         monkeypatch.setattr(segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
         monkeypatch.setattr(segment_service_mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+        monkeypatch.setattr(segment_service_mod, "SEGMENT_PREFETCH_ENABLED", False)
 
         service = SegmentService(max_workers=1)
         results = service.process_groups(segments, runners_list)
