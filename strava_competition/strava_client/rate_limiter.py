@@ -75,44 +75,98 @@ class RateLimiter:
               "(15-min: 95/100, daily: 450/1000)" or empty string if unavailable
         """
         throttle = False
+
+        def _parse_limits(
+            usage_val: object | None, limit_val: object | None
+        ) -> tuple[int | None, int | None, int | None, int | None]:
+            """Parse comma-separated short/daily usage and limits."""
+
+            if not usage_val or not limit_val:
+                return None, None, None, None
+            try:
+                usage_parts = str(usage_val).split(",")
+                limit_parts = str(limit_val).split(",")
+                short_u = int(usage_parts[0])
+                short_l = int(limit_parts[0])
+                daily_u = daily_l = None
+                if len(usage_parts) > 1 and len(limit_parts) > 1:
+                    daily_u = int(usage_parts[1])
+                    daily_l = int(limit_parts[1])
+                return short_u, short_l, daily_u, daily_l
+            except (ValueError, TypeError, IndexError) as exc:
+                logging.debug(
+                    "Failed to parse rate limit headers usage=%s limit=%s: %s",
+                    usage_val,
+                    limit_val,
+                    exc,
+                )
+                return None, None, None, None
+
         short_used = short_limit = daily_used = daily_limit = None
+        read_used = read_limit = read_daily_used = read_daily_limit = None
         if headers:
-            usage = headers.get("X-RateLimit-Usage")
-            limit = headers.get("X-RateLimit-Limit")
-            if usage and limit:
-                try:
-                    usage_parts = str(usage).split(",")
-                    limit_parts = str(limit).split(",")
-                    short_used = int(usage_parts[0])
-                    short_limit = int(limit_parts[0])
-                    if len(usage_parts) > 1 and len(limit_parts) > 1:
-                        daily_used = int(usage_parts[1])
-                        daily_limit = int(limit_parts[1])
-                except (ValueError, TypeError, IndexError) as exc:
-                    short_used = short_limit = daily_used = daily_limit = None
-                    logging.debug(
-                        "Failed to parse rate limit headers usage=%s limit=%s: %s",
-                        usage,
-                        limit,
-                        exc,
-                    )
+            rate_usage = headers.get("X-RateLimit-Usage")
+            rate_limit = headers.get("X-RateLimit-Limit")
+            (
+                short_used,
+                short_limit,
+                daily_used,
+                daily_limit,
+            ) = _parse_limits(rate_usage, rate_limit)
+
+            read_usage = headers.get("X-ReadRateLimit-Usage")
+            read_limit_header = headers.get("X-ReadRateLimit-Limit")
+            (
+                read_used,
+                read_limit,
+                read_daily_used,
+                read_daily_limit,
+            ) = _parse_limits(read_usage, read_limit_header)
 
         # Build rate limit info for caller's log messages
-        rate_info = ""
+        parts: list[str] = []
         if short_used is not None and short_limit is not None:
-            rate_info = f"(15-min: {short_used}/{short_limit}"
+            part = f"app 15-min: {short_used}/{short_limit}"
             if daily_used is not None and daily_limit is not None:
-                rate_info += f", daily: {daily_used}/{daily_limit}"
-            rate_info += ")"
+                part += f", daily: {daily_used}/{daily_limit}"
+            parts.append(part)
+        if read_used is not None and read_limit is not None:
+            part = f"read 15-min: {read_used}/{read_limit}"
+            if read_daily_used is not None and read_daily_limit is not None:
+                part += f", daily: {read_daily_used}/{read_daily_limit}"
+            parts.append(part)
+        rate_info = f"({'; '.join(parts)})" if parts else ""
 
         if status_code == 429:
             throttle = True
-        elif (
-            short_used is not None
-            and short_limit is not None
-            and short_used >= max(short_limit - self._near_limit_buffer, 0)
-        ):
-            throttle = True
+        else:
+            # Throttle if either app or read limits are near the short-window cap.
+            if (
+                short_used is not None
+                and short_limit is not None
+                and short_used >= max(short_limit - self._near_limit_buffer, 0)
+            ):
+                throttle = True
+                logging.debug(
+                    "Near-limit throttle (app): used=%s limit=%s buffer=%s threshold=%s",
+                    short_used,
+                    short_limit,
+                    self._near_limit_buffer,
+                    max(short_limit - self._near_limit_buffer, 0),
+                )
+            if (
+                read_used is not None
+                and read_limit is not None
+                and read_used >= max(read_limit - self._near_limit_buffer, 0)
+            ):
+                throttle = True
+                logging.debug(
+                    "Near-limit throttle (read): used=%s limit=%s buffer=%s threshold=%s",
+                    read_used,
+                    read_limit,
+                    self._near_limit_buffer,
+                    max(read_limit - self._near_limit_buffer, 0),
+                )
 
         if throttle:
             with self._cond:
