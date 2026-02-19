@@ -1,4 +1,4 @@
-"""Strava API helpers for segment efforts, activities, and data streams."""
+"""Strava API helpers for activities and data streams."""
 
 from __future__ import annotations
 

@@ -72,6 +72,6 @@ class SegmentResult:
     fastest_date: Optional[datetime]
     birthday_bonus_applied: bool = False
     time_bonus_applied: bool = False
-    source: str = "strava"
+    source: str = "activity_scan"
     diagnostics: Dict[str, Any] = field(default_factory=dict)
     fastest_distance_m: float | None = None

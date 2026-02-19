@@ -1,7 +1,6 @@
 """Scanner that infers segment attempts from runner activities.
 
-This module provides a fallback mechanism for runners who don't have direct
-segment API access. It scans their activities for segment efforts embedded
+This module scans runner activities for segment efforts embedded
 in the activity detail payloads.
 """
 
@@ -100,9 +99,9 @@ class _ScanAccumulator:
 
 
 class ActivityEffortScanner:
-    """Activity-based fallback scanner for runners without Strava segment access.
+    """Scanner that finds segment efforts within runner activities.
 
-    This scanner fetches a runner's activities within a date range and inspects
+    Fetches a runner's activities within a date range and inspects
     each activity's embedded segment efforts to find attempts on a target segment.
 
     Attributes:

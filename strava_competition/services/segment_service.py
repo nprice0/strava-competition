@@ -1,8 +1,8 @@
 """Segment competition service (application layer).
 
-Encapsulates orchestration of fetching efforts and aggregating results so
-higher-level code (main, CLI, etc.) depends on a stable service API rather
-than a free function implementation.
+Orchestrates scanning runner activities for segment efforts and
+aggregating results so higher-level code (main, CLI, etc.) depends
+on a stable service API rather than a free function implementation.
 """
 
 from __future__ import annotations
@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import logging
 import threading
 from datetime import datetime
-from typing import Any, Callable, Dict, List, Sequence, Tuple, Set
+from typing import Any, Callable, Dict, List, Sequence, Tuple
 
 from cachetools import TTLCache
 
@@ -63,8 +63,8 @@ class SegmentService:
     ) -> ResultsMapping:
         """Process all segments for all runners, returning aggregated results.
 
-        Iterates through each segment, fetches efforts concurrently, and
-        applies fallback strategies for runners without direct API access.
+        Iterates through each segment, scans activities concurrently,
+        and aggregates the best effort per runner.
         """
         results: ResultsMapping = {}
         total_segments = len(segments)
@@ -427,7 +427,7 @@ class SegmentService:
         cancel_event: threading.Event | None,
         progress: Callable[[str, int, int], None] | None,
     ) -> Dict[str, List[SegmentResult]]:
-        """Process a single segment: fetch efforts, run fallbacks, inject defaults."""
+        """Process a single segment: scan activities, inject defaults."""
         segment_results: Dict[str, List[SegmentResult]] = {}
         eligible_runners = [r for r in runners if r.segment_team]
         total_runners = len(eligible_runners)
@@ -462,216 +462,52 @@ class SegmentService:
                 )
 
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_runner, fallback_queue = self._submit_effort_futures(
-                executor,
-                eligible_runners,
-                segment,
-                cancel_event,
-            )
-            completed = self._consume_effort_futures(
-                future_to_runner,
-                fallback_queue,
-                segment,
-                segment_results,
-                cancel_event,
-                completed,
-                notify_progress,
-            )
-        completed = self._process_fallback_queue(
-            segment,
-            segment_results,
-            fallback_queue,
-            cancel_event,
-            completed,
-            notify_progress,
-        )
+            future_to_runner: Dict[Future, Runner] = {}
+            for runner in eligible_runners:
+                if cancel_event and cancel_event.is_set():
+                    self._log.info(
+                        "Cancellation requested during submission for segment %s; halting.",
+                        segment.name,
+                    )
+                    break
+                future = executor.submit(
+                    self._result_from_activity_scan,
+                    runner,
+                    segment,
+                    cancel_event,
+                )
+                future_to_runner[future] = runner
+
+            for fut in as_completed(future_to_runner):
+                runner = future_to_runner[fut]
+                result: SegmentResult | None = None
+                try:
+                    result = fut.result()
+                except Exception:  # noqa: BLE001
+                    self._log.debug(
+                        "Activity scan failed runner=%s segment=%s",
+                        runner.name,
+                        segment.id,
+                        exc_info=True,
+                    )
+                if result:
+                    team = runner.segment_team
+                    if team:
+                        bucket = segment_results.setdefault(team, [])
+                        bucket.append(result)
+                completed += 1
+                notify_progress(completed)
+                if cancel_event and cancel_event.is_set():
+                    self._log.info(
+                        "Cancellation requested while processing segment %s; stopping early.",
+                        segment.name,
+                    )
+                    for pending in future_to_runner:
+                        pending.cancel()
+                    break
+
         self._inject_default_segment_results(segment, eligible_runners, segment_results)
         return segment_results
-
-    def _submit_effort_futures(
-        self,
-        executor: ThreadPoolExecutor,
-        runners: Sequence[Runner],
-        segment: Segment,
-        cancel_event: threading.Event | None,
-    ) -> Tuple[Dict[Future, Runner], List[Runner]]:
-        """Submit activity-scan tasks for each runner's segment efforts.
-
-        All runners are processed via activity scan. Returns an empty
-        future-to-runner map and the full runner list in the fallback queue.
-        """
-        future_to_runner: Dict[Future, Runner] = {}
-        fallback_queue: List[Runner] = list(runners)
-        return future_to_runner, fallback_queue
-
-    def _consume_effort_futures(
-        self,
-        future_to_runner: Dict[Future, Runner],
-        fallback_queue: List[Runner],
-        segment: Segment,
-        segment_results: Dict[str, List[SegmentResult]],
-        cancel_event: threading.Event | None,
-        completed: int,
-        notify_progress: Callable[[int], None],
-    ) -> int:
-        """Collect completed effort futures and process results.
-
-        Runners that fail or return no efforts are added to the fallback
-        queue for activity-scan retry. Cancels pending futures if cancelled.
-        """
-        for fut in as_completed(future_to_runner):
-            if cancel_event and cancel_event.is_set():
-                self._log.info(
-                    "Cancellation requested during segment %s; stopping remaining futures.",
-                    segment.name,
-                )
-                # Cancel any pending futures to stop further Strava requests
-                for pending in future_to_runner:
-                    pending.cancel()
-                break
-            runner = future_to_runner[fut]
-            try:
-                efforts = fut.result()
-            except Exception:  # noqa: BLE001
-                efforts = None
-            seg_result = self._process_runner_results(
-                runner,
-                segment,
-                efforts,
-                cancel_event,
-            )
-            if seg_result:
-                team = runner.segment_team
-                if team:
-                    bucket = segment_results.setdefault(team, [])
-                    bucket.append(seg_result)
-            if (
-                seg_result is None
-                and getattr(runner, "payment_required", False)
-                and runner not in fallback_queue
-            ):
-                fallback_queue.append(runner)
-            completed += 1
-            notify_progress(completed)
-        return completed
-
-    def _process_fallback_queue(
-        self,
-        segment: Segment,
-        segment_results: Dict[str, List[SegmentResult]],
-        fallback_queue: List[Runner],
-        cancel_event: threading.Event | None,
-        completed: int,
-        notify_progress: Callable[[int], None],
-    ) -> int:
-        """Process runners via activity-scan fallback when API access failed."""
-        unique_runners = self._deduplicate_fallback_runners(fallback_queue)
-        if not unique_runners:
-            return completed
-
-        if cancel_event and cancel_event.is_set():
-            self._log.info(
-                "Cancellation requested before fallback execution for segment %s; skipping remaining runners.",
-                segment.name,
-            )
-            return completed
-
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_runner = self._submit_fallback_tasks(
-                executor,
-                unique_runners,
-                segment,
-                cancel_event,
-            )
-            completed = self._consume_fallback_results(
-                future_to_runner,
-                segment,
-                segment_results,
-                cancel_event,
-                completed,
-                notify_progress,
-            )
-
-        return completed
-
-    def _deduplicate_fallback_runners(
-        self, fallback_queue: Sequence[Runner]
-    ) -> List[Runner]:
-        """Remove duplicate runners from fallback queue by strava_id."""
-        unique: List[Runner] = []
-        seen: Set[int | str] = set()
-        for runner in fallback_queue:
-            if runner.strava_id in seen:
-                continue
-            seen.add(runner.strava_id)
-            unique.append(runner)
-        return unique
-
-    def _submit_fallback_tasks(
-        self,
-        executor: ThreadPoolExecutor,
-        runners: Sequence[Runner],
-        segment: Segment,
-        cancel_event: threading.Event | None,
-    ) -> Dict[Future, Runner]:
-        """Submit activity-scan fallback tasks for runners without API results."""
-        future_to_runner: Dict[Future, Runner] = {}
-        for runner in runners:
-            if cancel_event and cancel_event.is_set():
-                self._log.info(
-                    "Cancellation requested during submission for segment %s; halting fallback queue.",
-                    segment.name,
-                )
-                break
-            future = executor.submit(
-                self._process_runner_results,
-                runner,
-                segment,
-                None,
-                cancel_event,
-            )
-            future_to_runner[future] = runner
-        return future_to_runner
-
-    def _consume_fallback_results(
-        self,
-        future_to_runner: Dict[Future, Runner],
-        segment: Segment,
-        segment_results: Dict[str, List[SegmentResult]],
-        cancel_event: threading.Event | None,
-        completed: int,
-        notify_progress: Callable[[int], None],
-    ) -> int:
-        """Collect fallback results and add to segment_results. Cancels on event."""
-        for fut in as_completed(future_to_runner):
-            runner = future_to_runner[fut]
-            result: SegmentResult | None = None
-            try:
-                result = fut.result()
-            except Exception:  # noqa: BLE001
-                self._log.debug(
-                    "Fallback matcher failed runner=%s segment=%s",
-                    runner.name,
-                    segment.id,
-                    exc_info=True,
-                )
-            if result:
-                team = runner.segment_team
-                if team:
-                    bucket = segment_results.setdefault(team, [])
-                    bucket.append(result)
-            completed += 1
-            notify_progress(completed)
-            if cancel_event and cancel_event.is_set():
-                self._log.info(
-                    "Cancellation requested while processing segment %s fallback results; stopping early.",
-                    segment.name,
-                )
-                # Cancel any pending futures to stop further processing
-                for pending in future_to_runner:
-                    pending.cancel()
-                break
-        return completed
 
     def _inject_default_segment_results(
         self,
@@ -707,27 +543,13 @@ class SegmentService:
                 )
             )
 
-    def _process_runner_results(
-        self,
-        runner: Runner,
-        segment: Segment,
-        efforts: List[dict] | None,
-        cancel_event: threading.Event | None = None,
-    ) -> SegmentResult | None:
-        """Process a runner's segment efforts via activity scan."""
-        return self._result_from_activity_scan(
-            runner,
-            segment,
-            cancel_event,
-        )
-
     def _result_from_activity_scan(
         self,
         runner: Runner,
         segment: Segment,
         cancel_event: threading.Event | None,
     ) -> SegmentResult | None:
-        """Scan runner's activities for segment efforts when API unavailable."""
+        """Scan runner's activities for segment efforts and return the best result."""
         try:
             scan = self._activity_scanner.scan_segment(
                 runner,
@@ -779,12 +601,8 @@ class SegmentService:
         runner: Runner,
         start_date: datetime,
         end_date: datetime,
-        cancel_event: threading.Event | None = None,
     ) -> List[Dict[str, Any]]:
         """Return cached activities for a runner/date window, fetching if needed."""
-
-        if cancel_event and cancel_event.is_set():
-            return []
         cache_key = (runner.strava_id, start_date, end_date)
         with self._activity_cache_lock:
             cached: List[Dict[str, Any]] | None = self._activity_cache.get(cache_key)

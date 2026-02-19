@@ -311,9 +311,7 @@ def test_segment_service_uses_activity_scan(
         service._activity_scanner,
     )
 
-    runner.payment_required = True  # type: ignore[attr-defined]
-
-    result = service._process_runner_results(runner, segment, efforts=None)
+    result = service._result_from_activity_scan(runner, segment, cancel_event=None)
 
     assert result is not None
     assert result.source == "activity_scan"
@@ -335,10 +333,8 @@ def test_segment_service_handles_activity_scan_error(
         _raise_scan, service._activity_scanner
     )
 
-    runner.payment_required = True  # type: ignore[attr-defined]
-
-    # With scan error and no matcher fallback, result should be None
-    result = service._process_runner_results(runner, segment, efforts=None)
+    # With scan error, result should be None
+    result = service._result_from_activity_scan(runner, segment, cancel_event=None)
 
     assert result is None
 
