@@ -1,6 +1,8 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any
 import warnings
 
 
@@ -43,13 +45,15 @@ class SegmentGroup:
 
     id: int
     name: str
-    windows: List[SegmentWindow]
+    windows: list[SegmentWindow]
     default_time_seconds: float | None = None
     min_distance_meters: float | None = None
 
 
 @dataclass
 class Runner:
+    """A competition participant with Strava credentials and team assignments."""
+
     name: str
     strava_id: int | str
     refresh_token: str
@@ -64,14 +68,16 @@ class Runner:
 
 @dataclass
 class SegmentResult:
+    """Best effort result for one runner on one segment."""
+
     runner: str
     team: str
     segment: str
     attempts: int
     fastest_time: float
-    fastest_date: Optional[datetime]
+    fastest_date: datetime | None
     birthday_bonus_applied: bool = False
     time_bonus_applied: bool = False
     source: str = "activity_scan"
-    diagnostics: Dict[str, Any] = field(default_factory=dict)
+    diagnostics: dict[str, Any] = field(default_factory=dict)
     fastest_distance_m: float | None = None

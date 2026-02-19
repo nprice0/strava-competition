@@ -14,7 +14,6 @@ from cachetools import TTLCache
 from ..activity_types import activity_type_matches, normalize_activity_type
 from ..api_capture import save_overlay_to_cache, save_response_to_cache, CaptureRecord
 from ..config import (
-    ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS,
     CACHE_TAIL_OVERLAP_SECONDS,
     CACHE_EMPTY_REFRESH_SECONDS,
     CACHE_MAX_LOOKBACK_DAYS,
@@ -26,7 +25,6 @@ from ..config import (
     STRAVA_CACHE_ID_SALT,
     _cache_mode_offline,
 )
-from ..errors import StravaAPIError
 from ..models import Runner
 from ..replay_tail import (
     chunk_activities,
@@ -45,7 +43,6 @@ from .capture import (
 from .pagination import fetch_page_with_retries
 from .response_handling import extract_error
 from .rate_limiter import RateLimiter
-from .resources import ResourceAPI
 from .session import get_default_session
 
 JSONList: TypeAlias = List[Dict[str, Any]]
@@ -97,14 +94,9 @@ class ActivitiesAPI:
         *,
         session: requests.Session | None = None,
         limiter: RateLimiter | None = None,
-        resources: ResourceAPI | None = None,
     ) -> None:
         self._session = session or get_default_session()
         self._limiter = limiter or RateLimiter()
-        self._resources = resources or ResourceAPI(
-            session=self._session,
-            limiter=self._limiter,
-        )
 
     def get_activities(
         self,
@@ -279,36 +271,6 @@ class ActivitiesAPI:
                 detail,
             )
             return None
-
-    def fetch_activity_with_efforts(
-        self,
-        runner: Runner,
-        activity_id: int,
-        *,
-        include_all_efforts: bool = True,
-    ) -> Dict[str, Any]:
-        params = {"include_all_efforts": "true"} if include_all_efforts else None
-        url = f"{STRAVA_BASE_URL}/activities/{activity_id}"
-        context = "activity_detail"
-        if include_all_efforts and ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS:
-            payload = self._resources.fetch_with_capture(
-                runner,
-                url,
-                params,
-                context,
-            )
-        else:
-            payload = self._resources.fetch_json(
-                runner,
-                url,
-                params,
-                context,
-            )
-        if isinstance(payload, dict):
-            return payload
-        raise StravaAPIError(
-            f"{context} returned non-object payload for runner {runner.name} activity={activity_id}"
-        )
 
 
 def _maybe_refresh_cache_tail(

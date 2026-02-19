@@ -19,7 +19,6 @@ from typing import Any, Callable, Dict, List, Sequence, Tuple
 
 from ..models import Runner
 from ..strava_api import get_activities
-from ..auth import TokenError
 from ..distance_aggregation import build_distance_outputs
 from ..config import CACHE_REFRESH_PARALLELISM
 
@@ -184,14 +183,11 @@ class DistanceService:
         earliest: datetime,
         latest: datetime,
     ) -> ActivityList:
-        """Fetch activities for a single runner, handling errors gracefully."""
-        try:
-            return self.config.fetcher(runner, earliest, latest) or []
-        except TokenError as exc:
-            self._log.warning(
-                "Skipping runner=%s distance processing: %s", runner.name, exc
-            )
-            return []
+        """Fetch activities for a single runner.
+
+        Raises on auth or API errors so the caller can record the failure.
+        """
+        return self.config.fetcher(runner, earliest, latest) or []
 
 
 __all__ = ["DistanceService", "DistanceServiceConfig"]

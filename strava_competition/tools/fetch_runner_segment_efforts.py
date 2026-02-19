@@ -275,8 +275,9 @@ def main() -> None:
     )
     if maybe_new_refresh and maybe_new_refresh != args.refresh_token:
         LOGGER.warning(
-            "Strava rotated the refresh token. Save this new value: %s",
-            maybe_new_refresh,
+            "Strava rotated the refresh token (ends …%s). "
+            "Update your credentials.",
+            maybe_new_refresh[-4:],
         )
 
     activities = _fetch_activities(

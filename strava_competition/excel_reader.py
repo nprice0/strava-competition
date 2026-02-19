@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from datetime import datetime, time, timedelta
 import logging
 import re
+import warnings
 from pathlib import Path
 from typing import Dict, Iterator, List, Optional, Tuple
 
@@ -404,8 +405,6 @@ def read_segment_groups(
     - If Min Distance (m) appears on multiple rows, values must match.
     - Warns (doesn't error) if windows fully overlap.
     """
-    import warnings
-
     filepath = _coerce_path(filepath)
     if workbook is None:
         _assert_file_exists(filepath)

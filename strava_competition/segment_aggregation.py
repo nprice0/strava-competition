@@ -81,7 +81,7 @@ def _rank_dataframe(df: pd.DataFrame) -> pd.DataFrame:
                 )
     sort_cols = [c for c in [TEAM_COL, FASTEST_SEC_COL] if c in df.columns]
     if sort_cols:
-        df.sort_values(by=sort_cols, inplace=True)
+        df = df.sort_values(by=sort_cols)
     from .config import SEGMENT_ENFORCE_COLUMN_ORDER, SEGMENT_COLUMN_ORDER
 
     preferred_source = (
@@ -333,9 +333,9 @@ def _populate_team_entry(entry: dict, seg_results: List[SegmentResult]) -> None:
 def _sort_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     # Prefer sorting by total if available, else by average
     if SUMMARY_TOTAL_FASTEST_SEC_COL in df.columns:
-        df.sort_values(by=[SUMMARY_TOTAL_FASTEST_SEC_COL, TEAM_COL], inplace=True)
+        df = df.sort_values(by=[SUMMARY_TOTAL_FASTEST_SEC_COL, TEAM_COL])
     elif SUMMARY_AVG_FASTEST_SEC_COL in df.columns:
-        df.sort_values(by=[SUMMARY_AVG_FASTEST_SEC_COL, TEAM_COL], inplace=True)
+        df = df.sort_values(by=[SUMMARY_AVG_FASTEST_SEC_COL, TEAM_COL])
     return df
 
 
@@ -359,8 +359,6 @@ def build_segment_outputs(
         if BIRTHDAY_FLAG_COL in df.columns:
             column_values = df[BIRTHDAY_FLAG_COL].tolist()
             bonus_rows = [idx for idx, flag in enumerate(column_values) if bool(flag)]
-            if bonus_rows:
-                df.attrs[BIRTHDAY_ATTR] = bonus_rows
             df = df.drop(columns=[BIRTHDAY_FLAG_COL])
             if bonus_rows:
                 df.attrs[BIRTHDAY_ATTR] = bonus_rows
@@ -369,8 +367,6 @@ def build_segment_outputs(
             time_bonus_rows = [
                 idx for idx, flag in enumerate(column_values) if bool(flag)
             ]
-            if time_bonus_rows:
-                df.attrs[TIME_BONUS_ATTR] = time_bonus_rows
             df = df.drop(columns=[TIME_BONUS_FLAG_COL])
             if time_bonus_rows:
                 df.attrs[TIME_BONUS_ATTR] = time_bonus_rows

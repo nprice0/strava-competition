@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional
 
@@ -23,6 +24,8 @@ from .strava_client.base import ensure_runner_token as _ensure_runner_token
 from .strava_client.rate_limiter import RateLimiter
 from .strava_client.resources import ResourceAPI
 from .strava_client.session import get_default_session
+
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_TIMEOUT: int = REQUEST_TIMEOUT
 
@@ -188,13 +191,13 @@ class StravaClient:
         )
         if not isinstance(data, dict):
             message = f"{context} payload had unexpected type {type(data).__name__}"
-            logging.error(message)
+            LOGGER.error(message)
             raise StravaAPIError(message)
         map_info = data.get("map") or {}
         polyline = map_info.get("polyline") or map_info.get("summary_polyline")
         if not polyline:
             message = f"{context} missing polyline data for runner {runner.name}"
-            logging.error(message)
+            LOGGER.error(message)
             raise StravaAPIError(message)
         distance_val = data.get("distance")
         try:
@@ -237,26 +240,26 @@ class StravaClient:
         )
         if not isinstance(data, dict):
             message = f"{context} payload had unexpected type {type(data).__name__}"
-            logging.error(message)
+            LOGGER.error(message)
             raise StravaAPIError(message)
         latlng_stream = data.get("latlng")
         time_stream = data.get("time")
         if not isinstance(latlng_stream, dict) or not isinstance(time_stream, dict):
             message = f"{context} missing required stream metadata"
-            logging.warning(message)
+            LOGGER.warning(message)
             raise StravaStreamEmptyError(message)
         latlng_data = latlng_stream.get("data")
         time_data = time_stream.get("data")
         if not latlng_data or not time_data:
             message = f"{context} missing latlng or time samples"
-            logging.warning(message)
+            LOGGER.warning(message)
             raise StravaStreamEmptyError(message)
         if len(latlng_data) != len(time_data):
             message = (
                 f"{context} stream length mismatch latlng={len(latlng_data)}"
                 f" time={len(time_data)}"
             )
-            logging.warning(message)
+            LOGGER.warning(message)
             raise StravaStreamEmptyError(message)
         metadata = {
             "latlng": {k: v for k, v in latlng_stream.items() if k != "data"},
@@ -282,13 +285,16 @@ class StravaClient:
 
 # Lazy-initialized default client to avoid configuration issues during testing
 _default_client: Optional[StravaClient] = None
+_default_client_lock = threading.Lock()
 
 
 def get_default_client() -> StravaClient:
-    """Get or create the default StravaClient instance."""
+    """Get or create the default StravaClient instance (thread-safe)."""
     global _default_client
     if _default_client is None:
-        _default_client = StravaClient()
+        with _default_client_lock:
+            if _default_client is None:
+                _default_client = StravaClient()
     return _default_client
 
 

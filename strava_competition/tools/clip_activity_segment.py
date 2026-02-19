@@ -73,8 +73,9 @@ class RemoteActivityFetcher:
             )
             if maybe_new and maybe_new != self.refresh_token:
                 LOGGER.warning(
-                    "Strava rotated the refresh token. Save this new value: %s",
-                    maybe_new,
+                    "Strava rotated the refresh token (ends …%s). "
+                    "Update your credentials.",
+                    maybe_new[-4:],
                 )
             self._access_token = token
         return self._access_token

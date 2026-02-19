@@ -18,6 +18,9 @@ Activity = (
     dict  # minimal structure expected: distance, total_elevation_gain, start_date_local
 )
 
+# Lookup cache keyed by id(act) to avoid mutating shared activity dicts.
+_start_utc_cache: dict[int, datetime] = {}
+
 
 def _activity_start_utc(act: Activity) -> datetime | None:
     """Return cached UTC start datetime for an activity."""
@@ -38,11 +41,11 @@ def _activity_start_utc(act: Activity) -> datetime | None:
 
 
 def _activity_in_window(act: Activity, start_dt: datetime, end_dt: datetime) -> bool:
-    start_utc = act.get("_start_utc")
+    start_utc = _start_utc_cache.get(id(act))
     if start_utc is None:
         start_utc = _activity_start_utc(act)
         if start_utc is not None:
-            act["_start_utc"] = start_utc
+            _start_utc_cache[id(act)] = start_utc
     if start_utc is None:
         return False
     return start_dt <= start_utc <= end_dt

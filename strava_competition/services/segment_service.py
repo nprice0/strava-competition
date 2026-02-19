@@ -349,22 +349,6 @@ class SegmentService:
 
         return best_result
 
-    def _adjust_elapsed_for_birthday_window(
-        self,
-        runner: Runner,
-        birthday_bonus_seconds: float,
-        elapsed_seconds: float,
-        effort_date: datetime | None,
-    ) -> tuple[float, bool]:
-        """Apply birthday bonus deduction using window-specific bonus."""
-        if birthday_bonus_seconds <= 0 or not effort_date or not runner.birthday:
-            return float(elapsed_seconds), False
-        month, day = runner.birthday
-        if effort_date.month != month or effort_date.day != day:
-            return float(elapsed_seconds), False
-        adjusted = max(0.0, float(elapsed_seconds) - birthday_bonus_seconds)
-        return adjusted, True
-
     def _apply_time_bonus(
         self,
         window: SegmentWindow,
@@ -625,14 +609,6 @@ class SegmentService:
 
         with self._activity_cache_lock:
             self._activity_cache.clear()
-
-    @staticmethod
-    def _coerce_float(value: Any) -> float | None:
-        """Safely convert a value to float, returning None on failure."""
-        try:
-            return float(value)
-        except (TypeError, ValueError):
-            return None
 
     def _adjust_elapsed_for_birthday(
         self,

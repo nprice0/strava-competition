@@ -91,8 +91,8 @@ def _parse_duration(spec: str) -> timedelta:
         elif suffix == "s":
             multiplier = 1
     seconds = float(spec) * multiplier
-    if seconds < 0:
-        raise ValueError("duration must be positive")
+    if seconds <= 0:
+        raise ValueError("duration must be positive (got 0)")
     return timedelta(seconds=seconds)
 
 
