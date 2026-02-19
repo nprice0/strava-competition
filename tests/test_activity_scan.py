@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import List
 
 import pytest
 
@@ -109,7 +108,7 @@ def test_activity_scanner_finds_fastest_effort(
         ]
     }
 
-    fetch_calls: List[int] = []
+    fetch_calls: list[int] = []
 
     scanner = ActivityEffortScanner(activity_provider=lambda *_args: activities)
 

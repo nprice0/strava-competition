@@ -11,7 +11,6 @@ import time
 import urllib.parse
 import webbrowser
 from dataclasses import dataclass, field
-from typing import Optional
 
 from flask import Flask, abort, request
 from flask.typing import ResponseReturnValue
@@ -45,9 +44,9 @@ class OAuthSession:
     """
 
     expected_state: str = field(default_factory=lambda: secrets.token_urlsafe(16))
-    auth_code: Optional[str] = None
+    auth_code: str | None = None
     auth_event: threading.Event = field(default_factory=threading.Event)
-    server: Optional[BaseWSGIServer] = None
+    server: BaseWSGIServer | None = None
 
     def reset(self) -> None:
         """Reset state for a new OAuth flow."""

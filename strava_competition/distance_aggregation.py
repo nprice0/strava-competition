@@ -9,7 +9,6 @@ aggregation from orchestration in ``DistanceService``).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, List, Tuple
 
 from .models import Runner
 from .utils import parse_iso_datetime, to_utc_aware
@@ -52,8 +51,8 @@ def _activity_in_window(act: Activity, start_dt: datetime, end_dt: datetime) -> 
 
 
 def _normalize_windows(
-    distance_windows: List[Tuple[datetime, datetime, float | None]],
-) -> List[Tuple[datetime, datetime, float | None]]:
+    distance_windows: list[tuple[datetime, datetime, float | None]],
+) -> list[tuple[datetime, datetime, float | None]]:
     """Normalize all window boundaries to UTC-aware once up front."""
     return [
         (to_utc_aware(s), to_utc_aware(e), threshold)
@@ -67,7 +66,7 @@ def _sheet_name_for_window(start_dt: datetime, end_dt: datetime) -> str:
 
 def _row_for_window(
     runner: Runner,
-    acts: List[Activity],
+    acts: list[Activity],
     start_dt: datetime,
     end_dt: datetime,
     threshold: float | None,
@@ -102,7 +101,7 @@ def _row_for_window(
     return row
 
 
-def _summary_row(runner: Runner, acts: List[Activity]) -> dict:
+def _summary_row(runner: Runner, acts: list[Activity]) -> dict:
     total_distance = 0.0
     total_elev = 0.0
     run_count = 0
@@ -128,22 +127,22 @@ def _summary_row(runner: Runner, acts: List[Activity]) -> dict:
 
 
 def build_distance_outputs(
-    runners: List[Runner],
-    distance_windows: List[Tuple[datetime, datetime, float | None]],
-    runner_activity_cache: Dict[int | str, List[Activity]],
-) -> List[Tuple[str, List[dict]]]:
+    runners: list[Runner],
+    distance_windows: list[tuple[datetime, datetime, float | None]],
+    runner_activity_cache: dict[int | str, list[Activity]],
+) -> list[tuple[str, list[dict]]]:
     """Return list of (sheet_name, rows) including Distance_Summary last.
 
     Summary is computed from the full activity cache (unique activities per
     runner) and is NOT a sum of the per-window sheets (avoids double counting
     when windows overlap).
     """
-    outputs: List[Tuple[str, List[dict]]] = []
+    outputs: list[tuple[str, list[dict]]] = []
 
     # Per-window sheets
     normalised_windows = _normalize_windows(distance_windows)
     for start_dt, end_dt, threshold in normalised_windows:
-        rows: List[dict] = []
+        rows: list[dict] = []
         for runner in runners:
             if not runner.distance_team:
                 continue
@@ -159,7 +158,7 @@ def build_distance_outputs(
         outputs.append((_sheet_name_for_window(start_dt, end_dt), rows))
 
     # Summary from full activity cache (unique activities only once)
-    summary_rows: List[dict] = []
+    summary_rows: list[dict] = []
     for runner in runners:
         if not runner.distance_team:
             continue

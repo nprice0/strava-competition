@@ -7,14 +7,13 @@ the distance aggregation module and keep transformation logic testable.
 
 from __future__ import annotations
 
-from typing import List, Tuple
 import math
 import statistics
 import pandas as pd
 
 from .models import SegmentResult
 
-ResultsMapping = dict[str, dict[str, List[SegmentResult]]]
+ResultsMapping = dict[str, dict[str, list[SegmentResult]]]
 
 TEAM_COL = "Team"
 RUNNER_COL = "Runner"
@@ -105,9 +104,9 @@ def _rank_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _rows_for_segment(
-    segment_team_mapping: dict[str, List[SegmentResult]],
-) -> List[dict]:
-    rows: List[dict] = []
+    segment_team_mapping: dict[str, list[SegmentResult]],
+) -> list[dict]:
+    rows: list[dict] = []
     for _team, seg_results in segment_team_mapping.items():
         for r in seg_results:
             distance_value = r.fastest_distance_m
@@ -195,7 +194,7 @@ def _compute_team_rank_totals(df: pd.DataFrame) -> dict[str, int]:
 
 
 def _build_segment_team_summary(
-    segment_team_mapping: dict[str, List[SegmentResult]],
+    segment_team_mapping: dict[str, list[SegmentResult]],
     team_rank_totals: dict[str, int],
 ) -> pd.DataFrame:
     rows: list[dict] = []
@@ -239,7 +238,7 @@ def _build_segment_team_summary(
 
 
 def _summarise_team_segment(
-    team: str, seg_results: List[SegmentResult], team_rank_totals: dict[str, int]
+    team: str, seg_results: list[SegmentResult], team_rank_totals: dict[str, int]
 ) -> dict | None:
     if not seg_results:
         return None
@@ -322,7 +321,7 @@ def _aggregate_team_stats(results: ResultsMapping) -> dict[str, dict]:
     return stats
 
 
-def _populate_team_entry(entry: dict, seg_results: List[SegmentResult]) -> None:
+def _populate_team_entry(entry: dict, seg_results: list[SegmentResult]) -> None:
     for result in seg_results:
         entry["runners"].add(result.runner)
         entry["attempts"] += result.attempts
@@ -341,13 +340,13 @@ def _sort_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 def build_segment_outputs(
     results: ResultsMapping, include_summary: bool = True
-) -> List[Tuple[str, pd.DataFrame]]:
+) -> list[tuple[str, pd.DataFrame]]:
     """Return list of (sheet_base_name, dataframe) for each segment + optional summary.
 
     Sheet base names are the raw segment names and "Summary" (if included).
     The caller (writer) is responsible for resolving Excel sheet name conflicts.
     """
-    outputs: List[Tuple[str, pd.DataFrame]] = []
+    outputs: list[tuple[str, pd.DataFrame]] = []
     for segment_name, team_data in results.items():
         rows = _rows_for_segment(team_data)
         if not rows:

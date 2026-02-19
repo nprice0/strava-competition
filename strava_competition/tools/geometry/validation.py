@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional, Tuple
 
 import numpy as np
 from numpy.typing import NDArray
@@ -16,8 +15,8 @@ class DirectionCheckResult:
     """Outcome of the direction validation step."""
 
     matches_direction: bool
-    max_start_distance_m: Optional[float]
-    direction_score: Optional[float]
+    max_start_distance_m: float | None
+    direction_score: float | None
 
 
 @dataclass(slots=True)
@@ -25,10 +24,10 @@ class CoverageResult:
     """Aggregate coverage metrics for a projected activity."""
 
     coverage_ratio: float
-    coverage_bounds: Optional[Tuple[float, float]]
-    projections: Optional[MetricArray] = None
-    max_offset_m: Optional[float] = None
-    offsets: Optional[MetricArray] = None
+    coverage_bounds: tuple[float, float] | None
+    projections: MetricArray | None = None
+    max_offset_m: float | None = None
+    offsets: MetricArray | None = None
 
 
 def check_direction(
@@ -36,8 +35,8 @@ def check_direction(
     segment_points: MetricArray,
     *,
     start_tolerance_m: float,
-    projections: Optional[MetricArray] = None,
-    coverage_bounds: Optional[Tuple[float, float]] = None,
+    projections: MetricArray | None = None,
+    coverage_bounds: tuple[float, float] | None = None,
 ) -> DirectionCheckResult:
     """Check whether the activity begins near the segment start and moves forward."""
 
@@ -87,8 +86,8 @@ def check_direction(
             True, max_start_distance_m=min_distance, direction_score=1.0
         )
 
-    forward_fraction: Optional[float] = None
-    direction_ok: Optional[bool] = None
+    forward_fraction: float | None = None
+    direction_ok: bool | None = None
     if window_projections is not None and coverage_bounds is not None:
         forward_fraction, direction_ok = _analyze_projection_direction(
             window_projections, coverage_bounds, start_tolerance_m
@@ -143,40 +142,78 @@ def compute_coverage(
 def _project_onto_polyline(
     points: MetricArray,
     polyline: MetricArray,
-) -> Tuple[MetricArray, MetricArray]:
-    """Project each point onto the polyline, returning distances and offsets."""
+) -> tuple[MetricArray, MetricArray]:
+    """Project each point onto the polyline, returning distances and offsets.
 
-    segments = np.diff(polyline, axis=0)
-    segment_lengths = np.linalg.norm(segments, axis=1)
-    cumulative = _cumulative_distances(polyline)
-    projections = np.zeros(len(points), dtype=float)
-    offsets = np.full(len(points), np.inf, dtype=float)
+    Uses vectorised NumPy broadcasting so the cost is O(N + M) memory with a
+    single pass over an (N, M) matrix instead of a Python double loop.
 
-    # Greedy search: walk each segment and find the nearest in-line projection.
-    for idx, point in enumerate(points):
-        best_distance = 0.0
-        best_offset = np.inf
-        for i, (seg_start, seg_vec, seg_len) in enumerate(
-            zip(polyline[:-1], segments, segment_lengths)
-        ):
-            if seg_len == 0:
-                continue
-            vec_to_point = point - seg_start
-            t = np.dot(vec_to_point, seg_vec) / (seg_len**2)
-            t_clamped = min(max(t, 0.0), 1.0)
-            nearest = seg_start + t_clamped * seg_vec
-            offset = np.linalg.norm(point - nearest)
-            if offset < best_offset:
-                best_offset = float(offset)
-                best_distance = cumulative[i] + t_clamped * seg_len
-        if not np.isfinite(best_offset):
-            # Fallback to the closest vertex when projection lies outside both endpoints.
-            dists = np.linalg.norm(polyline - point, axis=1)
-            best_index = int(np.argmin(dists))
-            best_distance = cumulative[best_index]
-            best_offset = float(np.min(dists))
-        projections[idx] = best_distance
-        offsets[idx] = best_offset
+    Args:
+        points: Array of shape (N, 2) – points to project.
+        polyline: Array of shape (M+1, 2) – polyline vertices.
+
+    Returns:
+        projections: Distance along the polyline for each point's nearest hit.
+        offsets: Perpendicular distance from each point to the polyline.
+    """
+    segments = np.diff(polyline, axis=0)  # (M, 2)
+    seg_lengths = np.linalg.norm(segments, axis=1)  # (M,)
+    cumulative = _cumulative_distances(polyline)  # (M+1,)
+
+    # Mask out zero-length segments to avoid division by zero.
+    valid = seg_lengths > 0  # (M,)
+    if not np.any(valid):
+        # Every segment is degenerate – fall back to nearest vertex.
+        dists = np.linalg.norm(
+            points[:, np.newaxis, :] - polyline[np.newaxis, :, :],
+            axis=2,
+        )
+        best_idx = np.argmin(dists, axis=1)
+        return cumulative[best_idx], np.min(dists, axis=1)
+
+    # Work only with valid (non-zero-length) segments.
+    v_segments = segments[valid]  # (V, 2)
+    v_lengths = seg_lengths[valid]  # (V,)
+    v_starts = polyline[:-1][valid]  # (V, 2)
+    v_cumulative = cumulative[:-1][valid]  # (V,)
+
+    # Broadcasting: vecs has shape (N, V, 2).
+    vecs = points[:, np.newaxis, :] - v_starts[np.newaxis, :, :]
+
+    # Parameter t of each projection, clamped to [0, 1].
+    t = np.einsum("nvd,vd->nv", vecs, v_segments) / (v_lengths**2)
+    t_clamped = np.clip(t, 0.0, 1.0)  # (N, V)
+
+    # Nearest point on each segment and perpendicular offset.
+    nearest = (
+        v_starts[np.newaxis, :, :]
+        + t_clamped[..., np.newaxis] * v_segments[np.newaxis, :, :]
+    )
+    offset_matrix = np.linalg.norm(
+        points[:, np.newaxis, :] - nearest,
+        axis=2,
+    )  # (N, V)
+
+    # Pick the segment with the smallest offset for each point.
+    best_seg = np.argmin(offset_matrix, axis=1)  # (N,)
+    n_idx = np.arange(len(points))
+    offsets = offset_matrix[n_idx, best_seg]
+    projections = (
+        v_cumulative[best_seg] + t_clamped[n_idx, best_seg] * v_lengths[best_seg]
+    )
+
+    # Fallback for any point that still has infinite offset (shouldn't happen
+    # with valid segments, but kept for safety).
+    bad = ~np.isfinite(offsets)
+    if np.any(bad):
+        dists = np.linalg.norm(
+            points[bad, np.newaxis, :] - polyline[np.newaxis, :, :],
+            axis=2,
+        )
+        best_idx = np.argmin(dists, axis=1)
+        projections[bad] = cumulative[best_idx]
+        offsets[bad] = np.min(dists, axis=1)
+
     return projections, offsets
 
 
@@ -193,9 +230,9 @@ def _cumulative_distances(points: MetricArray) -> MetricArray:
 
 def _analyze_projection_direction(
     projections: MetricArray,
-    coverage_bounds: Tuple[float, float],
+    coverage_bounds: tuple[float, float],
     start_tolerance_m: float,
-) -> Tuple[Optional[float], Optional[bool]]:
+) -> tuple[float | None, bool | None]:
     """Infer directionality using projected distances within the covered segment span."""
 
     if projections.size <= 1:

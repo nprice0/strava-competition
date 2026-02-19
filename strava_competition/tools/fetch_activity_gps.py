@@ -34,16 +34,16 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
-
-import requests
+from typing import Any
 
 from strava_competition.auth import get_access_token
-from strava_competition.config import REQUEST_TIMEOUT, STRAVA_BASE_URL
+from strava_competition.config import STRAVA_BASE_URL
+from strava_competition.tools._http import http_get as _http_get
 
 # Default output directory for GPX files
 DEFAULT_OUTPUT_DIR = (
@@ -53,25 +53,6 @@ DEFAULT_OUTPUT_DIR = (
 LOGGER = logging.getLogger("fetch_activity_gps")
 
 
-def _http_get(
-    url: str,
-    token: str,
-    *,
-    params: Dict[str, Any] | None = None,
-) -> Any:
-    """Wrapper for authenticated GET requests with basic logging."""
-    headers = {"Authorization": f"Bearer {token}"}
-    LOGGER.debug("GET %s params=%s", url, params)
-    response = requests.get(
-        url,
-        headers=headers,
-        params=params,
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
 def fetch_activity_streams(
     token: str,
     activity_id: int,
@@ -79,7 +60,7 @@ def fetch_activity_streams(
     include_altitude: bool = False,
     include_time: bool = False,
     include_distance: bool = False,
-) -> Dict[str, List[Any]]:
+) -> dict[str, list[Any]]:
     """Fetch GPS stream data for an activity.
 
     Args:
@@ -109,7 +90,7 @@ def fetch_activity_streams(
     payload = _http_get(url, token, params=params)
 
     # Strava keys responses by stream type when key_by_type is set
-    result: Dict[str, List[Any]] = {}
+    result: dict[str, list[Any]] = {}
     if isinstance(payload, dict):
         for key in keys:
             if key in payload and "data" in payload[key]:
@@ -120,7 +101,7 @@ def fetch_activity_streams(
     return result
 
 
-def fetch_activity_metadata(token: str, activity_id: int) -> Dict[str, Any]:
+def fetch_activity_metadata(token: str, activity_id: int) -> dict[str, Any]:
     """Fetch basic activity metadata for GPX header info."""
     url = f"{STRAVA_BASE_URL}/activities/{activity_id}"
     data = _http_get(url, token)
@@ -130,8 +111,8 @@ def fetch_activity_metadata(token: str, activity_id: int) -> Dict[str, Any]:
 
 
 def streams_to_gpx(
-    streams: Dict[str, List[Any]],
-    metadata: Dict[str, Any],
+    streams: dict[str, list[Any]],
+    metadata: dict[str, Any],
 ) -> str:
     """Convert stream data to GPX format.
 
@@ -150,7 +131,7 @@ def streams_to_gpx(
     start_date_str = metadata.get("start_date")
 
     # Parse start time to compute absolute timestamps for each point
-    start_time: Optional[datetime] = None
+    start_time: datetime | None = None
     if start_date_str:
         if start_date_str.endswith("Z"):
             start_date_str = start_date_str[:-1] + "+00:00"
@@ -238,8 +219,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--refresh-token",
-        required=True,
-        help="Refresh token for the activity owner (required)",
+        default=os.environ.get("STRAVA_REFRESH_TOKEN"),
+        help=(
+            "Refresh token for the activity owner. "
+            "Defaults to STRAVA_REFRESH_TOKEN env var."
+        ),
     )
     parser.add_argument(
         "--runner-name",
@@ -289,6 +273,8 @@ def main() -> None:
     """Entry point for the fetch_activity_gps tool."""
     parser = _build_parser()
     args = parser.parse_args()
+    if not args.refresh_token:
+        parser.error("--refresh-token is required (or set STRAVA_REFRESH_TOKEN)")
     logging.basicConfig(level=getattr(logging, args.log_level))
 
     LOGGER.info("Fetching GPS data for activity %s", args.activity_id)
@@ -300,8 +286,7 @@ def main() -> None:
     )
     if maybe_new_refresh and maybe_new_refresh != args.refresh_token:
         LOGGER.warning(
-            "Strava rotated the refresh token (ends …%s). "
-            "Update your credentials.",
+            "Strava rotated the refresh token (ends …%s). Update your credentials.",
             maybe_new_refresh[-4:],
         )
 

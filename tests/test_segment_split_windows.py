@@ -13,7 +13,6 @@ import os
 import tempfile
 import warnings
 from datetime import datetime
-from typing import List
 
 import pandas as pd
 import pytest
@@ -30,8 +29,8 @@ from strava_competition.services.segment_service import SegmentService
 
 def _make_segment_workbook(
     path: str,
-    segment_rows: List[dict],
-    runner_rows: List[dict] | None = None,
+    segment_rows: list[dict],
+    runner_rows: list[dict] | None = None,
 ) -> None:
     """Create a minimal workbook with Segment Series and Runners sheets."""
     segs_df = pd.DataFrame(segment_rows)

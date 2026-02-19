@@ -5,7 +5,6 @@ from __future__ import annotations
 import threading
 import time
 from types import MethodType
-from typing import List
 
 import pytest
 
@@ -52,7 +51,7 @@ def test_segment_processes_runners_in_parallel(
         )
         runners.append(r)
 
-    start_times: List[float] = []
+    start_times: list[float] = []
     lock = threading.Lock()
 
     def fake_scan(

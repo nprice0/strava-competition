@@ -12,19 +12,19 @@ from __future__ import annotations
 
 import argparse
 import copy
+import os
 import json
 import logging
 import sys
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, cast
+from typing import Any, cast
 from defusedxml import ElementTree as ET
 
-import requests
-
 from strava_competition.auth import get_access_token
-from strava_competition.config import REQUEST_TIMEOUT, STRAVA_BASE_URL
+from strava_competition.config import STRAVA_BASE_URL
+from strava_competition.tools._http import http_get as _http_get
 
 GPX_NS = {"g": "http://www.topografix.com/GPX/1/1"}
 ET.register_namespace("", GPX_NS["g"])
@@ -35,23 +35,6 @@ DEFAULT_GPX_DIR = Path(__file__).resolve().parent.parent.parent / "data" / "gpx_
 LOGGER = logging.getLogger("clip_activity_segment")
 
 
-def _http_get(
-    token: str,
-    url: str,
-    *,
-    params: Dict[str, Any] | None = None,
-) -> Any:
-    headers = {"Authorization": f"Bearer {token}"}
-    response = requests.get(
-        url,
-        headers=headers,
-        params=params,
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
 @dataclass
 class RemoteActivityFetcher:
     """Fetch activity metadata, streams, and derived indices from Strava."""
@@ -59,10 +42,10 @@ class RemoteActivityFetcher:
     activity_id: int
     refresh_token: str
     runner_name: str = "Unknown Runner"
-    runner_id: Optional[int] = None
+    runner_id: int | None = None
 
-    _access_token: Optional[str] = None
-    _activity_detail: Optional[Dict[str, Any]] = None
+    _access_token: str | None = None
+    _activity_detail: dict[str, Any] | None = None
 
     def access_token(self) -> str:
         """Return a cached access token, refreshing when required."""
@@ -80,12 +63,12 @@ class RemoteActivityFetcher:
             self._access_token = token
         return self._access_token
 
-    def activity_detail(self) -> Dict[str, Any]:
+    def activity_detail(self) -> dict[str, Any]:
         """Load the activity detail payload with include_all_efforts=true."""
         if self._activity_detail is None:
             url = f"{STRAVA_BASE_URL}/activities/{self.activity_id}"
             params = {"include_all_efforts": "true"}
-            self._activity_detail = _http_get(self.access_token(), url, params=params)
+            self._activity_detail = _http_get(url, self.access_token(), params=params)
             if not isinstance(self._activity_detail, dict):
                 raise SystemExit(
                     "Unexpected response for activity detail; expected object"
@@ -118,7 +101,7 @@ class RemoteActivityFetcher:
             "keys": "latlng,time,altitude",
             "key_by_type": "true",
         }
-        payload = _http_get(self.access_token(), url, params=params)
+        payload = _http_get(url, self.access_token(), params=params)
         if not isinstance(payload, dict):
             raise SystemExit("Streams response was not an object as expected")
 
@@ -153,7 +136,7 @@ class RemoteActivityFetcher:
         LOGGER.info("Saved activity GPX to %s", output_path)
         return output_path
 
-    def indices_for_segment(self, segment_id: int) -> Tuple[int, int]:
+    def indices_for_segment(self, segment_id: int) -> tuple[int, int]:
         """Return the start/end indices for the requested segment effort."""
         activity = self.activity_detail()
         efforts = activity.get("segment_efforts") or []
@@ -241,9 +224,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--refresh-token",
+        default=os.environ.get("STRAVA_REFRESH_TOKEN"),
         help=(
             "Runner refresh token used to fetch GPX/effort data when local "
-            "files are not provided."
+            "files are not provided. "
+            "Defaults to STRAVA_REFRESH_TOKEN env var."
         ),
     )
     parser.add_argument(
@@ -293,20 +278,20 @@ def parse_iso8601(value: str) -> datetime:
     return dt
 
 
-def load_trackpoints(path: Path) -> List[ET.Element]:
+def load_trackpoints(path: Path) -> list[ET.Element]:
     tree = ET.parse(path)
     root = tree.getroot()
     trkseg = root.find(".//g:trkseg", GPX_NS)
     if trkseg is None:
         raise SystemExit("GPX file is missing a <trkseg> block")
-    points = cast(List[ET.Element], trkseg.findall("g:trkpt", GPX_NS))
+    points = cast(list[ET.Element], trkseg.findall("g:trkpt", GPX_NS))
     if not points:
         raise SystemExit("GPX file contains no track points")
     return points
 
 
 def resolve_indices(
-    points: List[ET.Element],
+    points: list[ET.Element],
     *,
     start_index: int | None,
     end_index: int | None,
@@ -316,7 +301,7 @@ def resolve_indices(
     efforts_path: Path | None,
     activity_id: int | None,
     segment_id: int | None,
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     """Convert CLI parameters into concrete slice indices."""
 
     uses_index = start_index is not None or end_index is not None
@@ -365,7 +350,7 @@ def resolve_indices(
             raise SystemExit("Specify --end-time or --elapsed (seconds)")
         end_time = start_time + timedelta(seconds=elapsed)
 
-    point_times: List[datetime] = []
+    point_times: list[datetime] = []
     for idx, pt in enumerate(points):
         time_el = pt.find("g:time", GPX_NS)
         if time_el is None or time_el.text is None:
@@ -390,7 +375,7 @@ def resolve_indices(
 
 def build_output_tree(
     source: Path,
-    points: List[ET.Element],
+    points: list[ET.Element],
     start_idx: int,
     end_idx: int,
 ) -> ET.ElementTree[ET.Element]:
@@ -418,10 +403,10 @@ def build_output_tree(
 
 def build_gpx_tree(
     activity_name: str,
-    start_dt: Optional[datetime],
-    latlng_data: List[Any],
-    altitude_data: Optional[List[Any]],
-    time_offsets: Optional[List[Any]],
+    start_dt: datetime | None,
+    latlng_data: list[Any],
+    altitude_data: list[Any] | None,
+    time_offsets: list[Any] | None,
 ) -> ET.ElementTree:
     attrs = {
         "version": "1.1",
@@ -479,7 +464,7 @@ def _indices_from_segment_efforts(
     *,
     activity_id: int,
     segment_id: int | None = None,
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     if not json_path.exists():  # pragma: no cover - user input validation
         raise SystemExit(f"Segment efforts file not found: {json_path}")
 
