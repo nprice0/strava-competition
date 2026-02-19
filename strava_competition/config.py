@@ -261,9 +261,6 @@ GEOMETRY_RESAMPLE_INTERVAL_M = _env_float("GEOMETRY_RESAMPLE_INTERVAL_M", 5.0)
 GEOMETRY_MAX_SIMPLIFIED_POINTS = _env_int("GEOMETRY_MAX_SIMPLIFIED_POINTS", 2000)
 GEOMETRY_MAX_RESAMPLED_POINTS = _env_int("GEOMETRY_MAX_RESAMPLED_POINTS", 1200)
 
-# Global switch for the activity scan fallback.
-USE_ACTIVITY_SCAN_FALLBACK = _env_bool("USE_ACTIVITY_SCAN_FALLBACK", True)
-
 ACTIVITY_SCAN_MAX_ACTIVITY_PAGES: int | None = _env_int(
     "ACTIVITY_SCAN_MAX_ACTIVITY_PAGES",
     0,
@@ -277,9 +274,6 @@ if (
 ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS = _env_bool(
     "ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS", True
 )
-
-# When True, always bypass Strava efforts and use activity scan. Useful for debugging.
-FORCE_ACTIVITY_SCAN_FALLBACK = _env_bool("FORCE_ACTIVITY_SCAN_FALLBACK", True)
 
 # Maximum number of activity streams to keep in the in-memory cache.
 ACTIVITY_STREAM_CACHE_SIZE = _env_int("ACTIVITY_STREAM_CACHE_SIZE", 64)

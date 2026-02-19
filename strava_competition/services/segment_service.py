@@ -10,7 +10,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import logging
 import threading
-from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Sequence, Tuple, Set
 
@@ -18,17 +17,13 @@ from cachetools import TTLCache
 
 from ..activity_scan import ActivityEffortScanner
 from ..config import (
-    FORCE_ACTIVITY_SCAN_FALLBACK,
     RUNNER_ACTIVITY_CACHE_SIZE,
-    USE_ACTIVITY_SCAN_FALLBACK,
     MAX_WORKERS,
     SEGMENT_SPLIT_WINDOWS_ENABLED,
 )
-from ..effort_distance import derive_effort_distance_m
 from ..errors import StravaAPIError
 from ..models import Segment, Runner, SegmentResult, SegmentGroup, SegmentWindow
-from ..strava_api import get_segment_efforts, get_activities
-from ..utils import parse_iso_datetime
+from ..strava_api import get_activities
 
 ResultsMapping = Dict[str, Dict[str, List[SegmentResult]]]
 
@@ -36,19 +31,6 @@ _ActivityCacheKey = Tuple[int | str, datetime, datetime]
 
 # Cache TTL for runner activities (1 hour)
 _ACTIVITY_CACHE_TTL_SECONDS = 3600
-
-
-@dataclass(frozen=True, slots=True)
-class _ValidatedEffort:
-    """Intermediate representation of a validated segment effort."""
-
-    adjusted_elapsed: float
-    raw_elapsed: float
-    start_date: datetime | None
-    effort: dict
-    birthday_bonus_applied: bool
-    distance_m: float | None
-    time_bonus_applied: bool = False
 
 
 class SegmentService:
@@ -295,181 +277,77 @@ class SegmentService:
         cancel_event: threading.Event | None,
     ) -> SegmentResult | None:
         """Process a runner across all windows in a group, returning best result."""
-        all_validated: List[Tuple[SegmentWindow, _ValidatedEffort]] = []
+        best_result: SegmentResult | None = None
         total_attempts = 0
 
         for window in group.windows:
             if cancel_event and cancel_event.is_set():
                 return None
 
-            # Fetch efforts for this window
-            # Try Strava API first if not payment_required and not forcing activity scan
-            efforts: List[dict] | None = None
-            if not FORCE_ACTIVITY_SCAN_FALLBACK and not getattr(
-                runner, "payment_required", False
-            ):
-                try:
-                    efforts = get_segment_efforts(
-                        runner,
-                        group.id,
-                        window.start_date,
-                        window.end_date,
-                    )
-                except Exception:  # noqa: BLE001
-                    efforts = None
-
-            # Process efforts for this window
-            window_validated = self._validate_efforts_for_window(
-                runner, group, window, efforts
+            temp_segment = self._segment_from_group_window(group, window)
+            scan_result = self._result_from_activity_scan(
+                runner,
+                temp_segment,
+                cancel_event,
             )
-            total_attempts += len(window_validated)
-            for v in window_validated:
-                all_validated.append((window, v))
-
-            # If no efforts from API, try activity scan fallback
-            if not window_validated and USE_ACTIVITY_SCAN_FALLBACK:
-                temp_segment = self._segment_from_group_window(group, window)
-                scan_result = self._result_from_activity_scan(
-                    runner, temp_segment, cancel_event
-                )
-                if scan_result:
-                    # Apply time bonus to scan result (birthday bonus already applied)
-                    adjusted_time, time_bonus_was_applied = self._apply_time_bonus(
-                        window,
-                        scan_result.fastest_time,
-                    )
-                    # Convert scan result to validated effort for comparison
-                    scan_validated = _ValidatedEffort(
-                        adjusted_elapsed=adjusted_time,
-                        raw_elapsed=scan_result.fastest_time,
-                        start_date=scan_result.fastest_date,
-                        effort={"id": scan_result.diagnostics.get("fastest_effort_id")},
-                        birthday_bonus_applied=scan_result.birthday_bonus_applied,
-                        distance_m=scan_result.fastest_distance_m,
-                        time_bonus_applied=time_bonus_was_applied,
-                    )
-                    all_validated.append((window, scan_validated))
-                    total_attempts += scan_result.attempts
-
-        if not all_validated:
-            return None
-
-        # Find the fastest across all windows
-        all_validated.sort(key=lambda x: x[1].adjusted_elapsed)
-        best_window, best_effort = all_validated[0]
-
-        team = runner.segment_team or ""
-        diagnostics: Dict[str, object] = {
-            "source": "strava",
-            "windows_processed": len(group.windows),
-            "best_window_label": best_window.label,
-            "best_window_start": best_window.start_date.isoformat(),
-            "best_window_end": best_window.end_date.isoformat(),
-            "best_effort_id": best_effort.effort.get("id"),
-            "birthday_bonus_applied": best_effort.birthday_bonus_applied,
-            "time_bonus_applied": best_effort.time_bonus_applied,
-        }
-        if best_effort.distance_m is not None:
-            diagnostics["fastest_distance_m"] = best_effort.distance_m
-
-        return SegmentResult(
-            runner=runner.name,
-            team=team,
-            segment=group.name,
-            attempts=total_attempts,
-            fastest_time=best_effort.adjusted_elapsed,
-            fastest_date=best_effort.start_date,
-            birthday_bonus_applied=best_effort.birthday_bonus_applied,
-            time_bonus_applied=best_effort.time_bonus_applied,
-            source="strava",
-            diagnostics=diagnostics,
-            fastest_distance_m=best_effort.distance_m,
-        )
-
-    def _validate_efforts_for_window(
-        self,
-        runner: Runner,
-        group: SegmentGroup,
-        window: SegmentWindow,
-        efforts: List[dict] | None,
-    ) -> List[_ValidatedEffort]:
-        """Validate and filter efforts for a specific window."""
-        if FORCE_ACTIVITY_SCAN_FALLBACK:
-            return []
-
-        if not efforts:
-            return []
-
-        min_distance = self._coerce_float(group.min_distance_meters) or 0.0
-        valid: List[_ValidatedEffort] = []
-
-        for effort in efforts:
-            if not isinstance(effort, dict):
-                continue
-            elapsed = effort.get("elapsed_time")
-            elapsed_f = self._coerce_float(elapsed)
-            if elapsed_f is None or elapsed_f <= 0:
+            if scan_result is None:
                 continue
 
-            # Check effort is within window bounds
-            start_dt = parse_iso_datetime(
-                effort.get("start_date_local") or effort.get("start_date")
-            )
-            if start_dt:
-                # Normalize to naive datetime for comparison (window dates are naive)
-                start_dt_naive = (
-                    start_dt.replace(tzinfo=None) if start_dt.tzinfo else start_dt
-                )
-                window_start_naive = (
-                    window.start_date.replace(tzinfo=None)
-                    if hasattr(window.start_date, "tzinfo") and window.start_date.tzinfo
-                    else window.start_date
-                )
-                window_end_naive = (
-                    window.end_date.replace(tzinfo=None)
-                    if hasattr(window.end_date, "tzinfo") and window.end_date.tzinfo
-                    else window.end_date
-                )
-                if (
-                    start_dt_naive < window_start_naive
-                    or start_dt_naive > window_end_naive
-                ):
-                    continue
-
-            effort_distance = derive_effort_distance_m(
-                runner,
-                effort,
-                allow_stream=min_distance > 0,
-            )
-            if min_distance > 0:
-                if effort_distance is None or effort_distance < min_distance:
-                    continue
-
-            # Apply window-specific birthday bonus
-            adjusted_elapsed, bonus_applied = self._adjust_elapsed_for_birthday_window(
-                runner,
-                window.birthday_bonus_seconds,
-                elapsed_f,
-                start_dt,
-            )
-            # Apply time bonus on top
-            adjusted_elapsed, time_bonus_was_applied = self._apply_time_bonus(
+            # Apply time bonus (birthday bonus already applied by scanner)
+            adjusted_time, time_bonus_was_applied = self._apply_time_bonus(
                 window,
-                adjusted_elapsed,
+                scan_result.fastest_time,
             )
-            valid.append(
-                _ValidatedEffort(
-                    adjusted_elapsed=adjusted_elapsed,
-                    raw_elapsed=elapsed_f,
-                    start_date=start_dt,
-                    effort=effort,
-                    birthday_bonus_applied=bonus_applied,
-                    distance_m=effort_distance,
+            total_attempts += scan_result.attempts
+
+            if best_result is None or adjusted_time < best_result.fastest_time:
+                team = runner.segment_team or ""
+                diagnostics: Dict[str, object] = {
+                    "source": "activity_scan",
+                    "windows_processed": len(group.windows),
+                    "best_window_label": window.label,
+                    "best_window_start": window.start_date.isoformat(),
+                    "best_window_end": window.end_date.isoformat(),
+                    "best_effort_id": scan_result.diagnostics.get(
+                        "fastest_effort_id",
+                    ),
+                    "birthday_bonus_applied": scan_result.birthday_bonus_applied,
+                    "time_bonus_applied": time_bonus_was_applied,
+                }
+                if scan_result.fastest_distance_m is not None:
+                    diagnostics["fastest_distance_m"] = scan_result.fastest_distance_m
+
+                best_result = SegmentResult(
+                    runner=runner.name,
+                    team=team,
+                    segment=group.name,
+                    attempts=total_attempts,
+                    fastest_time=adjusted_time,
+                    fastest_date=scan_result.fastest_date,
+                    birthday_bonus_applied=scan_result.birthday_bonus_applied,
                     time_bonus_applied=time_bonus_was_applied,
+                    source="activity_scan",
+                    diagnostics=diagnostics,
+                    fastest_distance_m=scan_result.fastest_distance_m,
                 )
+
+        if best_result is not None:
+            # Update total attempts across all windows
+            best_result = SegmentResult(
+                runner=best_result.runner,
+                team=best_result.team,
+                segment=best_result.segment,
+                attempts=total_attempts,
+                fastest_time=best_result.fastest_time,
+                fastest_date=best_result.fastest_date,
+                birthday_bonus_applied=best_result.birthday_bonus_applied,
+                time_bonus_applied=best_result.time_bonus_applied,
+                source=best_result.source,
+                diagnostics=best_result.diagnostics,
+                fastest_distance_m=best_result.fastest_distance_m,
             )
 
-        return valid
+        return best_result
 
     def _adjust_elapsed_for_birthday_window(
         self,
@@ -617,32 +495,13 @@ class SegmentService:
         segment: Segment,
         cancel_event: threading.Event | None,
     ) -> Tuple[Dict[Future, Runner], List[Runner]]:
-        """Submit concurrent Strava API calls for each runner's segment efforts.
+        """Submit activity-scan tasks for each runner's segment efforts.
 
-        Runners marked as payment_required skip the API and go directly to
-        the fallback queue for activity-scan processing. When
-        FORCE_ACTIVITY_SCAN_FALLBACK is True, all runners go to the fallback
-        queue and no API calls are made.
+        All runners are processed via activity scan. Returns an empty
+        future-to-runner map and the full runner list in the fallback queue.
         """
         future_to_runner: Dict[Future, Runner] = {}
-        fallback_queue: List[Runner] = []
-        for runner in runners:
-            if cancel_event and cancel_event.is_set():
-                break
-            # Skip API calls entirely when forcing activity scan fallback
-            if FORCE_ACTIVITY_SCAN_FALLBACK or getattr(
-                runner, "payment_required", False
-            ):
-                fallback_queue.append(runner)
-                continue
-            future = executor.submit(
-                get_segment_efforts,
-                runner,
-                segment.id,
-                segment.start_date,
-                segment.end_date,
-            )
-            future_to_runner[future] = runner
+        fallback_queue: List[Runner] = list(runners)
         return future_to_runner, fallback_queue
 
     def _consume_effort_futures(
@@ -855,19 +714,12 @@ class SegmentService:
         efforts: List[dict] | None,
         cancel_event: threading.Event | None = None,
     ) -> SegmentResult | None:
-        """Convert raw efforts to SegmentResult, falling back to activity scan."""
-        seg_result = self._result_from_efforts(runner, segment, efforts)
-        if seg_result is not None:
-            return seg_result
-        if USE_ACTIVITY_SCAN_FALLBACK:
-            scan_result = self._result_from_activity_scan(
-                runner,
-                segment,
-                cancel_event,
-            )
-            if scan_result is not None:
-                return scan_result
-        return None
+        """Process a runner's segment efforts via activity scan."""
+        return self._result_from_activity_scan(
+            runner,
+            segment,
+            cancel_event,
+        )
 
     def _result_from_activity_scan(
         self,
@@ -920,108 +772,6 @@ class SegmentService:
             source="activity_scan",
             diagnostics=diagnostics,
             fastest_distance_m=scan.fastest_distance_m,
-        )
-
-    def _result_from_efforts(
-        self,
-        runner: Runner,
-        segment: Segment,
-        efforts: List[dict] | None,
-    ) -> SegmentResult | None:
-        """Convert Strava segment efforts into a SegmentResult if available."""
-
-        if FORCE_ACTIVITY_SCAN_FALLBACK:
-            return None
-
-        if not efforts:
-            return None
-
-        min_distance = self._coerce_float(segment.min_distance_meters) or 0.0
-        filtered_by_distance = 0
-        valid: List[_ValidatedEffort] = []
-        for effort in efforts:
-            if not isinstance(effort, dict):
-                continue
-            elapsed = effort.get("elapsed_time")
-            elapsed_f = self._coerce_float(elapsed)
-            if elapsed_f is None or elapsed_f <= 0:
-                continue
-            effort_distance = derive_effort_distance_m(
-                runner,
-                effort,
-                allow_stream=min_distance > 0,
-            )
-            if min_distance > 0:
-                if effort_distance is None or effort_distance < min_distance:
-                    filtered_by_distance += 1
-                    continue
-            start_dt = parse_iso_datetime(
-                effort.get("start_date_local") or effort.get("start_date")
-            )
-            adjusted_elapsed, bonus_applied = self._adjust_elapsed_for_birthday(
-                runner,
-                segment,
-                elapsed_f,
-                start_dt,
-            )
-            valid.append(
-                _ValidatedEffort(
-                    adjusted_elapsed=adjusted_elapsed,
-                    raw_elapsed=elapsed_f,
-                    start_date=start_dt,
-                    effort=effort,
-                    birthday_bonus_applied=bonus_applied,
-                    distance_m=effort_distance,
-                )
-            )
-
-        if not valid:
-            return None
-
-        valid.sort(key=lambda v: v.adjusted_elapsed)
-        fastest = valid[0]
-
-        fastest_distance_m = fastest.distance_m
-        if min_distance <= 0:
-            precise_distance = derive_effort_distance_m(
-                runner,
-                fastest.effort,
-                allow_stream=True,
-            )
-            if precise_distance is not None:
-                fastest_distance_m = precise_distance
-
-        diagnostics: Dict[str, object] = {
-            "source": "strava",
-            "effort_ids": [
-                v.effort.get("id")
-                for v in valid
-                if isinstance(v.effort.get("id"), (int, str))
-            ],
-            "best_effort_id": fastest.effort.get("id"),
-            "moving_time": fastest.effort.get("moving_time"),
-            "birthday_bonus_applied": fastest.birthday_bonus_applied,
-            "time_bonus_applied": fastest.time_bonus_applied,
-        }
-        if fastest_distance_m is not None:
-            diagnostics["fastest_distance_m"] = fastest_distance_m
-        if filtered_by_distance:
-            diagnostics["filtered_efforts_below_distance"] = filtered_by_distance
-
-        attempts = len(valid)
-        team = runner.segment_team or ""
-        return SegmentResult(
-            runner=runner.name,
-            team=team,
-            segment=segment.name,
-            attempts=attempts,
-            fastest_time=fastest.adjusted_elapsed,
-            fastest_date=fastest.start_date,
-            birthday_bonus_applied=fastest.birthday_bonus_applied,
-            time_bonus_applied=fastest.time_bonus_applied,
-            source="strava",
-            diagnostics=diagnostics,
-            fastest_distance_m=fastest_distance_m,
         )
 
     def _get_runner_activities(

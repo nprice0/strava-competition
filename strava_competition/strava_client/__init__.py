@@ -8,5 +8,4 @@ from .capture import (  # noqa: F401
 )
 from .rate_limiter import RateLimiter  # noqa: F401
 from .resources import ResourceAPI  # noqa: F401
-from .segment_efforts import SegmentEffortsAPI  # noqa: F401
 from .session import create_default_session, get_default_session  # noqa: F401

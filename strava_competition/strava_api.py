@@ -22,7 +22,6 @@ from .strava_client.activities import ActivitiesAPI
 from .strava_client.base import ensure_runner_token as _ensure_runner_token
 from .strava_client.rate_limiter import RateLimiter
 from .strava_client.resources import ResourceAPI
-from .strava_client.segment_efforts import SegmentEffortsAPI
 from .strava_client.session import get_default_session
 
 DEFAULT_TIMEOUT: int = REQUEST_TIMEOUT
@@ -38,29 +37,6 @@ def set_rate_limiter(max_concurrent: Optional[int] = None) -> None:
     leaves the current limit unchanged.
     """
     get_default_client().set_rate_limiter(max_concurrent)
-
-
-def _get_segment_efforts_impl(
-    runner: Runner,
-    segment_id: int,
-    start_date: datetime,
-    end_date: datetime,
-    *,
-    session: Optional[requests.Session] = None,
-    limiter: Optional[RateLimiter] = None,
-) -> Optional[List[Dict[str, Any]]]:
-    """Delegate to :class:`SegmentEffortsAPI` for backwards compatibility."""
-
-    api = SegmentEffortsAPI(
-        session=session or get_default_session(),
-        limiter=limiter or _limiter,
-    )
-    return api.get_segment_efforts(
-        runner,
-        segment_id,
-        start_date,
-        end_date,
-    )
 
 
 def _get_activities_impl(
@@ -153,22 +129,6 @@ class StravaClient:
             session=self._session,
             limiter=self._limiter,
             timeout=DEFAULT_TIMEOUT,
-        )
-
-    def get_segment_efforts(
-        self,
-        runner: Runner,
-        segment_id: int,
-        start_date: datetime,
-        end_date: datetime,
-    ) -> Optional[List[Dict[str, Any]]]:
-        return _get_segment_efforts_impl(
-            runner,
-            segment_id,
-            start_date,
-            end_date,
-            session=self._session,
-            limiter=self._limiter,
         )
 
     def ensure_runner_token(self, runner: Runner) -> None:
@@ -330,20 +290,6 @@ def get_default_client() -> StravaClient:
     if _default_client is None:
         _default_client = StravaClient()
     return _default_client
-
-
-def get_segment_efforts(
-    runner: Runner,
-    segment_id: int,
-    start_date: datetime,
-    end_date: datetime,
-) -> Optional[List[Dict[str, Any]]]:
-    return get_default_client().get_segment_efforts(
-        runner,
-        segment_id,
-        start_date,
-        end_date,
-    )
 
 
 def get_activities(

@@ -94,18 +94,19 @@ This is the largest change. The file contains significant logic for:
 - Import of `FORCE_ACTIVITY_SCAN_FALLBACK`, `USE_ACTIVITY_SCAN_FALLBACK`
 - `_validate_efforts_for_window()` method (only used for segment API efforts)
 - `_result_from_efforts()` method (only used for segment API efforts)
+- `_submit_effort_futures()` — segment API fetch dispatch (checks `FORCE_ACTIVITY_SCAN_FALLBACK`, calls `get_segment_efforts`)
 - All conditional blocks checking these flags
-- The "try segment API first" logic in `_process_runner_for_group()`
+- The "try segment API first" logic in `_process_runner_across_windows()`
+- The `USE_ACTIVITY_SCAN_FALLBACK` guard in `_process_runner_results()`
 
 **Simplify:**
 
-- `_process_runner_for_group()` — Just call activity scan directly
-- `_get_best_result_for_runner()` — Remove segment API path
+- `_process_runner_across_windows()` — Just call activity scan directly
 
 **Before (conceptual):**
 
 ```python
-def _process_runner_for_group(...):
+def _process_runner_across_windows(...):
     efforts = None
     if not runner.payment_required:
         try:
@@ -122,7 +123,7 @@ def _process_runner_for_group(...):
 **After (conceptual):**
 
 ```python
-def _process_runner_for_group(...):
+def _process_runner_across_windows(...):
     return self._result_from_activity_scan(...)
 ```
 
@@ -130,15 +131,17 @@ def _process_runner_for_group(...):
 
 ### 3. Test Files to Modify
 
-| File                                            | Action        | Notes                                                                               |
-| ----------------------------------------------- | ------------- | ----------------------------------------------------------------------------------- |
-| `tests/test_strava_api_mocked.py`               | Remove tests  | `test_get_segment_efforts_*` tests (4-5 tests)                                      |
-| `tests/test_strava_client.py`                   | Remove tests  | Tests using `get_segment_efforts`                                                   |
-| `tests/test_strava_client_capture_contracts.py` | Remove tests  | `test_segment_efforts_*` tests                                                      |
-| `tests/test_segment_split_windows.py`           | Simplify      | Remove `get_segment_efforts` mocking, remove `FORCE_ACTIVITY_SCAN_FALLBACK` patches |
-| `tests/test_segment_service_filters.py`         | Simplify      | Remove `FORCE_ACTIVITY_SCAN_FALLBACK` patches                                       |
-| `tests/test_excel_integration.py`               | Simplify      | Remove `get_segment_efforts` mock                                                   |
-| `tests/test_activity_scan.py`                   | Keep/Simplify | Remove `USE_ACTIVITY_SCAN_FALLBACK` patches (now always active)                     |
+| File                                            | Action          | Notes                                                                                |
+| ----------------------------------------------- | --------------- | ------------------------------------------------------------------------------------ |
+| `tests/test_strava_api_mocked.py`               | Remove tests    | `test_get_segment_efforts_*` tests (4-5 tests)                                       |
+| `tests/test_strava_client.py`                   | Remove tests    | Tests using `get_segment_efforts`                                                    |
+| `tests/test_strava_client_capture_contracts.py` | Remove tests    | `test_segment_efforts_*` tests                                                       |
+| `tests/test_segment_split_windows.py`           | Simplify        | Remove `get_segment_efforts` mocking, remove `FORCE_ACTIVITY_SCAN_FALLBACK` patches  |
+| `tests/test_segment_service_filters.py`         | Simplify        | Remove `FORCE_ACTIVITY_SCAN_FALLBACK` patches                                        |
+| `tests/test_excel_integration.py`               | Simplify        | Remove `get_segment_efforts` mock                                                    |
+| `tests/test_activity_scan.py`                   | Keep/Simplify   | Remove `USE_ACTIVITY_SCAN_FALLBACK` patches (now always active)                      |
+| `tests/conftest.py`                             | Simplify        | Remove `segment_efforts` import from `_patch_session()` helper                       |
+| `tests/test_integration_api_auth.py`            | Remove/Simplify | Imports `segment_efforts` module, calls `get_segment_efforts()` — remove those paths |
 
 ---
 
@@ -146,25 +149,16 @@ def _process_runner_for_group(...):
 
 #### `README.md`
 
-**Update environment variables table:**
-Remove:
-
-```markdown
-| `USE_ACTIVITY_SCAN_FALLBACK` | `true` | Fall back to activity scan when segment API fails |
-| `FORCE_ACTIVITY_SCAN_FALLBACK` | `false` | Always use activity scan, bypassing segment API |
-```
+**Note:** `README.md` does not currently contain an environment variables table for these flags, so no table removal is needed.
 
 **Update explanatory text:**
 
-- Remove references to segment efforts API as a data source
+- Remove any references to segment efforts API as a data source
 - Simplify the "activity scan fallback" section to just describe activity scan as the primary approach
 
 #### `refactor-cache-mode.md`
 
-**Remove or update:**
-
-- References to `segment_efforts.py`
-- Any examples showing segment efforts API usage
+**Note:** This file does not currently exist in the workspace — skip this step.
 
 ---
 
@@ -266,7 +260,7 @@ def _result_from_efforts(self, runner, segment, efforts):
     ...
 ```
 
-#### Simplify `_process_runner_for_group()`
+#### Simplify `_process_runner_across_windows()`
 
 **Current logic (conceptual):**
 
@@ -298,9 +292,13 @@ for window in group.windows:
         # collect result
 ```
 
-#### Simplify `_get_best_result_for_runner()`
+#### Remove `_submit_effort_futures()`
 
-Similar pattern — remove segment API path, keep only activity scan.
+This method dispatches segment API fetches, checks `FORCE_ACTIVITY_SCAN_FALLBACK`, and calls `get_segment_efforts`. Remove entirely.
+
+#### Simplify `_process_runner_results()`
+
+Remove the `USE_ACTIVITY_SCAN_FALLBACK` guard — activity scan is now always active.
 
 ---
 
@@ -320,37 +318,34 @@ Activity scan is now the only approach — no configuration needed.
 ### Tests to Delete
 
 1. `test_strava_api_mocked.py`:
-
    - `test_get_segment_efforts_pagination`
    - `test_get_segment_efforts_refresh_on_401`
    - `test_get_segment_efforts_402_json_error`
    - `test_get_segment_efforts_offline_cache_miss`
 
 2. `test_strava_client.py`:
-
    - Tests that mock/call `get_segment_efforts`
 
 3. `test_strava_client_capture_contracts.py`:
    - `test_segment_efforts_fetches_tail_after_cached_runs`
+   - `test_segment_efforts_returns_cached_page_when_no_tail_needed`
    - Any tests using `SegmentEffortsAPI`
 
 ### Tests to Simplify
 
 1. `test_segment_split_windows.py`:
-
    - Remove `monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)`
    - Remove `monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)`
 
 2. `test_segment_service_filters.py`:
-
    - Remove `FORCE_ACTIVITY_SCAN_FALLBACK` patches
 
 3. `test_activity_scan.py`:
-
    - Remove `USE_ACTIVITY_SCAN_FALLBACK` patches (always active now)
 
 4. `test_excel_integration.py`:
-   - Remove `get_segment_efforts` mock
+   - Remove `get_segment_efforts` mock (4 locations)
+   - Remove `FORCE_ACTIVITY_SCAN_FALLBACK` patches (4 locations)
 
 ---
 
@@ -367,11 +362,13 @@ Activity scan is now the only approach — no configuration needed.
 9. [ ] Simplify `test_segment_split_windows.py`
 10. [ ] Simplify `test_segment_service_filters.py`
 11. [ ] Simplify `test_activity_scan.py`
-12. [ ] Simplify `test_excel_integration.py`
-13. [ ] Update `README.md` — remove env vars, update explanations
-14. [ ] Run full test suite: `python -m pytest tests/ -q`
-15. [ ] Run type check: `python -m mypy strava_competition/`
-16. [ ] Optional: Rename `fetch_runner_segment_efforts.py` tool
+12. [ ] Simplify `test_excel_integration.py` — remove `get_segment_efforts` mock and `FORCE_ACTIVITY_SCAN_FALLBACK` patches
+13. [ ] Update `tests/conftest.py` — remove `segment_efforts` import from `_patch_session()`
+14. [ ] Update `tests/test_integration_api_auth.py` — remove segment efforts API paths
+15. [ ] Update `README.md` — update explanatory text
+16. [ ] Run full test suite: `python -m pytest tests/ -q`
+17. [ ] Run type check: `python -m mypy strava_competition/`
+18. [ ] Optional: Rename `fetch_runner_segment_efforts.py` tool
 
 ---
 
@@ -379,10 +376,10 @@ Activity scan is now the only approach — no configuration needed.
 
 Since activity scan becomes the only approach, the `ACTIVITY_SCAN_` prefix is redundant. Consider renaming:
 
-| Current Name                              | Proposed Name               | Notes                                                     |
-| ----------------------------------------- | --------------------------- | --------------------------------------------------------- |
-| `ACTIVITY_SCAN_MAX_ACTIVITY_PAGES`        | `MAX_ACTIVITY_PAGES`        | Limits pages fetched when scanning activities             |
-| `ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS` | `CACHE_INCLUDE_ALL_EFFORTS` | Whether to request all segment efforts in activity detail |
+| Current Name                              | Proposed Name               | Notes                                                                                         |
+| ----------------------------------------- | --------------------------- | --------------------------------------------------------------------------------------------- |
+| `ACTIVITY_SCAN_MAX_ACTIVITY_PAGES`        | `MAX_ACTIVITY_PAGES`        | Used in `config.py`, `activity_scan/scanner.py`                                               |
+| `ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS` | `CACHE_INCLUDE_ALL_EFFORTS` | Used in `config.py`, `strava_api.py`, `strava_client/activities.py` — all three need updating |
 
 ---
 
@@ -391,10 +388,10 @@ Since activity scan becomes the only approach, the `ACTIVITY_SCAN_` prefix is re
 - **Lines removed:** ~800-1000
 - **Lines added:** ~50 (simplified logic)
 - **Net reduction:** ~750-950 lines
-- **Files modified:** ~12-15
+- **Files modified:** ~14-17
 - **Files deleted:** 1 (`segment_efforts.py`)
-- **Tests deleted:** ~6-8
-- **Tests simplified:** ~8-10
+- **Tests deleted:** ~8-10
+- **Tests simplified:** ~10-12
 
 ---
 

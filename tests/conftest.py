@@ -87,13 +87,11 @@ def _patch_session(monkeypatch, mock_session):
     """
     from strava_competition import strava_api
     from strava_competition.strava_client import (
-        segment_efforts as segment_client,
         session as session_module,
     )
 
     monkeypatch.setattr(session_module, "get_default_session", lambda: mock_session)
     monkeypatch.setattr(strava_api, "get_default_session", lambda: mock_session)
-    monkeypatch.setattr(segment_client, "get_default_session", lambda: mock_session)
     # Reset the module-level cached client so get_default_client creates a fresh one
     monkeypatch.setattr(strava_api, "_default_client", None)
     # Force recreation and update the module-level reference

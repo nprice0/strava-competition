@@ -294,11 +294,6 @@ def test_segment_service_uses_activity_scan(
 
     service = SegmentService(max_workers=1)
 
-    monkeypatch.setattr(
-        "strava_competition.services.segment_service.USE_ACTIVITY_SCAN_FALLBACK",
-        True,
-    )
-
     scan_result = ActivityScanResult(
         segment_id=segment.id,
         attempts=1,
@@ -332,11 +327,6 @@ def test_segment_service_handles_activity_scan_error(
     from types import MethodType
 
     service = SegmentService(max_workers=1)
-
-    monkeypatch.setattr(
-        "strava_competition.services.segment_service.USE_ACTIVITY_SCAN_FALLBACK",
-        True,
-    )
 
     def _raise_scan(self, *_args, **_kwargs):
         raise StravaAPIError("offline miss")

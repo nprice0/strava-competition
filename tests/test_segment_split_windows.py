@@ -355,27 +355,38 @@ class TestProcessGroups:
             runners = excel_reader.read_runners(path)
 
             # Alice: slower in Week 1 (120s), faster in Week 2 (100s)
-            def fake_get_efforts(runner, segment_id, start_date, end_date):
-                if start_date.day <= 15:  # Week 1
-                    return [
+            def fake_get_activities(runner, start_date, end_date, **kwargs):
+                return [{"id": 9001}, {"id": 9002}]
+
+            def fake_get_detail(runner, activity_id, **kwargs):
+                efforts = {
+                    9001: [
                         {
+                            "segment": {"id": 101},
                             "elapsed_time": 120,
                             "start_date_local": "2024-01-10T09:00:00Z",
                         }
-                    ]
-                else:  # Week 2
-                    return [
+                    ],
+                    9002: [
                         {
+                            "segment": {"id": 101},
                             "elapsed_time": 100,
                             "start_date_local": "2024-01-20T09:00:00Z",
                         }
-                    ]
+                    ],
+                }
+                return {
+                    "id": activity_id,
+                    "segment_efforts": efforts.get(activity_id, []),
+                }
 
             import strava_competition.services.segment_service as mod
 
-            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
-            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
-            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "get_activities", fake_get_activities)
+            monkeypatch.setattr(
+                "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+                fake_get_detail,
+            )
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
 
             service = SegmentService(max_workers=1)
@@ -424,19 +435,28 @@ class TestProcessGroups:
             runners = excel_reader.read_runners(path)
 
             # Alice runs on her birthday with 120s elapsed
-            def fake_get_efforts(runner, segment_id, start_date, end_date):
-                return [
-                    {
-                        "elapsed_time": 120,
-                        "start_date_local": "2024-01-15T09:00:00Z",  # Birthday!
-                    }
-                ]
+            def fake_get_activities(runner, start_date, end_date, **kwargs):
+                return [{"id": 9001}]
+
+            def fake_get_detail(runner, activity_id, **kwargs):
+                return {
+                    "id": activity_id,
+                    "segment_efforts": [
+                        {
+                            "segment": {"id": 101},
+                            "elapsed_time": 120,
+                            "start_date_local": "2024-01-15T09:00:00Z",  # Birthday!
+                        }
+                    ],
+                }
 
             import strava_competition.services.segment_service as mod
 
-            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
-            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
-            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "get_activities", fake_get_activities)
+            monkeypatch.setattr(
+                "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+                fake_get_detail,
+            )
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
 
             service = SegmentService(max_workers=1)
@@ -489,27 +509,38 @@ class TestProcessGroups:
             groups = excel_reader.read_segment_groups(path)
             runners = excel_reader.read_runners(path)
 
-            def fake_get_efforts(runner, segment_id, start_date, end_date):
-                if start_date.day <= 15:  # Week 1
-                    return [
+            def fake_get_activities(runner, start_date, end_date, **kwargs):
+                return [{"id": 9001}, {"id": 9002}]
+
+            def fake_get_detail(runner, activity_id, **kwargs):
+                efforts = {
+                    9001: [
                         {
+                            "segment": {"id": 101},
                             "elapsed_time": 100,
                             "start_date_local": "2024-01-10T09:00:00Z",
                         }
-                    ]
-                else:  # Week 2 - birthday run
-                    return [
+                    ],
+                    9002: [
                         {
+                            "segment": {"id": 101},
                             "elapsed_time": 120,
-                            "start_date_local": "2024-01-20T09:00:00Z",  # Birthday
+                            "start_date_local": "2024-01-20T09:00:00Z",
                         }
-                    ]
+                    ],
+                }
+                return {
+                    "id": activity_id,
+                    "segment_efforts": efforts.get(activity_id, []),
+                }
 
             import strava_competition.services.segment_service as mod
 
-            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
-            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
-            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "get_activities", fake_get_activities)
+            monkeypatch.setattr(
+                "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+                fake_get_detail,
+            )
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
 
             service = SegmentService(max_workers=1)
@@ -554,9 +585,7 @@ class TestSheetNaming:
 
             import strava_competition.services.segment_service as mod
 
-            monkeypatch.setattr(mod, "get_segment_efforts", lambda *a, **k: [])
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
-            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", False)
 
             service = SegmentService(max_workers=1)
@@ -599,9 +628,7 @@ class TestSheetNaming:
 
             import strava_competition.services.segment_service as mod
 
-            monkeypatch.setattr(mod, "get_segment_efforts", lambda *a, **k: [])
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
-            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", False)
 
             service = SegmentService(max_workers=1)
@@ -642,9 +669,7 @@ class TestSheetNaming:
 
             import strava_competition.services.segment_service as mod
 
-            monkeypatch.setattr(mod, "get_segment_efforts", lambda *a, **k: [])
             monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
-            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", False)
 
             service = SegmentService(max_workers=1)
@@ -840,17 +865,20 @@ class TestTimeBonusApplication:
 
             import strava_competition.services.segment_service as mod
 
-            def fake_get_efforts(runner, segment_id, start_date, end_date):
-                return [
-                    {
-                        "elapsed_time": 100,
-                        "start_date_local": "2024-01-15T10:00:00Z",
-                    }
-                ]
-
-            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
-            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
-            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [{"id": 9001}])
+            monkeypatch.setattr(
+                "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+                lambda runner, activity_id, **kw: {
+                    "id": activity_id,
+                    "segment_efforts": [
+                        {
+                            "segment": {"id": 101},
+                            "elapsed_time": 100,
+                            "start_date_local": "2024-01-15T10:00:00Z",
+                        }
+                    ],
+                },
+            )
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
 
             service = SegmentService(max_workers=1)
@@ -884,17 +912,20 @@ class TestTimeBonusApplication:
 
             import strava_competition.services.segment_service as mod
 
-            def fake_get_efforts(runner, segment_id, start_date, end_date):
-                return [
-                    {
-                        "elapsed_time": 100,
-                        "start_date_local": "2024-01-15T10:00:00Z",
-                    }
-                ]
-
-            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
-            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
-            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [{"id": 9001}])
+            monkeypatch.setattr(
+                "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+                lambda runner, activity_id, **kw: {
+                    "id": activity_id,
+                    "segment_efforts": [
+                        {
+                            "segment": {"id": 101},
+                            "elapsed_time": 100,
+                            "start_date_local": "2024-01-15T10:00:00Z",
+                        }
+                    ],
+                },
+            )
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
 
             service = SegmentService(max_workers=1)
@@ -929,17 +960,20 @@ class TestTimeBonusApplication:
             import strava_competition.services.segment_service as mod
 
             # Effort on Alice's birthday (Jan 15)
-            def fake_get_efforts(runner, segment_id, start_date, end_date):
-                return [
-                    {
-                        "elapsed_time": 100,
-                        "start_date_local": "2024-01-15T10:00:00Z",  # Alice's birthday
-                    }
-                ]
-
-            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
-            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
-            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [{"id": 9001}])
+            monkeypatch.setattr(
+                "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+                lambda runner, activity_id, **kw: {
+                    "id": activity_id,
+                    "segment_efforts": [
+                        {
+                            "segment": {"id": 101},
+                            "elapsed_time": 100,
+                            "start_date_local": "2024-01-15T10:00:00Z",  # Alice's birthday
+                        }
+                    ],
+                },
+            )
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
 
             service = SegmentService(max_workers=1)
@@ -974,17 +1008,20 @@ class TestTimeBonusApplication:
 
             import strava_competition.services.segment_service as mod
 
-            def fake_get_efforts(runner, segment_id, start_date, end_date):
-                return [
-                    {
-                        "elapsed_time": 100,
-                        "start_date_local": "2024-01-15T10:00:00Z",
-                    }
-                ]
-
-            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
-            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
-            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [{"id": 9001}])
+            monkeypatch.setattr(
+                "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+                lambda runner, activity_id, **kw: {
+                    "id": activity_id,
+                    "segment_efforts": [
+                        {
+                            "segment": {"id": 101},
+                            "elapsed_time": 100,
+                            "start_date_local": "2024-01-15T10:00:00Z",
+                        }
+                    ],
+                },
+            )
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
 
             service = SegmentService(max_workers=1)
@@ -1018,17 +1055,20 @@ class TestTimeBonusApplication:
 
             import strava_competition.services.segment_service as mod
 
-            def fake_get_efforts(runner, segment_id, start_date, end_date):
-                return [
-                    {
-                        "elapsed_time": 100,
-                        "start_date_local": "2024-01-15T10:00:00Z",
-                    }
-                ]
-
-            monkeypatch.setattr(mod, "get_segment_efforts", fake_get_efforts)
-            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [])
-            monkeypatch.setattr(mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+            monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [{"id": 9001}])
+            monkeypatch.setattr(
+                "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+                lambda runner, activity_id, **kw: {
+                    "id": activity_id,
+                    "segment_efforts": [
+                        {
+                            "segment": {"id": 101},
+                            "elapsed_time": 100,
+                            "start_date_local": "2024-01-15T10:00:00Z",
+                        }
+                    ],
+                },
+            )
             monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
 
             service = SegmentService(max_workers=1)
