@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from typing import Any
 
 import pytest
 
@@ -39,7 +40,7 @@ def test_distance_service_continues_on_generic_exception(
         "start_date_local": "2024-01-05T08:00:00Z",
     }
 
-    def fetcher(runner: Runner, *_args, **_kwargs):
+    def fetcher(runner: Runner, *_args: Any, **_kwargs: Any) -> Any:
         if runner.strava_id == failing_runner.strava_id:
             raise ValueError("bad json")
         return [sample_activity]

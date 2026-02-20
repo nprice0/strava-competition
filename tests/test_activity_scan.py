@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -112,12 +113,17 @@ def test_activity_scanner_finds_fastest_effort(
 
     scanner = ActivityEffortScanner(activity_provider=lambda *_args: activities)
 
+    def _fake_get_detail(
+        _runner: Any,
+        activity_id: int,
+        include_all_efforts: bool = True,
+    ) -> Any:
+        fetch_calls.append(activity_id)
+        return detail_payload
+
     monkeypatch.setattr(
         "strava_competition.activity_scan.scanner.get_activity_with_efforts",
-        lambda _runner, activity_id, include_all_efforts=True: fetch_calls.append(
-            activity_id
-        )
-        or detail_payload,
+        _fake_get_detail,
     )
 
     result = scanner.scan_segment(runner, segment)
@@ -211,7 +217,7 @@ def test_activity_scanner_enforces_min_distance(
     scanner = ActivityEffortScanner(activity_provider=lambda *_: activities)
     distance_map = {"short": 350.0, "long": 405.0}
 
-    def _fake_distance(_runner, effort, *, allow_stream=True):
+    def _fake_distance(_runner: Any, effort: Any, *, allow_stream: Any = True) -> float:
         return distance_map[effort["id"]]
 
     monkeypatch.setattr(
@@ -274,7 +280,7 @@ def test_activity_scanner_propagates_strava_api_error(
     activities = [{"id": 456, "name": "Evening"}]
     scanner = ActivityEffortScanner(activity_provider=lambda *_: activities)
 
-    def _raise(*_args, **_kwargs):
+    def _raise(*_args: Any, **_kwargs: Any) -> None:
         raise StravaAPIError("offline miss")
 
     monkeypatch.setattr(
@@ -305,7 +311,7 @@ def test_segment_service_uses_activity_scan(
         inspected_activities=[{"id": 999, "name": "Activity"}],
     )
 
-    service._activity_scanner.scan_segment = MethodType(  # type: ignore[attr-defined]
+    service._activity_scanner.scan_segment = MethodType(  # type: ignore[method-assign]
         lambda _self, _runner, _segment, cancel_event=None: scan_result,
         service._activity_scanner,
     )
@@ -325,10 +331,10 @@ def test_segment_service_handles_activity_scan_error(
 
     service = SegmentService(max_workers=1)
 
-    def _raise_scan(self, *_args, **_kwargs):
+    def _raise_scan(self: Any, *_args: Any, **_kwargs: Any) -> Any:
         raise StravaAPIError("offline miss")
 
-    service._activity_scanner.scan_segment = MethodType(
+    service._activity_scanner.scan_segment = MethodType(  # type: ignore[method-assign]
         _raise_scan, service._activity_scanner
     )
 
@@ -345,7 +351,7 @@ def test_activity_scan_replay_uses_capture(
 ) -> None:
     scanner = ActivityEffortScanner()
 
-    runner.strava_id = "35599907"  # type: ignore[attr-defined]
+    runner.strava_id = "35599907"
     runner.name = "Neil"
     segment.id = 38_987_500
     segment.name = "SS25-02-Fiveways to Hell"

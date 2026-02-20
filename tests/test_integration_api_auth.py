@@ -3,28 +3,29 @@ import pytest
 from strava_competition import strava_api, auth
 from strava_competition.strava_client import session as session_module
 from strava_competition.strava_client import resources as resource_client
+from typing import Any
 
 
 @pytest.fixture(autouse=True)
-def reset_default_client(monkeypatch):
+def reset_default_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """Reset the default client before each test to avoid cross-test pollution."""
     monkeypatch.setattr(strava_api, "_default_client", None)
 
 
 @pytest.fixture(autouse=True)
-def no_sleep_rate_limiter(monkeypatch):
+def no_sleep_rate_limiter(monkeypatch: pytest.MonkeyPatch) -> None:
     class NoopLimiter:
-        def before_request(self):
+        def before_request(self) -> None:
             return
 
-        def after_response(self, headers, status_code):
+        def after_response(self, headers: Any, status_code: Any) -> tuple[bool, str]:
             return False, ""
 
     monkeypatch.setattr(strava_api, "_limiter", NoopLimiter())
 
 
 @pytest.fixture(autouse=True)
-def disable_capture(monkeypatch):
+def disable_capture(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force cache misses and prevent filesystem writes during unit tests."""
 
     monkeypatch.setattr(resource_client, "_cache_mode_offline", False)
@@ -36,7 +37,7 @@ def disable_capture(monkeypatch):
     )
 
 
-def _patch_all_sessions(monkeypatch, mock_session):
+def _patch_all_sessions(monkeypatch: pytest.MonkeyPatch, mock_session: Any) -> None:
     """Patch get_default_session in all modules that import it.
 
     Also resets the default client to force re-creation with the mocked session.

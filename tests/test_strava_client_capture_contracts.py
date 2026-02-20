@@ -118,8 +118,8 @@ def test_fetch_page_with_retries_recovers_from_transient_errors(
         params={"page": 1},
         context_label="segment_efforts",
         page=1,
-        session=session,
-        limiter=limiter,
+        session=session,  # type: ignore[arg-type]
+        limiter=limiter,  # type: ignore[arg-type]
     )
 
     assert result == [{"id": 1}]
@@ -156,8 +156,8 @@ def test_fetch_page_with_retries_returns_empty_after_exhausting_errors(
         params={"page": 1},
         context_label="segment_efforts",
         page=1,
-        session=session,
-        limiter=limiter,
+        session=session,  # type: ignore[arg-type]
+        limiter=limiter,  # type: ignore[arg-type]
     )
 
     assert result == []

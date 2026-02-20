@@ -6,28 +6,29 @@ from strava_competition.models import Runner
 from strava_competition.strava_client import resources as resource_client
 
 from conftest import _patch_session
+from typing import Any
 
 
 @pytest.fixture(autouse=True)
-def reset_default_client(monkeypatch):
+def reset_default_client(monkeypatch: pytest.MonkeyPatch) -> None:
     """Reset the default client before each test to avoid cross-test pollution."""
     monkeypatch.setattr(strava_api, "_default_client", None)
 
 
 @pytest.fixture(autouse=True)
-def no_sleep_rate_limiter(monkeypatch):
+def no_sleep_rate_limiter(monkeypatch: pytest.MonkeyPatch) -> None:
     class NoopLimiter:
-        def before_request(self):
+        def before_request(self) -> None:
             return
 
-        def after_response(self, headers, status_code):
+        def after_response(self, headers: Any, status_code: Any) -> tuple[bool, str]:
             return False, ""
 
     monkeypatch.setattr(strava_api, "_limiter", NoopLimiter())
 
 
 @pytest.fixture(autouse=True)
-def disable_capture(monkeypatch):
+def disable_capture(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force cache misses and prevent filesystem writes during unit tests."""
 
     monkeypatch.setattr(resource_client, "_cache_mode_offline", False)
@@ -40,7 +41,7 @@ def disable_capture(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def fake_token_refresh(monkeypatch):
+def fake_token_refresh(monkeypatch: pytest.MonkeyPatch) -> None:
     """Avoid hitting the real OAuth token exchange during tests."""
 
     monkeypatch.setattr(
@@ -49,7 +50,9 @@ def fake_token_refresh(monkeypatch):
     )
 
 
-def test_fetch_segment_geometry_offline_requires_capture(monkeypatch):
+def test_fetch_segment_geometry_offline_requires_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runner = Runner(
         name="Offline", strava_id=99, refresh_token="rt", segment_team="Solo"
     )
@@ -59,7 +62,9 @@ def test_fetch_segment_geometry_offline_requires_capture(monkeypatch):
         resource_client, "get_cached_response", lambda *args, **kwargs: None
     )
 
-    def fail_get(*args, **kwargs):  # pragma: no cover - should never run
+    def fail_get(
+        *args: Any, **kwargs: Any
+    ) -> None:  # pragma: no cover - should never run
         raise AssertionError("HTTP call performed in offline mode")
 
     mock_session = type("MockSession", (), {"get": staticmethod(fail_get)})()

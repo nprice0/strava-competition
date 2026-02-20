@@ -13,6 +13,7 @@ import os
 import tempfile
 import warnings
 from datetime import datetime
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -59,7 +60,7 @@ def _make_segment_workbook(
 class TestReadSegmentGroups:
     """Tests for excel_reader.read_segment_groups()."""
 
-    def test_single_window_produces_one_group(self):
+    def test_single_window_produces_one_group(self) -> None:
         """A single row produces one SegmentGroup with one window."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -86,7 +87,7 @@ class TestReadSegmentGroups:
             assert len(grp.windows) == 1
             assert grp.windows[0].birthday_bonus_seconds == 10.0
 
-    def test_multiple_rows_same_id_grouped(self):
+    def test_multiple_rows_same_id_grouped(self) -> None:
         """Rows with the same Segment ID are grouped into one SegmentGroup."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -130,7 +131,7 @@ class TestReadSegmentGroups:
             bonuses = {w.birthday_bonus_seconds for w in grp.windows}
             assert bonuses == {10.0, 15.0}
 
-    def test_different_segment_ids_separate_groups(self):
+    def test_different_segment_ids_separate_groups(self) -> None:
         """Rows with different Segment IDs produce separate groups."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -163,7 +164,7 @@ class TestReadSegmentGroups:
             ids = {g.id for g in groups}
             assert ids == {101, 202}
 
-    def test_conflicting_segment_names_raises_error(self):
+    def test_conflicting_segment_names_raises_error(self) -> None:
         """Rows with same ID but different names raise ExcelFormatError."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -193,7 +194,7 @@ class TestReadSegmentGroups:
             with pytest.raises(ExcelFormatError, match="conflicting names"):
                 excel_reader.read_segment_groups(path)
 
-    def test_conflicting_default_time_raises_error(self):
+    def test_conflicting_default_time_raises_error(self) -> None:
         """Rows with same ID but different Default Time raise ExcelFormatError."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -223,7 +224,7 @@ class TestReadSegmentGroups:
             with pytest.raises(ExcelFormatError, match="conflicting Default Time"):
                 excel_reader.read_segment_groups(path)
 
-    def test_conflicting_min_distance_raises_error(self):
+    def test_conflicting_min_distance_raises_error(self) -> None:
         """Rows with same ID but different min distance raise ExcelFormatError."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -253,7 +254,7 @@ class TestReadSegmentGroups:
             with pytest.raises(ExcelFormatError, match="conflicting Minimum Distance"):
                 excel_reader.read_segment_groups(path)
 
-    def test_overlapping_windows_warns(self):
+    def test_overlapping_windows_warns(self) -> None:
         """Fully overlapping windows emit a warning."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -291,7 +292,7 @@ class TestReadSegmentGroups:
                 ]
                 assert len(overlap_warnings) >= 1
 
-    def test_birthday_bonus_defaults_to_zero(self):
+    def test_birthday_bonus_defaults_to_zero(self) -> None:
         """Missing birthday bonus defaults to 0."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -321,7 +322,9 @@ class TestReadSegmentGroups:
 class TestProcessGroups:
     """Tests for SegmentService.process_groups() multi-window logic."""
 
-    def test_best_time_selected_across_windows(self, monkeypatch):
+    def test_best_time_selected_across_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Runner's fastest time across all windows is selected."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -354,10 +357,12 @@ class TestProcessGroups:
             runners = excel_reader.read_runners(path)
 
             # Alice: slower in Week 1 (120s), faster in Week 2 (100s)
-            def fake_get_activities(runner, start_date, end_date, **kwargs):
+            def fake_get_activities(
+                runner: Any, start_date: Any, end_date: Any, **kwargs: Any
+            ) -> Any:
                 return [{"id": 9001}, {"id": 9002}]
 
-            def fake_get_detail(runner, activity_id, **kwargs):
+            def fake_get_detail(runner: Any, activity_id: Any, **kwargs: Any) -> Any:
                 efforts = {
                     9001: [
                         {
@@ -401,7 +406,9 @@ class TestProcessGroups:
             # Total attempts = 2 (one per window)
             assert alice_result.attempts == 2
 
-    def test_per_window_birthday_bonus_applied(self, monkeypatch):
+    def test_per_window_birthday_bonus_applied(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Birthday bonus from the specific window is applied."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -434,10 +441,12 @@ class TestProcessGroups:
             runners = excel_reader.read_runners(path)
 
             # Alice runs on her birthday with 120s elapsed
-            def fake_get_activities(runner, start_date, end_date, **kwargs):
+            def fake_get_activities(
+                runner: Any, start_date: Any, end_date: Any, **kwargs: Any
+            ) -> Any:
                 return [{"id": 9001}]
 
-            def fake_get_detail(runner, activity_id, **kwargs):
+            def fake_get_detail(runner: Any, activity_id: Any, **kwargs: Any) -> Any:
                 return {
                     "id": activity_id,
                     "segment_efforts": [
@@ -466,7 +475,7 @@ class TestProcessGroups:
             assert alice_result.fastest_time == 90.0
             assert alice_result.birthday_bonus_applied is True
 
-    def test_different_bonus_per_window(self, monkeypatch):
+    def test_different_bonus_per_window(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Different windows can have different birthday bonuses."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -508,10 +517,12 @@ class TestProcessGroups:
             groups = excel_reader.read_segment_groups(path)
             runners = excel_reader.read_runners(path)
 
-            def fake_get_activities(runner, start_date, end_date, **kwargs):
+            def fake_get_activities(
+                runner: Any, start_date: Any, end_date: Any, **kwargs: Any
+            ) -> Any:
                 return [{"id": 9001}, {"id": 9002}]
 
-            def fake_get_detail(runner, activity_id, **kwargs):
+            def fake_get_detail(runner: Any, activity_id: Any, **kwargs: Any) -> Any:
                 efforts = {
                     9001: [
                         {
@@ -561,7 +572,9 @@ class TestProcessGroups:
 class TestSheetNaming:
     """Tests for sheet naming when SEGMENT_SPLIT_WINDOWS_ENABLED=False."""
 
-    def test_single_window_uses_segment_name(self, monkeypatch):
+    def test_single_window_uses_segment_name(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Single-window segment uses just the segment name."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -593,7 +606,7 @@ class TestSheetNaming:
             # Single window = just segment name
             assert "Hill Climb" in results
 
-    def test_multi_window_uses_label(self, monkeypatch):
+    def test_multi_window_uses_label(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Multi-window segment uses '{name} - {label}' format."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -636,7 +649,9 @@ class TestSheetNaming:
             assert "Hill Climb - Week 1" in results
             assert "Hill Climb - Week 2" in results
 
-    def test_multi_window_no_label_uses_dates(self, monkeypatch):
+    def test_multi_window_no_label_uses_dates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Multi-window without labels uses date range in sheet name."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -686,7 +701,7 @@ class TestSheetNaming:
 class TestTimeBonusParsing:
     """Tests for parsing Time Bonus (secs) column in excel_reader."""
 
-    def test_time_bonus_empty_defaults_to_zero(self):
+    def test_time_bonus_empty_defaults_to_zero(self) -> None:
         """Empty Time Bonus (secs) cell defaults to 0.0."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -708,7 +723,7 @@ class TestTimeBonusParsing:
             groups = excel_reader.read_segment_groups(path)
             assert groups[0].windows[0].time_bonus_seconds == 0.0
 
-    def test_time_bonus_positive_value_parsed(self):
+    def test_time_bonus_positive_value_parsed(self) -> None:
         """Positive Time Bonus (secs) is parsed correctly."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -730,7 +745,7 @@ class TestTimeBonusParsing:
             groups = excel_reader.read_segment_groups(path)
             assert groups[0].windows[0].time_bonus_seconds == 30.0
 
-    def test_time_bonus_negative_value_parsed(self):
+    def test_time_bonus_negative_value_parsed(self) -> None:
         """Negative Time Bonus (secs) is parsed correctly (penalty)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -752,7 +767,7 @@ class TestTimeBonusParsing:
             groups = excel_reader.read_segment_groups(path)
             assert groups[0].windows[0].time_bonus_seconds == -5.0
 
-    def test_time_bonus_decimal_value_parsed(self):
+    def test_time_bonus_decimal_value_parsed(self) -> None:
         """Decimal Time Bonus (secs) is parsed correctly."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -774,7 +789,9 @@ class TestTimeBonusParsing:
             groups = excel_reader.read_segment_groups(path)
             assert groups[0].windows[0].time_bonus_seconds == 5.5
 
-    def test_time_bonus_invalid_value_logs_warning_defaults_zero(self, caplog):
+    def test_time_bonus_invalid_value_logs_warning_defaults_zero(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
         """Invalid Time Bonus (secs) logs warning and defaults to 0.0."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -800,7 +817,7 @@ class TestTimeBonusParsing:
             assert groups[0].windows[0].time_bonus_seconds == 0.0
             assert "Invalid time bonus value" in caplog.text
 
-    def test_different_windows_have_different_time_bonuses(self):
+    def test_different_windows_have_different_time_bonuses(self) -> None:
         """Different windows can have different time bonus values."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -840,7 +857,9 @@ class TestTimeBonusParsing:
 class TestTimeBonusApplication:
     """Tests for time bonus application in SegmentService."""
 
-    def test_positive_bonus_subtracts_time(self, monkeypatch):
+    def test_positive_bonus_subtracts_time(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Positive time bonus subtracts seconds from elapsed time (reward)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -887,7 +906,7 @@ class TestTimeBonusApplication:
             # 100 - 30 = 70
             assert alice_result.fastest_time == 70.0
 
-    def test_negative_bonus_adds_time(self, monkeypatch):
+    def test_negative_bonus_adds_time(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Negative time bonus adds seconds to elapsed time (penalty)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -934,7 +953,9 @@ class TestTimeBonusApplication:
             # 100 - (-5) = 105
             assert alice_result.fastest_time == 105.0
 
-    def test_time_bonus_stacks_with_birthday_bonus(self, monkeypatch):
+    def test_time_bonus_stacks_with_birthday_bonus(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """Time bonus stacks with birthday bonus (both applied)."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -983,7 +1004,7 @@ class TestTimeBonusApplication:
             assert alice_result.fastest_time == 85.0
             assert alice_result.birthday_bonus_applied is True
 
-    def test_time_bonus_floors_at_zero(self, monkeypatch):
+    def test_time_bonus_floors_at_zero(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Adjusted time cannot go below zero."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")
@@ -1030,7 +1051,7 @@ class TestTimeBonusApplication:
             # 100 - 200 = -100, but floored at 0
             assert alice_result.fastest_time == 0.0
 
-    def test_time_bonus_in_diagnostics(self, monkeypatch):
+    def test_time_bonus_in_diagnostics(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """time_bonus_applied appears in result diagnostics."""
         with tempfile.TemporaryDirectory() as tmpdir:
             path = os.path.join(tmpdir, "input.xlsx")

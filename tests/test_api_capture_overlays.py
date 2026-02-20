@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 from strava_competition import api_capture
+import pytest
+from pathlib import Path
 
 
-def test_overlay_preferred_over_base(tmp_path, monkeypatch) -> None:
+def test_overlay_preferred_over_base(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     monkeypatch.setattr(api_capture, "STRAVA_CACHE_DIR", str(tmp_path))
     monkeypatch.setattr(api_capture, "_cache_mode_saves", True)
     monkeypatch.setattr(api_capture, "_cache_mode_reads", True)

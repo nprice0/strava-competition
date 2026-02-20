@@ -2,9 +2,12 @@ import pandas as pd
 
 from strava_competition.segment_aggregation import build_segment_outputs
 from strava_competition.models import SegmentResult
+from typing import Any
 
 
-def test_build_segment_outputs_includes_summary_and_ranking(segment_results):
+def test_build_segment_outputs_includes_summary_and_ranking(
+    segment_results: Any,
+) -> None:
     # Extend shared fixture with an empty segment to assert message sheet path.
     segment_results["Empty Segment"] = {}
     outputs = build_segment_outputs(segment_results, include_summary=True)
@@ -61,13 +64,13 @@ def test_build_segment_outputs_includes_summary_and_ranking(segment_results):
     assert set(summary_df["Team"]) == {"Team A", "Team B", "Team C"}
 
 
-def test_build_segment_outputs_no_summary(segment_results):
+def test_build_segment_outputs_no_summary(segment_results: Any) -> None:
     outputs = build_segment_outputs(segment_results, include_summary=False)
     names = [n for n, _ in outputs]
     assert "Summary" not in names
 
 
-def test_fastest_distance_zero_for_default_results():
+def test_fastest_distance_zero_for_default_results() -> None:
     zero_segment = {
         "Team Z": [
             SegmentResult(

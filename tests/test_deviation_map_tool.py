@@ -31,7 +31,7 @@ def _build_stub_activity() -> ActivityTrack:
         (51.4809, -3.1815),
         (51.4810, -3.1800),
     ]
-    timestamps = list(range(len(points)))
+    timestamps = [float(i) for i in range(len(points))]
     return ActivityTrack(activity_id=456, points=points, timestamps_s=timestamps)
 
 
@@ -70,4 +70,4 @@ def test_build_deviation_map_for_effort(tmp_path: Path) -> None:
     assert output_path.exists(), "Expected HTML output to be written"
     assert coverage.coverage_ratio > 0.0
     gate_max = diagnostics.get("gate_trimmed_max_offset_m")
-    assert gate_max is None or gate_max >= 0.0
+    assert gate_max is None or (isinstance(gate_max, (int, float)) and gate_max >= 0.0)

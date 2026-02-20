@@ -1,6 +1,7 @@
 from datetime import datetime
 import os
 import tempfile
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -15,7 +16,7 @@ from strava_competition.excel_writer import (
 from strava_competition.services.segment_service import SegmentService
 
 
-def make_input_workbook(path):
+def make_input_workbook(path: Any) -> None:
     import pandas as pd
 
     segs = pd.DataFrame(
@@ -65,7 +66,7 @@ def make_input_workbook(path):
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_excel_integration_roundtrip_and_ranks(monkeypatch):
+def test_excel_integration_roundtrip_and_ranks(monkeypatch: pytest.MonkeyPatch) -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         in_path = os.path.join(tmpdir, "input.xlsx")
         out_path = os.path.join(tmpdir, "out.xlsx")
@@ -73,7 +74,9 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
         segments = excel_reader.read_segments(in_path)
         runners = excel_reader.read_runners(in_path)
 
-        def fake_get_activities(runner, start_date, end_date, **kwargs):
+        def fake_get_activities(
+            runner: Any, start_date: Any, end_date: Any, **kwargs: Any
+        ) -> Any:
             activity_map = {
                 "Alice": [{"id": 1001}, {"id": 1002}],
                 "Ben": [{"id": 2001}],
@@ -81,7 +84,7 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
             }
             return activity_map.get(runner.name, [])
 
-        def fake_get_detail(runner, activity_id, **kwargs):
+        def fake_get_detail(runner: Any, activity_id: Any, **kwargs: Any) -> Any:
             efforts = {
                 1001: [
                     {
@@ -219,7 +222,7 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_time_bonus_fill_applied(monkeypatch):
+def test_time_bonus_fill_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify TIME_BONUS_FILL is applied to runners with time bonus only."""
     with tempfile.TemporaryDirectory() as tmpdir:
         in_path = os.path.join(tmpdir, "input.xlsx")
@@ -303,7 +306,7 @@ def test_time_bonus_fill_applied(monkeypatch):
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_both_bonus_fill_applied(monkeypatch):
+def test_both_bonus_fill_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify BOTH_BONUS_FILL is applied when birthday and time bonus both apply."""
     with tempfile.TemporaryDirectory() as tmpdir:
         in_path = os.path.join(tmpdir, "input.xlsx")
@@ -388,7 +391,7 @@ def test_both_bonus_fill_applied(monkeypatch):
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_time_bonus_applied_field_set(monkeypatch):
+def test_time_bonus_applied_field_set(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify time_bonus_applied field is set on SegmentResult."""
     with tempfile.TemporaryDirectory() as tmpdir:
         in_path = os.path.join(tmpdir, "input.xlsx")

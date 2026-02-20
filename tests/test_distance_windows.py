@@ -6,7 +6,7 @@ import tempfile
 from strava_competition.excel_reader import read_distance_windows
 
 
-def test_read_distance_windows_basic():
+def test_read_distance_windows_basic() -> None:
     with tempfile.TemporaryDirectory() as tmp:
         path = os.path.join(tmp, "input.xlsx")
         df_dist = pd.DataFrame(

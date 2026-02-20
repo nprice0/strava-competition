@@ -11,6 +11,7 @@ from strava_competition.models import Runner
 from strava_competition.strava_client.rate_limiter import RateLimiter
 from strava_competition.strava_client.resources import ResourceAPI
 from strava_competition.strava_client import resources
+import pytest
 
 
 class RecordingLimiter(RateLimiter):
@@ -49,7 +50,7 @@ class ParallelSession:
 
     def get(
         self, url: str, headers: Dict[str, str], params: Dict[str, Any], timeout: int
-    ):
+    ) -> Any:
         with self._lock:
             self.call_count += 1
         time.sleep(self.delay)
@@ -104,19 +105,19 @@ def _capture_key(
     return (method, url, identity, _serialise(params), _serialise(body))
 
 
-def test_resource_api_rate_limiter_smoke(monkeypatch):
+def test_resource_api_rate_limiter_smoke(monkeypatch: pytest.MonkeyPatch) -> None:
     """Ensure multiple runners never exceed the configured concurrency cap."""
 
     limiter = RecordingLimiter(max_concurrent=3)
     session = ParallelSession(delay=0.02)
     monkeypatch.setattr(resources, "ensure_runner_token", lambda *_: None)
 
-    api = ResourceAPI(session=session, limiter=limiter, timeout=1)
+    api = ResourceAPI(session=session, limiter=limiter, timeout=1)  # type: ignore[arg-type]
 
     runners = [_new_runner(idx) for idx in range(8)]
     barrier = threading.Barrier(len(runners))
 
-    def _fetch(runner: Runner) -> Dict[str, Any]:
+    def _fetch(runner: Runner) -> Any:
         barrier.wait()
         return api.fetch_json(
             runner,
@@ -133,7 +134,7 @@ def test_resource_api_rate_limiter_smoke(monkeypatch):
     assert limiter.max_observed == 3
 
 
-def test_capture_replay_smoke_multiple_runners(monkeypatch):
+def test_capture_replay_smoke_multiple_runners(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replay hits should satisfy offline runs after an initial capture warm-up."""
 
     store: Dict[
@@ -200,7 +201,7 @@ def test_capture_replay_smoke_multiple_runners(monkeypatch):
     runners = [_new_runner(idx) for idx in range(6)]
     url = "https://example.test/resource"
 
-    def _fetch_with_capture(runner: Runner) -> Dict[str, Any]:
+    def _fetch_with_capture(runner: Runner) -> Any:
         return api.fetch_with_capture(
             runner, url, params={"runner": runner.strava_id}, context="smoke"
         )

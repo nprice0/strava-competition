@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
+from typing import Any
 
 import pytest
 
@@ -75,8 +76,8 @@ def test_empty_activity_cache_triggers_refresh_when_stale(
         base_params,
         cached_pages,
         [],
-        session=None,
-        limiter=None,
+        session=None,  # type: ignore[arg-type]
+        limiter=None,  # type: ignore[arg-type]
         start_date=start,
         end_date=end,
     )
@@ -99,7 +100,7 @@ def test_empty_activity_cache_skips_refresh_when_recent(
         raising=False,
     )
 
-    def _fail_fetch(*_args, **_kwargs):
+    def _fail_fetch(*_args: Any, **_kwargs: Any) -> None:
         raise AssertionError("should not fetch tail for fresh cache")
 
     monkeypatch.setattr(
@@ -113,8 +114,8 @@ def test_empty_activity_cache_skips_refresh_when_recent(
         base_params,
         cached_pages,
         [],
-        session=None,
-        limiter=None,
+        session=None,  # type: ignore[arg-type]
+        limiter=None,  # type: ignore[arg-type]
         start_date=start,
         end_date=end,
     )

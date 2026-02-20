@@ -7,10 +7,11 @@ import pytest
 
 import strava_competition.config as config_module
 import strava_competition.api_capture as api_capture_module
+from typing import Any
 
 
 @pytest.fixture()
-def reload_capture_modules():
+def reload_capture_modules() -> Any:
     """Reload config + capture modules with current environment."""
 
     def _reload() -> None:
@@ -29,7 +30,9 @@ def _write_capture(path: Path, *, age_days: int) -> Path:
     return path
 
 
-def test_auto_prune_removes_old_files(monkeypatch, tmp_path, reload_capture_modules):
+def test_auto_prune_removes_old_files(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, reload_capture_modules: Any
+) -> None:
     old_file = _write_capture(tmp_path / "aa" / "bb" / "old.json", age_days=20)
     fresh_file = _write_capture(tmp_path / "aa" / "bb" / "fresh.json", age_days=1)
 

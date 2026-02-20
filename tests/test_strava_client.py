@@ -3,6 +3,8 @@ from types import SimpleNamespace
 
 from strava_competition import strava_api
 from strava_competition.models import Runner
+from typing import Any
+import pytest
 
 
 def _runner() -> Runner:
@@ -14,10 +16,12 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def test_strava_client_injects_session_and_limiter(monkeypatch):
+def test_strava_client_injects_session_and_limiter(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     calls = {}
 
-    def fake_activities_impl(*args, **kwargs):
+    def fake_activities_impl(*args: Any, **kwargs: Any) -> Any:
         calls["activities_session"] = kwargs["session"]
         calls["activities_limiter"] = kwargs["limiter"]
         return []
@@ -26,7 +30,7 @@ def test_strava_client_injects_session_and_limiter(monkeypatch):
 
     dummy_session = object()
     dummy_limiter = SimpleNamespace(resize=lambda *_args, **_kwargs: None)
-    client = strava_api.StravaClient(session=dummy_session, limiter=dummy_limiter)
+    client = strava_api.StravaClient(session=dummy_session, limiter=dummy_limiter)  # type: ignore[arg-type]
 
     runner = _runner()
     client.get_activities(runner, _utcnow(), _utcnow())
@@ -35,15 +39,17 @@ def test_strava_client_injects_session_and_limiter(monkeypatch):
     assert calls["activities_limiter"] is dummy_limiter
 
 
-def test_module_wrappers_delegate_to_default_client(monkeypatch):
+def test_module_wrappers_delegate_to_default_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     runner = _runner()
     called = {"activities": False, "resized": False}
 
-    def fake_activities(*args, **kwargs):
+    def fake_activities(*args: Any, **kwargs: Any) -> Any:
         called["activities"] = True
         return ["activity"]
 
-    def fake_resize(value):
+    def fake_resize(value: Any) -> None:
         called["resized"] = value
 
     client = strava_api.get_default_client()

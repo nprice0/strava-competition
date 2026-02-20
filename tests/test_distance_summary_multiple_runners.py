@@ -1,9 +1,10 @@
 from strava_competition.distance_aggregation import build_distance_outputs
+from typing import Any
 
 
 def test_distance_summary_includes_all_distance_runners(
-    distance_runners, distance_windows, distance_activity_cache
-):
+    distance_runners: Any, distance_windows: Any, distance_activity_cache: Any
+) -> None:
     outputs = build_distance_outputs(
         distance_runners, distance_windows, distance_activity_cache
     )

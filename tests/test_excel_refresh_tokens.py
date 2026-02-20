@@ -41,7 +41,7 @@ def _read_tokens(path: Path) -> dict[str, str]:
     return tokens
 
 
-def test_update_runner_refresh_tokens_updates_all_rows(tmp_path):
+def test_update_runner_refresh_tokens_updates_all_rows(tmp_path: Path) -> None:
     workbook = tmp_path / "runners.xlsx"
     _write_workbook(
         workbook,
@@ -63,7 +63,7 @@ def test_update_runner_refresh_tokens_updates_all_rows(tmp_path):
     assert tokens["102"] == "new-b"
 
 
-def test_update_single_runner_refresh_token_is_thread_safe(tmp_path):
+def test_update_single_runner_refresh_token_is_thread_safe(tmp_path: Path) -> None:
     workbook = tmp_path / "runners.xlsx"
     _write_workbook(
         workbook,
@@ -109,4 +109,4 @@ def test_update_single_runner_refresh_token_is_thread_safe(tmp_path):
     tokens = _read_tokens(workbook)
     for idx, runner in enumerate(runners):
         expected = f"{runner.refresh_token}:thread-{idx}"
-        assert tokens[runner.strava_id] == expected
+        assert tokens[str(runner.strava_id)] == expected

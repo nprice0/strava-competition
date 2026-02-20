@@ -15,10 +15,11 @@ from strava_competition.excel_writer import (
     update_single_runner_refresh_token,
 )
 from strava_competition.models import Runner
+from typing import Any
 
 
 @pytest.fixture()
-def runners_sheet(tmp_path):
+def runners_sheet(tmp_path: Path) -> Path:
     path = Path(tmp_path) / "tokens.xlsx"
     df = pd.DataFrame(
         {
@@ -39,14 +40,14 @@ def runners_sheet(tmp_path):
     return path
 
 
-def _refresh_token_for(df: pd.DataFrame, strava_id: str) -> str:
+def _refresh_token_for(df: pd.DataFrame, strava_id: str) -> Any:
     ids = df[STRAVA_ID_COLUMN].astype(str).str.strip()
     series = df.loc[ids == str(strava_id), REFRESH_TOKEN_COLUMN]
     assert not series.empty
     return series.iat[0]
 
 
-def test_update_runner_refresh_tokens_updates_all_rows(runners_sheet):
+def test_update_runner_refresh_tokens_updates_all_rows(runners_sheet: Any) -> None:
     runners = [
         Runner("Ana", "101", "new-ana"),
         Runner("Ben", "202", "new-ben"),
@@ -61,7 +62,7 @@ def test_update_runner_refresh_tokens_updates_all_rows(runners_sheet):
     assert _refresh_token_for(result, "303") == "new-cara"
 
 
-def test_update_runner_refresh_tokens_formats_birthdays(runners_sheet):
+def test_update_runner_refresh_tokens_formats_birthdays(runners_sheet: Any) -> None:
     runners = [Runner("Ana", "101", "tok-new")]
 
     update_runner_refresh_tokens(str(runners_sheet), runners)
@@ -73,7 +74,7 @@ def test_update_runner_refresh_tokens_formats_birthdays(runners_sheet):
     assert birthdays[2] == "01-Jan"
 
 
-def test_update_single_runner_refresh_token_threadsafe(runners_sheet):
+def test_update_single_runner_refresh_token_threadsafe(runners_sheet: Any) -> None:
     runners = [
         Runner("Ana", "101", "tok-ana-1"),
         Runner("Ben", "202", "tok-ben-1"),
@@ -93,5 +94,5 @@ def test_update_single_runner_refresh_token_threadsafe(runners_sheet):
     result = pd.read_excel(runners_sheet, sheet_name=RUNNERS_SHEET)
     for runner in runners:
         expected = f"{runner.refresh_token}:thread"
-        actual = _refresh_token_for(result, runner.strava_id)
+        actual = _refresh_token_for(result, str(runner.strava_id))
         assert actual == expected
