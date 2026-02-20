@@ -109,8 +109,10 @@ class ActivitiesAPI:
     ) -> Optional[List[Dict[str, Any]]]:
         """Fetch activities for a runner in [start_date, end_date]."""
 
-        after_ts = int(start_date.timestamp())
-        before_ts = int(end_date.timestamp())
+        start_utc = _to_utc(start_date)
+        end_utc = _to_utc(end_date)
+        after_ts = int(start_utc.timestamp())
+        before_ts = int(end_utc.timestamp())
         url = f"{STRAVA_BASE_URL}/athlete/activities"
         base_params = {
             "after": after_ts,
@@ -235,19 +237,23 @@ class ActivitiesAPI:
                     )
 
             filtered: List[Dict[str, Any]] = []
-            start_utc = to_utc_aware(start_date)
-            end_utc = to_utc_aware(end_date)
             for act in raw_activities:
                 if normalized_types and not activity_type_matches(
                     act, normalized_types
                 ):
                     continue
-                start_local = act.get("start_date_local")
-                if not start_local:
+                # Prefer start_date (true UTC).  Strava's start_date_local
+                # carries a misleading "Z" suffix but is actually the
+                # athlete's local time — treating it as UTC shifts the
+                # timestamp by the athlete's timezone offset.  Fall back to
+                # start_date_local only when start_date is absent (e.g.
+                # incomplete cache data) and accept the approximation.
+                raw_start = act.get("start_date") or act.get("start_date_local")
+                if not raw_start:
                     continue
                 try:
                     dt = to_utc_aware(
-                        datetime.fromisoformat(start_local.replace("Z", "+00:00"))
+                        datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
                     )
                 except ValueError:
                     continue

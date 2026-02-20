@@ -22,16 +22,18 @@ _start_utc_cache: dict[int, datetime] = {}
 
 
 def _activity_start_utc(act: Activity) -> datetime | None:
-    """Return cached UTC start datetime for an activity."""
+    """Return the activity's UTC start datetime.
 
-    raw: str | None = None
-    start_date = act.get("start_date")
-    start_local = act.get("start_date_local")
-    if isinstance(start_date, str) and start_date:
-        raw = start_date
-    elif isinstance(start_local, str) and start_local:
-        raw = start_local
-    if not raw:
+    Uses ``start_date`` (true UTC) by preference.  Falls back to
+    ``start_date_local`` only when ``start_date`` is absent (e.g.
+    incomplete cache data).  Note that ``start_date_local``'s trailing
+    ``Z`` is a Strava API quirk — the value is actually the athlete's
+    local time, so treating it as UTC is an approximation offset by the
+    athlete's timezone.
+    """
+
+    raw = act.get("start_date") or act.get("start_date_local")
+    if not isinstance(raw, str) or not raw:
         return None
     dt = parse_iso_datetime(raw)
     if dt is None:

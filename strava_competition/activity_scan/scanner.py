@@ -272,7 +272,15 @@ class ActivityEffortScanner:
             )
 
     def _parse_effort_date(self, effort: Dict[str, Any]) -> datetime | None:
-        """Extract the effort's start datetime from the payload."""
+        """Extract the effort's start datetime from the payload.
+
+        Prefers ``start_date_local`` because window boundaries from the
+        Excel workbook are naive "calendar dates" in the athlete's local
+        timezone.  Strava's ``start_date_local`` value *is* local time
+        despite carrying a misleading ``Z`` suffix.  ``_effort_within_window``
+        strips timezone info via ``_to_naive`` before comparison, so the
+        local-to-local comparison is correct.
+        """
         return parse_iso_datetime(
             effort.get("start_date_local") or effort.get("start_date")
         )
@@ -280,7 +288,14 @@ class ActivityEffortScanner:
     def _effort_within_window(
         self, effort_date: datetime | None, segment: Segment
     ) -> bool:
-        """Check if an effort date falls within the segment's date window."""
+        """Check if an effort date falls within the segment's date window.
+
+        Both ``effort_date`` (from ``start_date_local``) and the segment
+        window boundaries are local-time values.  We strip timezone info
+        so that the naive-vs-naive comparison works correctly even though
+        ``start_date_local`` carries a fake UTC tzinfo from the ``Z``
+        suffix in the Strava API.
+        """
         if effort_date is None:
             # No date available - allow the effort (conservative approach)
             return True
