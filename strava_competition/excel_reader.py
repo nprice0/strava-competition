@@ -348,44 +348,46 @@ def read_segments(
         _SEGMENT_MIN_DISTANCE_COL,
         _SEGMENT_BIRTHDAY_BONUS_COL,
     ]
-    for row_offset, (
-        seg_id,
-        seg_name,
-        start_dt,
-        end_dt,
-        default_time_raw,
-        min_distance_raw,
-        birthday_bonus_raw,
-    ) in enumerate(df[columns].itertuples(index=False, name=None), start=2):
-        row_label = f"row {row_offset}"
-        # Validate date range early
-        if pd.isna(start_dt) or pd.isna(end_dt):
-            raise ExcelFormatError(
-                f"Segment '{seg_name}' in {row_label} has invalid date(s) in "
-                f"'{SEGMENTS_SHEET}' sheet"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        for row_offset, (
+            seg_id,
+            seg_name,
+            start_dt,
+            end_dt,
+            default_time_raw,
+            min_distance_raw,
+            birthday_bonus_raw,
+        ) in enumerate(df[columns].itertuples(index=False, name=None), start=2):
+            row_label = f"row {row_offset}"
+            # Validate date range early
+            if pd.isna(start_dt) or pd.isna(end_dt):
+                raise ExcelFormatError(
+                    f"Segment '{seg_name}' in {row_label} has invalid date(s) in "
+                    f"'{SEGMENTS_SHEET}' sheet"
+                )
+            if start_dt > end_dt:
+                raise ExcelFormatError(
+                    f"Segment '{seg_name}' in {row_label} has inverted date range "
+                    f"(start={start_dt} > end={end_dt}) in '{SEGMENTS_SHEET}' sheet"
+                )
+            segs.append(
+                Segment(
+                    id=int(seg_id),
+                    name=str(seg_name),
+                    start_date=start_dt,
+                    end_date=end_dt,
+                    default_time_seconds=_parse_segment_default_time(
+                        default_time_raw, str(seg_name), row_label
+                    ),
+                    min_distance_meters=_parse_segment_min_distance(
+                        min_distance_raw, str(seg_name), row_label
+                    ),
+                    birthday_bonus_seconds=_parse_segment_birthday_bonus(
+                        birthday_bonus_raw, str(seg_name), row_label
+                    ),
+                )
             )
-        if start_dt > end_dt:
-            raise ExcelFormatError(
-                f"Segment '{seg_name}' in {row_label} has inverted date range "
-                f"(start={start_dt} > end={end_dt}) in '{SEGMENTS_SHEET}' sheet"
-            )
-        segs.append(
-            Segment(
-                id=int(seg_id),
-                name=str(seg_name),
-                start_date=start_dt,
-                end_date=end_dt,
-                default_time_seconds=_parse_segment_default_time(
-                    default_time_raw, str(seg_name), row_label
-                ),
-                min_distance_meters=_parse_segment_min_distance(
-                    min_distance_raw, str(seg_name), row_label
-                ),
-                birthday_bonus_seconds=_parse_segment_birthday_bonus(
-                    birthday_bonus_raw, str(seg_name), row_label
-                ),
-            )
-        )
     return segs
 
 
@@ -455,55 +457,18 @@ def read_segment_groups(
         df[columns].itertuples(index=False, name=None), start=2
     ):
         row_label = f"row {row_offset}"
-        if has_window_label:
-            if has_time_bonus:
-                (
-                    seg_id,
-                    seg_name,
-                    start_dt,
-                    end_dt,
-                    window_label_raw,
-                    default_time_raw,
-                    min_distance_raw,
-                    birthday_bonus_raw,
-                    time_bonus_raw,
-                ) = row_values
-            else:
-                (
-                    seg_id,
-                    seg_name,
-                    start_dt,
-                    end_dt,
-                    window_label_raw,
-                    default_time_raw,
-                    min_distance_raw,
-                    birthday_bonus_raw,
-                ) = row_values
-                time_bonus_raw = None
-        else:
-            if has_time_bonus:
-                (
-                    seg_id,
-                    seg_name,
-                    start_dt,
-                    end_dt,
-                    default_time_raw,
-                    min_distance_raw,
-                    birthday_bonus_raw,
-                    time_bonus_raw,
-                ) = row_values
-            else:
-                (
-                    seg_id,
-                    seg_name,
-                    start_dt,
-                    end_dt,
-                    default_time_raw,
-                    min_distance_raw,
-                    birthday_bonus_raw,
-                ) = row_values
-                time_bonus_raw = None
-            window_label_raw = None
+        # Build a dict keyed by column name to eliminate branching on
+        # optional-column combinations.
+        row_dict = dict(zip(columns, row_values))
+        seg_id = row_dict[_SEGMENT_ID_COL]
+        seg_name = row_dict[_SEGMENT_NAME_COL]
+        start_dt = row_dict[_SEGMENT_START_COL]
+        end_dt = row_dict[_SEGMENT_END_COL]
+        default_time_raw = row_dict[_SEGMENT_DEFAULT_TIME_COL]
+        min_distance_raw = row_dict[_SEGMENT_MIN_DISTANCE_COL]
+        birthday_bonus_raw = row_dict[_SEGMENT_BIRTHDAY_BONUS_COL]
+        window_label_raw = row_dict.get(_SEGMENT_WINDOW_LABEL_COL)
+        time_bonus_raw = row_dict.get(_SEGMENT_TIME_BONUS_COL)
 
         # Validate date range
         if pd.isna(start_dt) or pd.isna(end_dt):

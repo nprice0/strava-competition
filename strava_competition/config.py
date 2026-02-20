@@ -99,6 +99,19 @@ _cache_mode_saves = STRAVA_API_CACHE_MODE == "cache"
 _cache_mode_reads = STRAVA_API_CACHE_MODE in {"cache", "offline"}
 _cache_mode_offline = STRAVA_API_CACHE_MODE == "offline"
 
+# Fail-fast: require client credentials when communication with Strava is
+# expected.  In offline mode the credentials are never used, so we skip the
+# check.  auth.py has its own guard as a defence-in-depth measure.
+if not _cache_mode_offline and (not CLIENT_ID or not CLIENT_SECRET):
+    import warnings
+
+    warnings.warn(
+        "STRAVA_CLIENT_ID and/or STRAVA_CLIENT_SECRET are not set. "
+        "Token refresh and live API calls will fail. "
+        "Set STRAVA_API_CACHE_MODE=offline to run without credentials.",
+        stacklevel=1,
+    )
+
 # Maximum age (days) before a cached activity response is considered stale and
 # automatically refreshed from the live API. Set to 0 to disable the TTL.
 CACHE_TTL_DAYS = _env_int("CACHE_TTL_DAYS", 90)

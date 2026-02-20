@@ -18,7 +18,7 @@ from strava_competition.services.distance_service import (
 def _runner(name: str, runner_id: int, team: str = "Team") -> Runner:
     return Runner(
         name=name,
-        strava_id=runner_id,
+        strava_id=str(runner_id),
         refresh_token="rt",
         distance_team=team,
     )

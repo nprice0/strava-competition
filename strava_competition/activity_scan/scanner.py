@@ -19,7 +19,7 @@ from ..effort_distance import derive_effort_distance_m
 from ..errors import StravaAPIError
 from ..models import Runner, Segment
 from ..strava_api import get_activities, get_activity_with_efforts
-from ..utils import parse_iso_datetime
+from ..utils import coerce_float, coerce_int, parse_iso_datetime
 from .models import ActivityScanResult
 
 # Type aliases for dependency injection
@@ -67,7 +67,7 @@ class _BestEffortTracker:
         self.raw_elapsed = raw_elapsed
         self.effort = effort
         self.activity_id = activity_id
-        self.moving_time = _coerce_float(effort.get("moving_time"))
+        self.moving_time = coerce_float(effort.get("moving_time"))
         self.start_date = start_date
         self.bonus_applied = bonus_applied
         self.distance_m = distance_m
@@ -195,7 +195,7 @@ class ActivityEffortScanner:
         cancel_event: Event | None,
     ) -> None:
         """Process a single activity, extracting matching segment efforts."""
-        activity_id = _coerce_int(activity_summary.get("id"))
+        activity_id = coerce_int(activity_summary.get("id"))
         if activity_id is None:
             return
 
@@ -233,7 +233,7 @@ class ActivityEffortScanner:
             return
 
         # Validate elapsed time
-        elapsed = _coerce_float(effort.get("elapsed_time"))
+        elapsed = coerce_float(effort.get("elapsed_time"))
         if elapsed is None or elapsed <= 0:
             return
 
@@ -483,20 +483,7 @@ def _to_naive(dt: datetime | Any) -> datetime:
     return dt
 
 
-def _coerce_int(value: Any) -> int | None:
-    """Attempt to coerce a value to int, returning None on failure."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _coerce_float(value: Any) -> float | None:
-    """Attempt to coerce a value to float, returning None on failure."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+# coerce_int and coerce_float imported from utils (module-level)
 
 
 def _coerce_effort_id(value: Any) -> int | str | None:

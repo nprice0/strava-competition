@@ -69,7 +69,7 @@ def capture_replay_env(monkeypatch: pytest.MonkeyPatch) -> None:
     )
 
     import strava_competition.strava_client.activities as activities_client
-    import strava_competition.strava_client.capture as capture_client
+    import strava_competition.strava_client.cache_helpers as capture_client
     import strava_competition.strava_client.base as base_client
 
     monkeypatch.setattr(activities_client, "_cache_mode_offline", True, raising=False)

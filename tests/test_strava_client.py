@@ -8,7 +8,7 @@ import pytest
 
 
 def _runner() -> Runner:
-    return Runner(name="Test", strava_id=123, refresh_token="rt", segment_team="A")
+    return Runner(name="Test", strava_id="123", refresh_token="rt", segment_team="A")
 
 
 def _utcnow() -> datetime:

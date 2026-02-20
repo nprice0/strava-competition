@@ -54,7 +54,7 @@ def test_fetch_segment_geometry_offline_requires_capture(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     runner = Runner(
-        name="Offline", strava_id=99, refresh_token="rt", segment_team="Solo"
+        name="Offline", strava_id="99", refresh_token="rt", segment_team="Solo"
     )
 
     monkeypatch.setattr(resource_client, "_cache_mode_offline", True)

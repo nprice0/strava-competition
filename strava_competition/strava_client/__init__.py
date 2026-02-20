@@ -1,6 +1,6 @@
 """Modular Strava client components (rate limiter, session, cache helpers)."""
 
-from .capture import (  # noqa: F401
+from .cache_helpers import (  # noqa: F401
     get_cached_list,
     get_cached_list_with_meta,
     runner_identity,

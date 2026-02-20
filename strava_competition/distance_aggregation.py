@@ -137,6 +137,10 @@ def build_distance_outputs(
     runner) and is NOT a sum of the per-window sheets (avoids double counting
     when windows overlap).
     """
+    # Clear the id()-keyed lookup cache between invocations so that stale
+    # object-identity keys from a previous call cannot return wrong results.
+    _start_utc_cache.clear()
+
     outputs: list[tuple[str, list[dict]]] = []
 
     # Per-window sheets

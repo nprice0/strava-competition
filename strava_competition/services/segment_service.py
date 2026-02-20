@@ -87,7 +87,11 @@ class SegmentService:
                     progress,
                 )
                 for team_results in segment_results.values():
-                    team_results.sort(key=lambda r: r.fastest_time)
+                    team_results.sort(
+                        key=lambda r: r.fastest_time
+                        if r.fastest_time is not None
+                        else float("inf")
+                    )
                 results[segment.name] = segment_results
         finally:
             self._clear_runner_activity_cache()
@@ -125,7 +129,11 @@ class SegmentService:
                         progress,
                     )
                     for team_results in group_results.values():
-                        team_results.sort(key=lambda r: r.fastest_time)
+                        team_results.sort(
+                            key=lambda r: r.fastest_time
+                            if r.fastest_time is not None
+                            else float("inf")
+                        )
                     results[group.name] = group_results
                 else:
                     # Disabled mode: process each window as separate segment
@@ -142,7 +150,11 @@ class SegmentService:
                             progress,
                         )
                         for team_results in window_results.values():
-                            team_results.sort(key=lambda r: r.fastest_time)
+                            team_results.sort(
+                                key=lambda r: r.fastest_time
+                                if r.fastest_time is not None
+                                else float("inf")
+                            )
                         results[sheet_name] = window_results
         finally:
             self._clear_runner_activity_cache()
@@ -292,6 +304,9 @@ class SegmentService:
             )
             if scan_result is None:
                 continue
+            if scan_result.fastest_time is None:
+                total_attempts += scan_result.attempts
+                continue
 
             # Apply time bonus (birthday bonus already applied by scanner)
             adjusted_time, time_bonus_was_applied = self._apply_time_bonus(
@@ -300,7 +315,12 @@ class SegmentService:
             )
             total_attempts += scan_result.attempts
 
-            if best_result is None or adjusted_time < best_result.fastest_time:
+            best_time = (
+                best_result.fastest_time
+                if best_result is not None and best_result.fastest_time is not None
+                else float("inf")
+            )
+            if best_result is None or adjusted_time < best_time:
                 team = runner.segment_team or ""
                 diagnostics: Dict[str, object] = {
                     "source": "activity_scan",

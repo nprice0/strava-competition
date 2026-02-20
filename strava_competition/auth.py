@@ -92,7 +92,9 @@ def get_access_token(
             "Use STRAVA_API_CACHE_MODE=cache or live to authenticate."
         )
 
-    # Retry loop for 429 rate limits — capped to avoid infinite hangs
+    # Retry loop for 429 rate limits — capped to avoid infinite hangs.
+    # Uses exponential backoff so that concurrent ThreadPoolExecutor workers
+    # don't all slam the endpoint at the same cadence.
     MAX_429_RETRIES = 10
     rate_limit_attempts = 0
     while True:
@@ -112,13 +114,17 @@ def get_access_token(
                     f"Token refresh rate limited (429) after "
                     f"{MAX_429_RETRIES} retries — giving up"
                 )
+            backoff = min(
+                RATE_LIMIT_THROTTLE_SECONDS * (2 ** (rate_limit_attempts - 1)),
+                120,
+            )
             logger.warning(
-                "Token refresh rate limited (429); throttling %ss (attempt %s/%s)",
-                RATE_LIMIT_THROTTLE_SECONDS,
+                "Token refresh rate limited (429); backing off %0.1fs (attempt %s/%s)",
+                backoff,
                 rate_limit_attempts,
                 MAX_429_RETRIES,
             )
-            time.sleep(RATE_LIMIT_THROTTLE_SECONDS)
+            time.sleep(backoff)
             continue
         break
 

@@ -17,7 +17,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any
 
 from .config import (
     STRAVA_CACHE_DIR,
@@ -43,10 +43,10 @@ class CaptureKey:
     method: str
     url: str
     identity: str
-    params: Optional[Dict[str, Any]]
-    body: Optional[Dict[str, Any]]
+    params: dict[str, Any] | None
+    body: dict[str, Any] | None
 
-    def to_serialisable(self) -> Dict[str, Any]:
+    def to_serialisable(self) -> dict[str, Any]:
         """Return a JSON-friendly representation."""
         return {
             "method": self.method.upper(),
@@ -89,9 +89,14 @@ class APICapture:
         return self._use_cache
 
     def _validate_signature(self, signature: str) -> None:
-        """Validate signature contains only safe hex characters."""
+        """Validate signature contains only safe hex characters and length."""
         if not _SAFE_SIGNATURE.match(signature):
             raise ValueError(f"Invalid capture signature format: {signature!r}")
+        if len(signature) != 64:
+            raise ValueError(
+                f"Capture signature must be 64 hex chars (SHA-256), "
+                f"got {len(signature)}"
+            )
 
     def _file_path(self, signature: str) -> Path:
         self._validate_signature(signature)
@@ -115,7 +120,7 @@ class APICapture:
         # could arise from Python's randomised object hashing.
         return sha256(payload.encode("utf-8")).hexdigest()
 
-    def _read_file(self, path: Path) -> Optional[Dict[str, Any]]:
+    def _read_file(self, path: Path) -> dict[str, Any] | None:
         payload: Any
         try:
             with path.open("r", encoding="utf-8") as handle:
@@ -134,12 +139,23 @@ class APICapture:
         )
         return None
 
-    def _write_file(self, path: Path, payload: Dict[str, Any]) -> None:
+    def _write_file(self, path: Path, payload: dict[str, Any]) -> None:
         self._ensure_parent(path)
         temp_path = path.with_suffix(".tmp")
         with temp_path.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=True, indent=2)
-        temp_path.replace(path)
+        try:
+            temp_path.replace(path)
+        except PermissionError:  # pragma: no cover - Windows file locking
+            # On Windows another process may still hold the target file
+            # open; fall back to removing before renaming.
+            try:
+                path.unlink(missing_ok=True)
+                temp_path.replace(path)
+            except OSError as exc:
+                _LOGGER.error("Failed to persist cache file %s: %s", path, exc)
+                temp_path.unlink(missing_ok=True)
+                raise
 
     def _load_record(
         self,
@@ -147,7 +163,7 @@ class APICapture:
         signature: str,
         *,
         source: str,
-    ) -> Optional["CaptureRecord"]:
+    ) -> "CaptureRecord | None":
         payload = self._read_file(path)
         if payload is None:
             return None
@@ -167,7 +183,7 @@ class APICapture:
             source=source,
         )
 
-    def fetch_record(self, key: CaptureKey) -> Optional["CaptureRecord"]:
+    def fetch_record(self, key: CaptureKey) -> "CaptureRecord | None":
         """Return cached response + metadata when cache reading is active."""
 
         if not self._use_cache:
@@ -180,7 +196,7 @@ class APICapture:
             return overlay
         return self._load_record(self._file_path(signature), signature, source="base")
 
-    def fetch(self, key: CaptureKey) -> Optional[Any]:
+    def fetch(self, key: CaptureKey) -> Any | None:
         """Return cached response when replay is active (legacy helper)."""
 
         record = self.fetch_record(key)
@@ -253,7 +269,7 @@ def _redact_payload(value: Any, path: str = "") -> Any:
     if not STRAVA_CACHE_REDACT_PII:
         return value
     if isinstance(value, dict):
-        redacted: Dict[str, Any] = {}
+        redacted: dict[str, Any] = {}
         for key, item in value.items():
             lowered = key.lower() if isinstance(key, str) else key
             if not isinstance(lowered, str):
@@ -283,9 +299,9 @@ def get_cached_response(
     url: str,
     identity: str,
     *,
-    params: Optional[Dict[str, Any]] = None,
-    body: Optional[Dict[str, Any]] = None,
-) -> Optional[Any]:
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+) -> Any | None:
     """Return a cached response if cache reading is active."""
 
     return _CAPTURE.fetch(
@@ -308,9 +324,9 @@ def get_cached_response_with_meta(
     url: str,
     identity: str,
     *,
-    params: Optional[Dict[str, Any]] = None,
-    body: Optional[Dict[str, Any]] = None,
-) -> Optional[CaptureRecord]:
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
+) -> CaptureRecord | None:
     """Return cached response and metadata when cache reading is active."""
 
     return _CAPTURE.fetch_record(
@@ -324,8 +340,8 @@ def save_response_to_cache(
     identity: str,
     response: Any,
     *,
-    params: Optional[Dict[str, Any]] = None,
-    body: Optional[Dict[str, Any]] = None,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
 ) -> None:
     """Persist a JSON serialisable response when cache saving is active."""
 
@@ -341,8 +357,8 @@ def save_overlay_to_cache(
     identity: str,
     response: Any,
     *,
-    params: Optional[Dict[str, Any]] = None,
-    body: Optional[Dict[str, Any]] = None,
+    params: dict[str, Any] | None = None,
+    body: dict[str, Any] | None = None,
 ) -> None:
     """Persist an enriched response that should override the cached payload."""
 
@@ -352,7 +368,7 @@ def save_overlay_to_cache(
     )
 
 
-def cache_modes() -> Dict[str, bool]:
+def cache_modes() -> dict[str, bool]:
     """Expose current cache flags for diagnostics."""
 
     return {

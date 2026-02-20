@@ -228,7 +228,9 @@ def parse_args() -> argparse.Namespace:
         help=(
             "Runner refresh token used to fetch GPX/effort data when local "
             "files are not provided. "
-            "Defaults to STRAVA_REFRESH_TOKEN env var."
+            "Defaults to STRAVA_REFRESH_TOKEN env var. "
+            "WARNING: passing tokens via CLI args may expose them in process "
+            "listings; prefer the environment variable."
         ),
     )
     parser.add_argument(

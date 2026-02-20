@@ -9,8 +9,11 @@ from __future__ import annotations
 
 import math
 import statistics
+from collections import defaultdict
+
 import pandas as pd
 
+from .config import SEGMENT_COLUMN_ORDER, SEGMENT_ENFORCE_COLUMN_ORDER
 from .models import SegmentResult
 
 ResultsMapping = dict[str, dict[str, list[SegmentResult]]]
@@ -81,8 +84,6 @@ def _rank_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     sort_cols = [c for c in [TEAM_COL, FASTEST_SEC_COL] if c in df.columns]
     if sort_cols:
         df = df.sort_values(by=sort_cols)
-    from .config import SEGMENT_ENFORCE_COLUMN_ORDER, SEGMENT_COLUMN_ORDER
-
     preferred_source = (
         SEGMENT_COLUMN_ORDER
         if SEGMENT_ENFORCE_COLUMN_ORDER
@@ -245,7 +246,7 @@ def _summarise_team_segment(
     valid_results = [r for r in seg_results if r.fastest_time is not None]
     if not valid_results:
         return None
-    times = [float(r.fastest_time) for r in valid_results]
+    times = [r.fastest_time for r in valid_results if r.fastest_time is not None]
     total_time = sum(times)
     avg_time = statistics.mean(times)
     median_time = statistics.median(times)
@@ -300,8 +301,6 @@ def _calculate_summary_rows(results: ResultsMapping) -> list[dict]:
 
 
 def _aggregate_team_stats(results: ResultsMapping) -> dict[str, dict]:
-    from collections import defaultdict
-
     def _default_stats() -> dict:
         return {
             "runners": set(),

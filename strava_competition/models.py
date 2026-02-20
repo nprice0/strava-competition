@@ -55,7 +55,7 @@ class Runner:
     """A competition participant with Strava credentials and team assignments."""
 
     name: str
-    strava_id: int | str
+    strava_id: str
     refresh_token: str
     # Separate optional teams for segment and distance series
     segment_team: str | None = None
@@ -64,6 +64,10 @@ class Runner:
     # Set to True after first 402 Payment Required so we can skip further API calls
     payment_required: bool = False
     birthday: tuple[int, int] | None = None
+
+    def __post_init__(self) -> None:
+        """Normalise strava_id to str for consistent comparisons."""
+        self.strava_id = str(self.strava_id)
 
 
 @dataclass
@@ -74,7 +78,7 @@ class SegmentResult:
     team: str
     segment: str
     attempts: int
-    fastest_time: float
+    fastest_time: float | None
     fastest_date: datetime | None
     birthday_bonus_applied: bool = False
     time_bonus_applied: bool = False

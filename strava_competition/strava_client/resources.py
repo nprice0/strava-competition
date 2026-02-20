@@ -20,7 +20,7 @@ from ..config import (
 from ..errors import StravaAPIError
 from ..models import Runner
 from .base import auth_headers, ensure_runner_token
-from .capture import runner_identity
+from .cache_helpers import runner_identity
 from .rate_limiter import RateLimiter
 from .response_handling import classify_response_status
 from .session import get_default_session

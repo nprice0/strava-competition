@@ -35,7 +35,7 @@ from ..replay_tail import (
 )
 from ..utils import to_utc_aware
 from .base import ensure_runner_token
-from .capture import (
+from .cache_helpers import (
     save_list_to_cache,
     get_cached_list_with_meta,
     runner_identity,
@@ -335,8 +335,9 @@ def _maybe_refresh_cache_tail(
     tail_flat = _flatten_pages(tail_pages)
     merged = merge_activity_lists(tail_flat, raw_activities)
     paged = chunk_activities(merged, chunk_size=ACTIVITY_PAGE_SIZE)
-    _persist_enriched_pages(runner, url, base_params, paged)
-    _mark_runner_refreshed(runner_id, end_utc)
+    persisted = _persist_enriched_pages(runner, url, base_params, paged)
+    if persisted:
+        _mark_runner_refreshed(runner_id, end_utc)
     LOGGER.info(
         "Cache tail refresh runner=%s cached_latest=%s tail_end=%s live_pages=%s",
         runner.name,
@@ -409,13 +410,18 @@ def _persist_enriched_pages(
     url: str,
     base_params: Dict[str, Any],
     page_payloads: List[JSONList],
-) -> None:
+) -> bool:
+    """Persist merged activity pages to the cache overlay.
+
+    Returns:
+        True if pages were persisted successfully, False otherwise.
+    """
     if not _cache_mode_saves:
         LOGGER.warning(
             "Cache saving disabled; cannot persist enriched cache data for runner=%s",
             runner.name,
         )
-        return
+        return False
     identity = runner_identity(
         runner,
         hash_identifiers=STRAVA_CACHE_HASH_IDENTIFIERS,
@@ -430,7 +436,7 @@ def _persist_enriched_pages(
         params = dict(template)
         params["page"] = 1
         _write_page_overlay(identity, url, params, [])
-        return
+        return True
     for idx, payload in enumerate(page_payloads, start=1):
         params = dict(template)
         params["page"] = idx
@@ -438,6 +444,7 @@ def _persist_enriched_pages(
     params = dict(template)
     params["page"] = len(page_payloads) + 1
     _write_page_overlay(identity, url, params, [])
+    return True
 
 
 def _write_page_overlay(

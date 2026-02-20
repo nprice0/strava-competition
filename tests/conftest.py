@@ -181,14 +181,14 @@ def segment_results() -> dict[str, dict[str, list[SegmentResult]]]:
 def distance_runners() -> list[Runner]:
     r1 = Runner(
         name="Alice",
-        strava_id=1,
+        strava_id="1",
         refresh_token="tok1",
         segment_team=None,
         distance_team="DTeam",
     )
     r2 = Runner(
         name="Ben",
-        strava_id=2,
+        strava_id="2",
         refresh_token="tok2",
         segment_team=None,
         distance_team="DTeam",
@@ -204,13 +204,13 @@ def distance_windows() -> list[tuple[datetime, datetime, float]]:
 
 
 @pytest.fixture
-def distance_activity_cache() -> dict[int, list[dict[str, Any]]]:
+def distance_activity_cache() -> dict[str, list[dict[str, Any]]]:
     return {
-        1: [
+        "1": [
             make_activity(6000.0, 50.0, "2025-01-05T10:00:00Z"),
             make_activity(4000.0, 30.0, "2025-01-10T10:00:00Z"),
         ],
-        2: [
+        "2": [
             make_activity(7000.0, 40.0, "2025-01-06T10:00:00Z"),
             make_activity(3000.0, 20.0, "2025-01-11T10:30:00Z"),
         ],

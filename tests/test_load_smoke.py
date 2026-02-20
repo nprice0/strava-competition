@@ -79,7 +79,7 @@ class _FakeResponse:
 
 
 def _new_runner(idx: int) -> Runner:
-    runner = Runner(name=f"Runner {idx}", strava_id=idx, refresh_token="rt")
+    runner = Runner(name=f"Runner {idx}", strava_id=str(idx), refresh_token="rt")
     runner.access_token = "token"
     return runner
 
