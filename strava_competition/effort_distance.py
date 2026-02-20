@@ -10,6 +10,7 @@ from .errors import StravaAPIError, StravaStreamEmptyError
 from .models import Runner
 from .tools.geometry.fetchers import fetch_activity_stream
 from .tools.geometry.models import LatLon
+from .utils import coerce_float, coerce_int
 
 _LOG = logging.getLogger(__name__)
 _EARTH_RADIUS_M = 6_371_000.0
@@ -33,7 +34,7 @@ def derive_effort_distance_m(
         distance = compute_effort_distance_from_payload(runner, effort)
         if distance is not None:
             return distance
-    return _coerce_float(effort.get("distance"))
+    return coerce_float(effort.get("distance"))
 
 
 def compute_effort_distance_from_payload(
@@ -69,8 +70,8 @@ def compute_effort_distance(
         is unavailable or the provided indices cannot be sliced safely.
     """
 
-    start_idx = _coerce_index(start_index)
-    end_idx = _coerce_index(end_index)
+    start_idx = coerce_int(start_index)
+    end_idx = coerce_int(end_index)
     if start_idx is None or end_idx is None:
         return None
     if start_idx < 0 or end_idx < 0:
@@ -102,21 +103,17 @@ def compute_effort_distance(
     return _sum_distances(segment_points)
 
 
-def _coerce_index(value: int | str | None) -> int | None:
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+# _coerce_index replaced by coerce_int from utils
 
 
 def _extract_activity_id(effort: Mapping[str, Any]) -> int | None:
     activity_id = effort.get("activity_id")
-    coerced = _coerce_index(activity_id)
+    coerced = coerce_int(activity_id)
     if coerced is not None:
         return coerced
     activity = effort.get("activity")
     if isinstance(activity, Mapping):
-        return _coerce_index(activity.get("id"))
+        return coerce_int(activity.get("id"))
     return None
 
 
@@ -124,11 +121,7 @@ def _has_stream_indices(effort: Mapping[str, Any]) -> bool:
     return effort.get("start_index") is not None and effort.get("end_index") is not None
 
 
-def _coerce_float(value: Any) -> float | None:
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+# _coerce_float replaced by coerce_float from utils
 
 
 def _sum_distances(points: Sequence[LatLon]) -> float:

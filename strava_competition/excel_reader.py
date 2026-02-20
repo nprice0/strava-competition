@@ -9,8 +9,9 @@ from contextlib import contextmanager
 from datetime import datetime, time, timedelta
 import logging
 import re
+import warnings
 from pathlib import Path
-from typing import Dict, Iterator, List, Optional, Tuple
+from collections.abc import Iterator
 
 import pandas as pd
 
@@ -98,7 +99,7 @@ def _clean_refresh_token(value: object, runner_name: str, row_label: str) -> str
     return str(value).strip()
 
 
-def _clean_team(value: object) -> Optional[str]:
+def _clean_team(value: object) -> str | None:
     if _is_blank(value):
         return None
     return str(value).strip()
@@ -306,11 +307,11 @@ def _validate_columns(df: pd.DataFrame, required: set[str], sheet: str) -> None:
 
 def _resolve_sheet(
     filepath: str,
-    workbook: Optional[object],
+    workbook: object | None,
     sheet_name: str,
     *,
     optional: bool = False,
-) -> Optional[pd.DataFrame]:
+) -> pd.DataFrame | None:
     try:
         if isinstance(workbook, _WorkbookReader):
             return workbook.parse(sheet_name)
@@ -324,8 +325,8 @@ def _resolve_sheet(
 
 
 def read_segments(
-    filepath: str | Path, workbook: Optional[object] = None
-) -> List[Segment]:
+    filepath: str | Path, workbook: object | None = None
+) -> list[Segment]:
     filepath = _coerce_path(filepath)
     if workbook is None:
         _assert_file_exists(filepath)
@@ -337,7 +338,7 @@ def read_segments(
     _validate_columns(df, _REQUIRED_SEGMENT_COLS, SEGMENTS_SHEET)
     df[_SEGMENT_START_COL] = pd.to_datetime(df[_SEGMENT_START_COL], errors="coerce")
     df[_SEGMENT_END_COL] = pd.to_datetime(df[_SEGMENT_END_COL], errors="coerce")
-    segs: List[Segment] = []
+    segs: list[Segment] = []
     columns = [
         _SEGMENT_ID_COL,
         _SEGMENT_NAME_COL,
@@ -347,44 +348,46 @@ def read_segments(
         _SEGMENT_MIN_DISTANCE_COL,
         _SEGMENT_BIRTHDAY_BONUS_COL,
     ]
-    for row_offset, (
-        seg_id,
-        seg_name,
-        start_dt,
-        end_dt,
-        default_time_raw,
-        min_distance_raw,
-        birthday_bonus_raw,
-    ) in enumerate(df[columns].itertuples(index=False, name=None), start=2):
-        row_label = f"row {row_offset}"
-        # Validate date range early
-        if pd.isna(start_dt) or pd.isna(end_dt):
-            raise ExcelFormatError(
-                f"Segment '{seg_name}' in {row_label} has invalid date(s) in "
-                f"'{SEGMENTS_SHEET}' sheet"
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        for row_offset, (
+            seg_id,
+            seg_name,
+            start_dt,
+            end_dt,
+            default_time_raw,
+            min_distance_raw,
+            birthday_bonus_raw,
+        ) in enumerate(df[columns].itertuples(index=False, name=None), start=2):
+            row_label = f"row {row_offset}"
+            # Validate date range early
+            if pd.isna(start_dt) or pd.isna(end_dt):
+                raise ExcelFormatError(
+                    f"Segment '{seg_name}' in {row_label} has invalid date(s) in "
+                    f"'{SEGMENTS_SHEET}' sheet"
+                )
+            if start_dt > end_dt:
+                raise ExcelFormatError(
+                    f"Segment '{seg_name}' in {row_label} has inverted date range "
+                    f"(start={start_dt} > end={end_dt}) in '{SEGMENTS_SHEET}' sheet"
+                )
+            segs.append(
+                Segment(
+                    id=int(seg_id),
+                    name=str(seg_name),
+                    start_date=start_dt,
+                    end_date=end_dt,
+                    default_time_seconds=_parse_segment_default_time(
+                        default_time_raw, str(seg_name), row_label
+                    ),
+                    min_distance_meters=_parse_segment_min_distance(
+                        min_distance_raw, str(seg_name), row_label
+                    ),
+                    birthday_bonus_seconds=_parse_segment_birthday_bonus(
+                        birthday_bonus_raw, str(seg_name), row_label
+                    ),
+                )
             )
-        if start_dt > end_dt:
-            raise ExcelFormatError(
-                f"Segment '{seg_name}' in {row_label} has inverted date range "
-                f"(start={start_dt} > end={end_dt}) in '{SEGMENTS_SHEET}' sheet"
-            )
-        segs.append(
-            Segment(
-                id=int(seg_id),
-                name=str(seg_name),
-                start_date=start_dt,
-                end_date=end_dt,
-                default_time_seconds=_parse_segment_default_time(
-                    default_time_raw, str(seg_name), row_label
-                ),
-                min_distance_meters=_parse_segment_min_distance(
-                    min_distance_raw, str(seg_name), row_label
-                ),
-                birthday_bonus_seconds=_parse_segment_birthday_bonus(
-                    birthday_bonus_raw, str(seg_name), row_label
-                ),
-            )
-        )
     return segs
 
 
@@ -394,8 +397,8 @@ def _windows_fully_overlap(w1: SegmentWindow, w2: SegmentWindow) -> bool:
 
 
 def read_segment_groups(
-    filepath: str | Path, workbook: Optional[object] = None
-) -> List[SegmentGroup]:
+    filepath: str | Path, workbook: object | None = None
+) -> list[SegmentGroup]:
     """Parse segment rows into SegmentGroup objects, grouping by Segment ID.
 
     Validates:
@@ -404,8 +407,6 @@ def read_segment_groups(
     - If Min Distance (m) appears on multiple rows, values must match.
     - Warns (doesn't error) if windows fully overlap.
     """
-    import warnings
-
     filepath = _coerce_path(filepath)
     if workbook is None:
         _assert_file_exists(filepath)
@@ -424,7 +425,7 @@ def read_segment_groups(
     has_time_bonus = _SEGMENT_TIME_BONUS_COL in df.columns
 
     # Collect rows by segment ID
-    RawRow = Tuple[
+    RawRow = tuple[
         int,  # segment_id
         str,  # segment_name
         pd.Timestamp,  # start_date
@@ -436,7 +437,7 @@ def read_segment_groups(
         float,  # time_bonus_seconds
         str,  # row_label
     ]
-    rows_by_id: Dict[int, List[RawRow]] = {}
+    rows_by_id: dict[int, list[RawRow]] = {}
 
     columns = [
         _SEGMENT_ID_COL,
@@ -456,55 +457,18 @@ def read_segment_groups(
         df[columns].itertuples(index=False, name=None), start=2
     ):
         row_label = f"row {row_offset}"
-        if has_window_label:
-            if has_time_bonus:
-                (
-                    seg_id,
-                    seg_name,
-                    start_dt,
-                    end_dt,
-                    window_label_raw,
-                    default_time_raw,
-                    min_distance_raw,
-                    birthday_bonus_raw,
-                    time_bonus_raw,
-                ) = row_values
-            else:
-                (
-                    seg_id,
-                    seg_name,
-                    start_dt,
-                    end_dt,
-                    window_label_raw,
-                    default_time_raw,
-                    min_distance_raw,
-                    birthday_bonus_raw,
-                ) = row_values
-                time_bonus_raw = None
-        else:
-            if has_time_bonus:
-                (
-                    seg_id,
-                    seg_name,
-                    start_dt,
-                    end_dt,
-                    default_time_raw,
-                    min_distance_raw,
-                    birthday_bonus_raw,
-                    time_bonus_raw,
-                ) = row_values
-            else:
-                (
-                    seg_id,
-                    seg_name,
-                    start_dt,
-                    end_dt,
-                    default_time_raw,
-                    min_distance_raw,
-                    birthday_bonus_raw,
-                ) = row_values
-                time_bonus_raw = None
-            window_label_raw = None
+        # Build a dict keyed by column name to eliminate branching on
+        # optional-column combinations.
+        row_dict = dict(zip(columns, row_values))
+        seg_id = row_dict[_SEGMENT_ID_COL]
+        seg_name = row_dict[_SEGMENT_NAME_COL]
+        start_dt = row_dict[_SEGMENT_START_COL]
+        end_dt = row_dict[_SEGMENT_END_COL]
+        default_time_raw = row_dict[_SEGMENT_DEFAULT_TIME_COL]
+        min_distance_raw = row_dict[_SEGMENT_MIN_DISTANCE_COL]
+        birthday_bonus_raw = row_dict[_SEGMENT_BIRTHDAY_BONUS_COL]
+        window_label_raw = row_dict.get(_SEGMENT_WINDOW_LABEL_COL)
+        time_bonus_raw = row_dict.get(_SEGMENT_TIME_BONUS_COL)
 
         # Validate date range
         if pd.isna(start_dt) or pd.isna(end_dt):
@@ -551,7 +515,7 @@ def read_segment_groups(
         rows_by_id.setdefault(seg_id_int, []).append(row_data)
 
     # Build SegmentGroup objects with validation
-    groups: List[SegmentGroup] = []
+    groups: list[SegmentGroup] = []
     for seg_id, rows in rows_by_id.items():
         # Validate all rows have same segment name
         names = {r[1] for r in rows}
@@ -581,7 +545,7 @@ def read_segment_groups(
         min_distance_meters = min_distances[0] if min_distances else None
 
         # Build windows
-        windows: List[SegmentWindow] = []
+        windows: list[SegmentWindow] = []
         for row in rows:
             window = SegmentWindow(
                 start_date=row[2],
@@ -616,9 +580,7 @@ def read_segment_groups(
     return groups
 
 
-def read_runners(
-    filepath: str | Path, workbook: Optional[object] = None
-) -> List[Runner]:
+def read_runners(filepath: str | Path, workbook: object | None = None) -> list[Runner]:
     filepath = _coerce_path(filepath)
     if workbook is None:
         _assert_file_exists(filepath)
@@ -628,7 +590,7 @@ def read_runners(
             f"Sheet '{RUNNERS_SHEET}' is required but was missing or empty"
         )
     _validate_columns(df, _REQUIRED_RUNNER_COLS, RUNNERS_SHEET)
-    runners: List[Runner] = []
+    runners: list[Runner] = []
     columns = [
         "Name",
         "Strava ID",
@@ -672,8 +634,8 @@ def read_runners(
 
 def read_distance_windows(
     filepath: str | Path,
-    workbook: Optional[object] = None,
-) -> List[tuple[pd.Timestamp, pd.Timestamp, float | None]]:
+    workbook: object | None = None,
+) -> list[tuple[pd.Timestamp, pd.Timestamp, float | None]]:
     filepath = _coerce_path(filepath)
     if workbook is None:
         _assert_file_exists(filepath)
@@ -683,7 +645,7 @@ def read_distance_windows(
     _validate_columns(df, _REQUIRED_DISTANCE_COLS, DISTANCE_SHEET)
     df[_SEGMENT_START_COL] = pd.to_datetime(df[_SEGMENT_START_COL], errors="coerce")
     df[_SEGMENT_END_COL] = pd.to_datetime(df[_SEGMENT_END_COL], errors="coerce")
-    windows: List[tuple[pd.Timestamp, pd.Timestamp, float | None]] = []
+    windows: list[tuple[pd.Timestamp, pd.Timestamp, float | None]] = []
     for start_dt, end_dt, threshold in df[
         [_SEGMENT_START_COL, _SEGMENT_END_COL, "Distance Threshold (km)"]
     ].itertuples(index=False, name=None):

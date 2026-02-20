@@ -14,7 +14,6 @@ from cachetools import TTLCache
 from ..activity_types import activity_type_matches, normalize_activity_type
 from ..api_capture import save_overlay_to_cache, save_response_to_cache, CaptureRecord
 from ..config import (
-    ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS,
     CACHE_TAIL_OVERLAP_SECONDS,
     CACHE_EMPTY_REFRESH_SECONDS,
     CACHE_MAX_LOOKBACK_DAYS,
@@ -26,7 +25,6 @@ from ..config import (
     STRAVA_CACHE_ID_SALT,
     _cache_mode_offline,
 )
-from ..errors import StravaAPIError
 from ..models import Runner
 from ..replay_tail import (
     chunk_activities,
@@ -37,7 +35,7 @@ from ..replay_tail import (
 )
 from ..utils import to_utc_aware
 from .base import ensure_runner_token
-from .capture import (
+from .cache_helpers import (
     save_list_to_cache,
     get_cached_list_with_meta,
     runner_identity,
@@ -45,7 +43,6 @@ from .capture import (
 from .pagination import fetch_page_with_retries
 from .response_handling import extract_error
 from .rate_limiter import RateLimiter
-from .resources import ResourceAPI
 from .session import get_default_session
 
 JSONList: TypeAlias = List[Dict[str, Any]]
@@ -97,14 +94,9 @@ class ActivitiesAPI:
         *,
         session: requests.Session | None = None,
         limiter: RateLimiter | None = None,
-        resources: ResourceAPI | None = None,
     ) -> None:
         self._session = session or get_default_session()
         self._limiter = limiter or RateLimiter()
-        self._resources = resources or ResourceAPI(
-            session=self._session,
-            limiter=self._limiter,
-        )
 
     def get_activities(
         self,
@@ -117,8 +109,10 @@ class ActivitiesAPI:
     ) -> Optional[List[Dict[str, Any]]]:
         """Fetch activities for a runner in [start_date, end_date]."""
 
-        after_ts = int(start_date.timestamp())
-        before_ts = int(end_date.timestamp())
+        start_utc = _to_utc(start_date)
+        end_utc = _to_utc(end_date)
+        after_ts = int(start_utc.timestamp())
+        before_ts = int(end_utc.timestamp())
         url = f"{STRAVA_BASE_URL}/athlete/activities"
         base_params = {
             "after": after_ts,
@@ -243,19 +237,23 @@ class ActivitiesAPI:
                     )
 
             filtered: List[Dict[str, Any]] = []
-            start_utc = to_utc_aware(start_date)
-            end_utc = to_utc_aware(end_date)
             for act in raw_activities:
                 if normalized_types and not activity_type_matches(
                     act, normalized_types
                 ):
                     continue
-                start_local = act.get("start_date_local")
-                if not start_local:
+                # Prefer start_date (true UTC).  Strava's start_date_local
+                # carries a misleading "Z" suffix but is actually the
+                # athlete's local time — treating it as UTC shifts the
+                # timestamp by the athlete's timezone offset.  Fall back to
+                # start_date_local only when start_date is absent (e.g.
+                # incomplete cache data) and accept the approximation.
+                raw_start = act.get("start_date") or act.get("start_date_local")
+                if not raw_start:
                     continue
                 try:
                     dt = to_utc_aware(
-                        datetime.fromisoformat(start_local.replace("Z", "+00:00"))
+                        datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
                     )
                 except ValueError:
                     continue
@@ -279,36 +277,6 @@ class ActivitiesAPI:
                 detail,
             )
             return None
-
-    def fetch_activity_with_efforts(
-        self,
-        runner: Runner,
-        activity_id: int,
-        *,
-        include_all_efforts: bool = True,
-    ) -> Dict[str, Any]:
-        params = {"include_all_efforts": "true"} if include_all_efforts else None
-        url = f"{STRAVA_BASE_URL}/activities/{activity_id}"
-        context = "activity_detail"
-        if include_all_efforts and ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS:
-            payload = self._resources.fetch_with_capture(
-                runner,
-                url,
-                params,
-                context,
-            )
-        else:
-            payload = self._resources.fetch_json(
-                runner,
-                url,
-                params,
-                context,
-            )
-        if isinstance(payload, dict):
-            return payload
-        raise StravaAPIError(
-            f"{context} returned non-object payload for runner {runner.name} activity={activity_id}"
-        )
 
 
 def _maybe_refresh_cache_tail(
@@ -373,8 +341,9 @@ def _maybe_refresh_cache_tail(
     tail_flat = _flatten_pages(tail_pages)
     merged = merge_activity_lists(tail_flat, raw_activities)
     paged = chunk_activities(merged, chunk_size=ACTIVITY_PAGE_SIZE)
-    _persist_enriched_pages(runner, url, base_params, paged)
-    _mark_runner_refreshed(runner_id, end_utc)
+    persisted = _persist_enriched_pages(runner, url, base_params, paged)
+    if persisted:
+        _mark_runner_refreshed(runner_id, end_utc)
     LOGGER.info(
         "Cache tail refresh runner=%s cached_latest=%s tail_end=%s live_pages=%s",
         runner.name,
@@ -447,13 +416,18 @@ def _persist_enriched_pages(
     url: str,
     base_params: Dict[str, Any],
     page_payloads: List[JSONList],
-) -> None:
+) -> bool:
+    """Persist merged activity pages to the cache overlay.
+
+    Returns:
+        True if pages were persisted successfully, False otherwise.
+    """
     if not _cache_mode_saves:
         LOGGER.warning(
             "Cache saving disabled; cannot persist enriched cache data for runner=%s",
             runner.name,
         )
-        return
+        return False
     identity = runner_identity(
         runner,
         hash_identifiers=STRAVA_CACHE_HASH_IDENTIFIERS,
@@ -468,7 +442,7 @@ def _persist_enriched_pages(
         params = dict(template)
         params["page"] = 1
         _write_page_overlay(identity, url, params, [])
-        return
+        return True
     for idx, payload in enumerate(page_payloads, start=1):
         params = dict(template)
         params["page"] = idx
@@ -476,6 +450,7 @@ def _persist_enriched_pages(
     params = dict(template)
     params["page"] = len(page_payloads) + 1
     _write_page_overlay(identity, url, params, [])
+    return True
 
 
 def _write_page_overlay(

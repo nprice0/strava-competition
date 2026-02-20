@@ -37,7 +37,9 @@ def fetch_page_with_retries(
 ) -> JSONList:
     """GET a paginated endpoint with resilient retry/backoff logic."""
 
+    MAX_429_RETRIES = 10
     attempts = 0
+    rate_limit_retries = 0
     backoff = 1.0
     while True:
         attempts += 1
@@ -82,8 +84,18 @@ def fetch_page_with_retries(
                 )
 
         is_html = "text/html" in (resp.headers.get("Content-Type", "").lower())
-        # Always retry 429s - rate limiter already set throttle and we logged above.
+        # Retry 429s up to a cap — rate limits are transient but may persist
         if resp.status_code == 429:
+            rate_limit_retries += 1
+            if rate_limit_retries > MAX_429_RETRIES:
+                LOGGER.error(
+                    "%s runner=%s page=%s exceeded max 429 retries (%s); giving up",
+                    context_label,
+                    runner.name,
+                    page,
+                    MAX_429_RETRIES,
+                )
+                return []
             time.sleep(RATE_LIMIT_THROTTLE_SECONDS)
             continue
 

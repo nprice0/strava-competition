@@ -2,16 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
 from typing import Any, List
 
 import pytest
 import requests
 
-from strava_competition.api_capture import CaptureRecord
 from strava_competition.models import Runner
 from strava_competition.strava_client import pagination
-from strava_competition.strava_client import segment_efforts
 
 
 class StubLimiter:
@@ -91,202 +88,6 @@ def runner() -> Runner:
     return Runner(name="Contract Runner", strava_id="42", refresh_token="rt")
 
 
-def test_segment_efforts_fetches_tail_after_cached_runs(
-    monkeypatch: pytest.MonkeyPatch,
-    runner: Runner,
-) -> None:
-    """Cached results trigger incremental fetch only for newer efforts."""
-
-    cached_effort = {"id": "cached", "start_date": "2025-01-01T00:00:00Z"}
-    cached_record = CaptureRecord(
-        signature="abc",
-        response=[cached_effort],
-        captured_at=datetime.now(timezone.utc),
-        source="base",
-    )
-
-    def fake_replay(
-        runner_arg: Runner,
-        url: str,
-        params: dict[str, Any],
-        **_: Any,
-    ) -> CaptureRecord | None:
-        return cached_record if params.get("page") == 1 else None
-
-    monkeypatch.setattr(
-        segment_efforts,
-        "get_cached_list_with_meta",
-        fake_replay,
-    )
-
-    live_effort = {"id": "live", "start_date": "2025-01-02T00:00:00Z"}
-    fetch_calls: list[dict[str, Any]] = []
-
-    def fake_fetch_page_with_retries(**kwargs: Any) -> List[dict[str, Any]]:
-        fetch_calls.append(kwargs)
-        if kwargs["context_label"] == "segment_efforts_tail":
-            return [live_effort]
-        raise AssertionError("unexpected live fetch outside tail refresh")
-
-    monkeypatch.setattr(
-        segment_efforts,
-        "fetch_page_with_retries",
-        fake_fetch_page_with_retries,
-    )
-
-    recorded_pages: list[tuple[dict[str, Any], List[dict[str, Any]]]] = []
-
-    def fake_record(
-        runner_arg: Runner,
-        url: str,
-        params: dict[str, Any],
-        data: List[dict[str, Any]],
-        **kwargs: Any,
-    ) -> None:
-        recorded_pages.append((params, data))
-
-    monkeypatch.setattr(
-        segment_efforts,
-        "save_list_to_cache",
-        fake_record,
-    )
-
-    overlays: list[tuple[dict[str, Any] | None, List[dict[str, Any]] | None]] = []
-    monkeypatch.setattr(segment_efforts, "STRAVA_CACHE_OVERWRITE", False)
-    monkeypatch.setattr(
-        segment_efforts,
-        "save_overlay_to_cache",
-        lambda *_args, params=None, response=None, **__: overlays.append(
-            (params, response)
-        ),
-    )
-    monkeypatch.setattr(
-        segment_efforts,
-        "save_response_to_cache",
-        lambda *_args, params=None, response=None, **__: overlays.append(
-            (params, response)
-        ),
-    )
-    monkeypatch.setattr(
-        segment_efforts,
-        "ensure_runner_token",
-        lambda *_, **__: None,
-    )
-    monkeypatch.setattr(
-        segment_efforts,
-        "_cache_mode_reads",
-        True,
-    )
-    monkeypatch.setattr(
-        segment_efforts,
-        "_cache_mode_saves",
-        True,
-    )
-    monkeypatch.setattr(
-        segment_efforts,
-        "_cache_mode_offline",
-        False,
-    )
-
-    api = segment_efforts.SegmentEffortsAPI(
-        session=object(),
-        limiter=StubLimiter(),
-    )
-    start = datetime(2025, 1, 1, tzinfo=timezone.utc)
-    end = start + timedelta(days=2)
-
-    results = api.get_segment_efforts(
-        runner,
-        segment_id=11,
-        start_date=start,
-        end_date=end,
-    )
-
-    assert results == [live_effort, cached_effort]
-    assert fetch_calls and fetch_calls[0]["context_label"] == "segment_efforts_tail"
-    assert recorded_pages and recorded_pages[0][0]["page"] == 1
-    assert overlays, "expected overlay persistence for enriched cache"
-
-
-def test_segment_efforts_returns_cached_page_when_no_tail_needed(
-    monkeypatch: pytest.MonkeyPatch,
-    runner: Runner,
-) -> None:
-    """Cached payloads satisfy the full window when no newer data exists."""
-
-    now = datetime.now(timezone.utc)
-    cached_record = CaptureRecord(
-        signature="def",
-        response=[{"id": "cached", "start_date": now.isoformat()}],
-        captured_at=now - timedelta(days=1),
-        source="base",
-    )
-
-    monkeypatch.setattr(
-        segment_efforts,
-        "get_cached_list_with_meta",
-        lambda *_, **__: cached_record,
-    )
-
-    def fail_fetch(**_: Any) -> List[dict[str, Any]]:
-        raise AssertionError("Live fetch should not run when cache is fresh")
-
-    monkeypatch.setattr(
-        segment_efforts,
-        "fetch_page_with_retries",
-        fail_fetch,
-    )
-
-    recorded_pages: list[tuple[dict[str, Any], List[dict[str, Any]]]] = []
-
-    def fake_record(
-        runner_arg: Runner,
-        url: str,
-        params: dict[str, Any],
-        data: List[dict[str, Any]],
-        **kwargs: Any,
-    ) -> None:
-        recorded_pages.append((params, data))
-
-    monkeypatch.setattr(
-        segment_efforts,
-        "save_list_to_cache",
-        fake_record,
-    )
-    monkeypatch.setattr(
-        segment_efforts,
-        "ensure_runner_token",
-        lambda *_, **__: None,
-    )
-    monkeypatch.setattr(
-        segment_efforts,
-        "_cache_mode_reads",
-        True,
-    )
-    monkeypatch.setattr(
-        segment_efforts,
-        "_cache_mode_offline",
-        False,
-    )
-
-    api = segment_efforts.SegmentEffortsAPI(
-        session=object(),
-        limiter=StubLimiter(),
-    )
-    start = datetime(2024, 2, 1, tzinfo=timezone.utc)
-    end = start + timedelta(days=1)
-
-    results = api.get_segment_efforts(
-        runner,
-        segment_id=22,
-        start_date=start,
-        end_date=end,
-    )
-
-    assert results == cached_record.response
-    assert not recorded_pages
-
-
 def test_fetch_page_with_retries_recovers_from_transient_errors(
     monkeypatch: pytest.MonkeyPatch,
     runner: Runner,
@@ -317,8 +118,8 @@ def test_fetch_page_with_retries_recovers_from_transient_errors(
         params={"page": 1},
         context_label="segment_efforts",
         page=1,
-        session=session,
-        limiter=limiter,
+        session=session,  # type: ignore[arg-type]
+        limiter=limiter,  # type: ignore[arg-type]
     )
 
     assert result == [{"id": 1}]
@@ -355,8 +156,8 @@ def test_fetch_page_with_retries_returns_empty_after_exhausting_errors(
         params={"page": 1},
         context_label="segment_efforts",
         page=1,
-        session=session,
-        limiter=limiter,
+        session=session,  # type: ignore[arg-type]
+        limiter=limiter,  # type: ignore[arg-type]
     )
 
     assert result == []

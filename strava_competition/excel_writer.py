@@ -247,7 +247,9 @@ def write_results(
             pd.DataFrame({"Message": ["No results to display."]}).to_excel(
                 writer, sheet_name="Summary", index=False
             )
-            _autosize(writer.sheets["Summary"])
+            _autosize_ws = _get_worksheet(writer, "Summary")
+            if _autosize_ws is not None:
+                _autosize(_autosize_ws)
         if distance_windows_results:
             _write_distance_sheets(writer, distance_windows_results, used_sheet_names)
             for sn in used_sheet_names:

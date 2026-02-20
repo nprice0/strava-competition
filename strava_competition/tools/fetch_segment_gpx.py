@@ -29,15 +29,16 @@ Usage examples:
 from __future__ import annotations
 
 import argparse
+import os
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
-import requests
 from polyline import decode as polyline_decode
 
 from strava_competition.auth import get_access_token
-from strava_competition.config import REQUEST_TIMEOUT, STRAVA_BASE_URL
+from strava_competition.config import STRAVA_BASE_URL
+from strava_competition.tools._http import http_get as _http_get
 
 # Default output directory for GPX files
 DEFAULT_OUTPUT_DIR = (
@@ -47,26 +48,7 @@ DEFAULT_OUTPUT_DIR = (
 LOGGER = logging.getLogger("fetch_segment_gpx")
 
 
-def _http_get(
-    url: str,
-    token: str,
-    *,
-    params: Dict[str, Any] | None = None,
-) -> Any:
-    """Wrapper for authenticated GET requests with basic logging."""
-    headers = {"Authorization": f"Bearer {token}"}
-    LOGGER.debug("GET %s params=%s", url, params)
-    response = requests.get(
-        url,
-        headers=headers,
-        params=params,
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
-def fetch_segment(token: str, segment_id: int) -> Dict[str, Any]:
+def fetch_segment(token: str, segment_id: int) -> dict[str, Any]:
     """Fetch segment details including polyline geometry.
 
     Args:
@@ -108,7 +90,7 @@ def fetch_segment(token: str, segment_id: int) -> Dict[str, Any]:
     }
 
 
-def segment_to_gpx(segment: Dict[str, Any]) -> str:
+def segment_to_gpx(segment: dict[str, Any]) -> str:
     """Convert segment data to GPX route format.
 
     Args:
@@ -118,7 +100,7 @@ def segment_to_gpx(segment: Dict[str, Any]) -> str:
         GPX XML string.
     """
     name = segment.get("name", "Strava Segment")
-    points: List[Tuple[float, float]] = segment.get("points", [])
+    points: list[tuple[float, float]] = segment.get("points", [])
     distance = segment.get("distance")
     elevation_high = segment.get("elevation_high")
     elevation_low = segment.get("elevation_low")
@@ -197,8 +179,11 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--refresh-token",
-        required=True,
-        help="Refresh token for authentication (required)",
+        default=os.environ.get("STRAVA_REFRESH_TOKEN"),
+        help=(
+            "Refresh token for authentication. "
+            "Defaults to STRAVA_REFRESH_TOKEN env var."
+        ),
     )
     parser.add_argument(
         "--runner-name",
@@ -227,6 +212,8 @@ def main() -> None:
     """Entry point for the fetch_segment_gpx tool."""
     parser = _build_parser()
     args = parser.parse_args()
+    if not args.refresh_token:
+        parser.error("--refresh-token is required (or set STRAVA_REFRESH_TOKEN)")
     logging.basicConfig(level=getattr(logging, args.log_level))
 
     LOGGER.info("Fetching segment %s", args.segment_id)
@@ -238,8 +225,8 @@ def main() -> None:
     )
     if maybe_new_refresh and maybe_new_refresh != args.refresh_token:
         LOGGER.warning(
-            "Strava rotated the refresh token. Save this new value: %s",
-            maybe_new_refresh,
+            "Strava rotated the refresh token (ends …%s). Update your credentials.",
+            maybe_new_refresh[-4:],
         )
 
     # Fetch segment

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Iterable, List, Sequence
+from typing import Iterable, Sequence
 
 
 @dataclass(frozen=True)
@@ -51,11 +51,20 @@ def summarize_activities(activities: Iterable[dict]) -> ActivityStats:
     return ActivityStats(count=count, latest=latest, oldest=oldest)
 
 
-def dedupe_activities(activities: Iterable[dict]) -> List[dict]:
-    """Return activities de-duplicated by Strava ID while preserving order."""
+def _dedupe_iter(
+    activities: Iterable[dict],
+    seen: set[int],
+) -> list[dict]:
+    """Core dedup logic shared by ``dedupe_activities`` and ``merge_activity_lists``.
 
-    merged: List[dict] = []
-    seen: set[int] = set()
+    Args:
+        activities: Iterable of activity dicts to filter.
+        seen: Mutable set of already-seen IDs; updated in place.
+
+    Returns:
+        Filtered list with duplicates removed.
+    """
+    merged: list[dict] = []
     for act in activities:
         act_id = act.get("id")
         normalized: int | None = None
@@ -72,25 +81,19 @@ def dedupe_activities(activities: Iterable[dict]) -> List[dict]:
     return merged
 
 
-def merge_activity_lists(*lists: Sequence[dict]) -> List[dict]:
+def dedupe_activities(activities: Iterable[dict]) -> list[dict]:
+    """Return activities de-duplicated by Strava ID while preserving order."""
+
+    return _dedupe_iter(activities, set())
+
+
+def merge_activity_lists(*lists: Sequence[dict]) -> list[dict]:
     """Concatenate multiple lists giving precedence to earlier arguments."""
 
-    merged: List[dict] = []
     seen: set[int] = set()
+    merged: list[dict] = []
     for block in lists:
-        for act in block:
-            act_id = act.get("id")
-            normalized: int | None = None
-            if act_id is not None:
-                try:
-                    normalized = int(act_id)
-                except (TypeError, ValueError):
-                    normalized = None
-            if normalized is not None and normalized in seen:
-                continue
-            if normalized is not None:
-                seen.add(normalized)
-            merged.append(act)
+        merged.extend(_dedupe_iter(block, seen))
     return merged
 
 
@@ -109,7 +112,7 @@ def chunk_activities(
     activities: Sequence[dict],
     *,
     chunk_size: int = 200,
-) -> List[List[dict]]:
+) -> list[list[dict]]:
     """Split merged activities into Strava-sized pages."""
 
     if chunk_size <= 0:

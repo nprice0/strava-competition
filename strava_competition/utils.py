@@ -84,3 +84,33 @@ def json_dumps_sorted(value: Any) -> str:
 
     normalised = _normalise_value(value)
     return json.dumps(normalised, sort_keys=True, separators=(",", ":"))
+
+
+def coerce_int(value: Any) -> int | None:
+    """Attempt to coerce a value to int, returning None on failure.
+
+    Args:
+        value: Any value to convert.
+
+    Returns:
+        The integer value, or None if conversion fails.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def coerce_float(value: Any) -> float | None:
+    """Attempt to coerce a value to float, returning None on failure.
+
+    Args:
+        value: Any value to convert.
+
+    Returns:
+        The float value, or None if conversion fails.
+    """
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None

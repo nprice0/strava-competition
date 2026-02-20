@@ -1,7 +1,9 @@
+from __future__ import annotations
+
 import argparse
 from datetime import datetime, timezone
 import logging
-from typing import Any, List, Sequence, Tuple
+from typing import Any, Sequence
 
 from .auth import TokenError
 from .config import (
@@ -27,8 +29,8 @@ from .services import SegmentService, DistanceService
 from .services.segment_service import ResultsMapping
 from .strava_api import get_default_client
 
-DistanceWindow = Tuple[datetime, datetime, float | None]
-DistanceWindowsResult = List[Tuple[str, List[dict[str, Any]]]]
+DistanceWindow = tuple[datetime, datetime, float | None]
+DistanceWindowsResult = list[tuple[str, list[dict[str, Any]]]]
 
 
 def _setup_logging() -> None:
@@ -41,12 +43,12 @@ def _setup_logging() -> None:
 
 def _load_inputs(
     input_file: str,
-) -> Tuple[
-    List[SegmentGroup],
-    List[Runner],
-    List[DistanceWindow],
-    List[Runner],
-    List[Runner],
+) -> tuple[
+    list[SegmentGroup],
+    list[Runner],
+    list[DistanceWindow],
+    list[Runner],
+    list[Runner],
 ]:
     logging.info("Loading segments, runners and distance windows ...")
     with workbook_context(input_file) as workbook:
@@ -125,18 +127,15 @@ def _process_distance(
 
 
 def _persist_tokens_final(runners: Sequence[Runner], input_file: str) -> None:
-    rotated = False
     try:
         # Always write once more defensively (lightweight operation).
         update_runner_refresh_tokens(input_file, runners)
-        rotated = True
     except (OSError, PermissionError) as e:
         logging.warning("Failed to persist refresh tokens at shutdown: %s", e)
     except Exception:
         logging.exception("Unexpected error persisting refresh tokens at shutdown")
     else:
-        if rotated:
-            logging.info("Refresh tokens persisted at shutdown.")
+        logging.info("Refresh tokens persisted at shutdown.")
 
 
 def _parse_args() -> argparse.Namespace:

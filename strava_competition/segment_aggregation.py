@@ -7,14 +7,16 @@ the distance aggregation module and keep transformation logic testable.
 
 from __future__ import annotations
 
-from typing import List, Tuple
 import math
 import statistics
+from collections import defaultdict
+
 import pandas as pd
 
+from .config import SEGMENT_COLUMN_ORDER, SEGMENT_ENFORCE_COLUMN_ORDER
 from .models import SegmentResult
 
-ResultsMapping = dict[str, dict[str, List[SegmentResult]]]
+ResultsMapping = dict[str, dict[str, list[SegmentResult]]]
 
 TEAM_COL = "Team"
 RUNNER_COL = "Runner"
@@ -81,9 +83,7 @@ def _rank_dataframe(df: pd.DataFrame) -> pd.DataFrame:
                 )
     sort_cols = [c for c in [TEAM_COL, FASTEST_SEC_COL] if c in df.columns]
     if sort_cols:
-        df.sort_values(by=sort_cols, inplace=True)
-    from .config import SEGMENT_ENFORCE_COLUMN_ORDER, SEGMENT_COLUMN_ORDER
-
+        df = df.sort_values(by=sort_cols)
     preferred_source = (
         SEGMENT_COLUMN_ORDER
         if SEGMENT_ENFORCE_COLUMN_ORDER
@@ -105,9 +105,9 @@ def _rank_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _rows_for_segment(
-    segment_team_mapping: dict[str, List[SegmentResult]],
-) -> List[dict]:
-    rows: List[dict] = []
+    segment_team_mapping: dict[str, list[SegmentResult]],
+) -> list[dict]:
+    rows: list[dict] = []
     for _team, seg_results in segment_team_mapping.items():
         for r in seg_results:
             distance_value = r.fastest_distance_m
@@ -195,7 +195,7 @@ def _compute_team_rank_totals(df: pd.DataFrame) -> dict[str, int]:
 
 
 def _build_segment_team_summary(
-    segment_team_mapping: dict[str, List[SegmentResult]],
+    segment_team_mapping: dict[str, list[SegmentResult]],
     team_rank_totals: dict[str, int],
 ) -> pd.DataFrame:
     rows: list[dict] = []
@@ -239,14 +239,14 @@ def _build_segment_team_summary(
 
 
 def _summarise_team_segment(
-    team: str, seg_results: List[SegmentResult], team_rank_totals: dict[str, int]
+    team: str, seg_results: list[SegmentResult], team_rank_totals: dict[str, int]
 ) -> dict | None:
     if not seg_results:
         return None
     valid_results = [r for r in seg_results if r.fastest_time is not None]
     if not valid_results:
         return None
-    times = [float(r.fastest_time) for r in valid_results]
+    times = [r.fastest_time for r in valid_results if r.fastest_time is not None]
     total_time = sum(times)
     avg_time = statistics.mean(times)
     median_time = statistics.median(times)
@@ -301,8 +301,6 @@ def _calculate_summary_rows(results: ResultsMapping) -> list[dict]:
 
 
 def _aggregate_team_stats(results: ResultsMapping) -> dict[str, dict]:
-    from collections import defaultdict
-
     def _default_stats() -> dict:
         return {
             "runners": set(),
@@ -322,7 +320,7 @@ def _aggregate_team_stats(results: ResultsMapping) -> dict[str, dict]:
     return stats
 
 
-def _populate_team_entry(entry: dict, seg_results: List[SegmentResult]) -> None:
+def _populate_team_entry(entry: dict, seg_results: list[SegmentResult]) -> None:
     for result in seg_results:
         entry["runners"].add(result.runner)
         entry["attempts"] += result.attempts
@@ -333,21 +331,21 @@ def _populate_team_entry(entry: dict, seg_results: List[SegmentResult]) -> None:
 def _sort_summary_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     # Prefer sorting by total if available, else by average
     if SUMMARY_TOTAL_FASTEST_SEC_COL in df.columns:
-        df.sort_values(by=[SUMMARY_TOTAL_FASTEST_SEC_COL, TEAM_COL], inplace=True)
+        df = df.sort_values(by=[SUMMARY_TOTAL_FASTEST_SEC_COL, TEAM_COL])
     elif SUMMARY_AVG_FASTEST_SEC_COL in df.columns:
-        df.sort_values(by=[SUMMARY_AVG_FASTEST_SEC_COL, TEAM_COL], inplace=True)
+        df = df.sort_values(by=[SUMMARY_AVG_FASTEST_SEC_COL, TEAM_COL])
     return df
 
 
 def build_segment_outputs(
     results: ResultsMapping, include_summary: bool = True
-) -> List[Tuple[str, pd.DataFrame]]:
+) -> list[tuple[str, pd.DataFrame]]:
     """Return list of (sheet_base_name, dataframe) for each segment + optional summary.
 
     Sheet base names are the raw segment names and "Summary" (if included).
     The caller (writer) is responsible for resolving Excel sheet name conflicts.
     """
-    outputs: List[Tuple[str, pd.DataFrame]] = []
+    outputs: list[tuple[str, pd.DataFrame]] = []
     for segment_name, team_data in results.items():
         rows = _rows_for_segment(team_data)
         if not rows:
@@ -359,8 +357,6 @@ def build_segment_outputs(
         if BIRTHDAY_FLAG_COL in df.columns:
             column_values = df[BIRTHDAY_FLAG_COL].tolist()
             bonus_rows = [idx for idx, flag in enumerate(column_values) if bool(flag)]
-            if bonus_rows:
-                df.attrs[BIRTHDAY_ATTR] = bonus_rows
             df = df.drop(columns=[BIRTHDAY_FLAG_COL])
             if bonus_rows:
                 df.attrs[BIRTHDAY_ATTR] = bonus_rows
@@ -369,8 +365,6 @@ def build_segment_outputs(
             time_bonus_rows = [
                 idx for idx, flag in enumerate(column_values) if bool(flag)
             ]
-            if time_bonus_rows:
-                df.attrs[TIME_BONUS_ATTR] = time_bonus_rows
             df = df.drop(columns=[TIME_BONUS_FLAG_COL])
             if time_bonus_rows:
                 df.attrs[TIME_BONUS_ATTR] = time_bonus_rows

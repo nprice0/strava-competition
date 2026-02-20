@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import List
 
 import folium
 import pytest
@@ -36,7 +35,7 @@ def simple_segment() -> SegmentGeometry:
 def deviating_activity() -> ActivityTrack:
     """Return an activity that diverges significantly in the middle."""
 
-    base_points: List[tuple[float, float]] = [
+    base_points: list[tuple[float, float]] = [
         (51.4800, -3.1800),
         (51.4802, -3.1800),
         (51.4804, -3.1800),

@@ -1,9 +1,13 @@
+from pathlib import Path
+
 import pandas as pd
+import pytest
+
 from strava_competition.excel_writer import write_results
 from strava_competition.models import SegmentResult
 
 
-def build_segment_results():
+def build_segment_results() -> dict[str, dict[str, list[SegmentResult]]]:
     # minimal single segment, two teams
     r1 = SegmentResult(
         runner="A",
@@ -24,7 +28,9 @@ def build_segment_results():
     return {"Seg1": {"Red": [r1], "Blue": [r2]}}
 
 
-def test_distance_sheet_column_order_and_empty(tmp_path, monkeypatch):
+def test_distance_sheet_column_order_and_empty(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     # Force creation of empty distance sheet
     monkeypatch.setenv("DISTANCE_CREATE_EMPTY", "1")
     # Patch config flags dynamically (module variables already imported)

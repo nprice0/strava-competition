@@ -166,7 +166,7 @@ python -m strava_competition.tools.fetch_activity_gps --help
 
 - Python 3.10 or later
 - A Strava API application ([create one here](https://www.strava.com/settings/api))
-- Strava subscriptions for athletes whose segment efforts you need (Strava enforces this)
+- Strava subscriptions for athletes whose activities you need (Strava enforces this)
 
 ### Installation
 
@@ -272,7 +272,7 @@ flowchart LR
   Env --> Reader
   Reader --> SegmentSvc
   Reader --> DistanceSvc
-  SegmentSvc -->|segment efforts| StravaAPI
+  SegmentSvc -->|activity scan| StravaAPI
   DistanceSvc -->|athlete activities| StravaAPI
   SegmentSvc --> SegmentAgg
   DistanceSvc --> DistanceAgg
@@ -281,7 +281,7 @@ flowchart LR
 ```
 
 1. **Read** – Loads segments, runners, and optional distance windows from your Excel workbook
-2. **Fetch** – Pulls segment efforts and activities from the Strava API
+2. **Fetch** – Scans runner activities for segment efforts via the Strava API
 3. **Aggregate** – Calculates rankings, applies bonuses, and builds team summaries
 4. **Write** – Produces a results workbook with one sheet per segment plus summary sheets
 

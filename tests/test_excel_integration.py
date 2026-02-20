@@ -1,6 +1,7 @@
 from datetime import datetime
 import os
 import tempfile
+from typing import Any
 
 import pandas as pd
 import pytest
@@ -15,7 +16,7 @@ from strava_competition.excel_writer import (
 from strava_competition.services.segment_service import SegmentService
 
 
-def make_input_workbook(path):
+def make_input_workbook(path: Any) -> None:
     import pandas as pd
 
     segs = pd.DataFrame(
@@ -65,7 +66,7 @@ def make_input_workbook(path):
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_excel_integration_roundtrip_and_ranks(monkeypatch):
+def test_excel_integration_roundtrip_and_ranks(monkeypatch: pytest.MonkeyPatch) -> None:
     with tempfile.TemporaryDirectory() as tmpdir:
         in_path = os.path.join(tmpdir, "input.xlsx")
         out_path = os.path.join(tmpdir, "out.xlsx")
@@ -73,33 +74,62 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
         segments = excel_reader.read_segments(in_path)
         runners = excel_reader.read_runners(in_path)
 
-        def fake_get_efforts(runner, segment_id, start_date, end_date):
-            data = {
-                "Alice": [
-                    {"elapsed_time": 120, "start_date_local": "2024-01-10T09:00:00Z"},
-                    {"elapsed_time": 115, "start_date_local": "2024-01-15T09:00:00Z"},
+        def fake_get_activities(
+            runner: Any, start_date: Any, end_date: Any, **kwargs: Any
+        ) -> Any:
+            activity_map = {
+                "Alice": [{"id": 1001}, {"id": 1002}],
+                "Ben": [{"id": 2001}],
+                "Carl": [{"id": 3001}, {"id": 3002}],
+            }
+            return activity_map.get(runner.name, [])
+
+        def fake_get_detail(runner: Any, activity_id: Any, **kwargs: Any) -> Any:
+            efforts = {
+                1001: [
+                    {
+                        "segment": {"id": 101},
+                        "elapsed_time": 120,
+                        "start_date_local": "2024-01-10T09:00:00Z",
+                    }
                 ],
-                "Ben": [
-                    {"elapsed_time": 118, "start_date_local": "2024-01-12T09:00:00Z"},
+                1002: [
+                    {
+                        "segment": {"id": 101},
+                        "elapsed_time": 115,
+                        "start_date_local": "2024-01-15T09:00:00Z",
+                    }
                 ],
-                "Carl": [
-                    {"elapsed_time": 115, "start_date_local": "2024-01-14T09:00:00Z"},
-                    {"elapsed_time": 112, "start_date_local": "2024-01-20T09:00:00Z"},
+                2001: [
+                    {
+                        "segment": {"id": 101},
+                        "elapsed_time": 118,
+                        "start_date_local": "2024-01-12T09:00:00Z",
+                    }
+                ],
+                3001: [
+                    {
+                        "segment": {"id": 101},
+                        "elapsed_time": 115,
+                        "start_date_local": "2024-01-14T09:00:00Z",
+                    }
+                ],
+                3002: [
+                    {
+                        "segment": {"id": 101},
+                        "elapsed_time": 112,
+                        "start_date_local": "2024-01-20T09:00:00Z",
+                    }
                 ],
             }
-            return data.get(runner.name, [])
+            return {"id": activity_id, "segment_efforts": efforts.get(activity_id, [])}
 
         import strava_competition.services.segment_service as segment_service_mod
 
-        def fake_get_activities(runner, start_date, end_date):
-            return []
-
-        monkeypatch.setattr(
-            segment_service_mod, "get_segment_efforts", fake_get_efforts
-        )
         monkeypatch.setattr(segment_service_mod, "get_activities", fake_get_activities)
         monkeypatch.setattr(
-            segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False, raising=False
+            "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+            fake_get_detail,
         )
 
         service = SegmentService(max_workers=2)
@@ -192,7 +222,7 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch):
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_time_bonus_fill_applied(monkeypatch):
+def test_time_bonus_fill_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify TIME_BONUS_FILL is applied to runners with time bonus only."""
     with tempfile.TemporaryDirectory() as tmpdir:
         in_path = os.path.join(tmpdir, "input.xlsx")
@@ -232,16 +262,24 @@ def test_time_bonus_fill_applied(monkeypatch):
         segments = excel_reader.read_segment_groups(in_path)
         runners_list = excel_reader.read_runners(in_path)
 
-        def fake_get_efforts(runner, segment_id, start_date, end_date):
-            return [{"elapsed_time": 100, "start_date_local": "2024-01-15T09:00:00Z"}]
-
         import strava_competition.services.segment_service as segment_service_mod
 
         monkeypatch.setattr(
-            segment_service_mod, "get_segment_efforts", fake_get_efforts
+            segment_service_mod, "get_activities", lambda *a, **k: [{"id": 9001}]
         )
-        monkeypatch.setattr(segment_service_mod, "get_activities", lambda *a, **k: [])
-        monkeypatch.setattr(segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+        monkeypatch.setattr(
+            "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+            lambda runner, activity_id, **kw: {
+                "id": activity_id,
+                "segment_efforts": [
+                    {
+                        "segment": {"id": 101},
+                        "elapsed_time": 100,
+                        "start_date_local": "2024-01-15T09:00:00Z",
+                    }
+                ],
+            },
+        )
         monkeypatch.setattr(segment_service_mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
 
         service = SegmentService(max_workers=1)
@@ -268,7 +306,7 @@ def test_time_bonus_fill_applied(monkeypatch):
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_both_bonus_fill_applied(monkeypatch):
+def test_both_bonus_fill_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify BOTH_BONUS_FILL is applied when birthday and time bonus both apply."""
     with tempfile.TemporaryDirectory() as tmpdir:
         in_path = os.path.join(tmpdir, "input.xlsx")
@@ -308,17 +346,25 @@ def test_both_bonus_fill_applied(monkeypatch):
         segments = excel_reader.read_segment_groups(in_path)
         runners_list = excel_reader.read_runners(in_path)
 
-        def fake_get_efforts(runner, segment_id, start_date, end_date):
-            # Effort on Carol's birthday
-            return [{"elapsed_time": 100, "start_date_local": "2024-01-15T09:00:00Z"}]
-
         import strava_competition.services.segment_service as segment_service_mod
 
+        # Effort on Carol's birthday
         monkeypatch.setattr(
-            segment_service_mod, "get_segment_efforts", fake_get_efforts
+            segment_service_mod, "get_activities", lambda *a, **k: [{"id": 9001}]
         )
-        monkeypatch.setattr(segment_service_mod, "get_activities", lambda *a, **k: [])
-        monkeypatch.setattr(segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+        monkeypatch.setattr(
+            "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+            lambda runner, activity_id, **kw: {
+                "id": activity_id,
+                "segment_efforts": [
+                    {
+                        "segment": {"id": 101},
+                        "elapsed_time": 100,
+                        "start_date_local": "2024-01-15T09:00:00Z",
+                    }
+                ],
+            },
+        )
         monkeypatch.setattr(segment_service_mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
 
         service = SegmentService(max_workers=1)
@@ -345,7 +391,7 @@ def test_both_bonus_fill_applied(monkeypatch):
 
 
 @pytest.mark.filterwarnings("ignore::DeprecationWarning")
-def test_time_bonus_applied_field_set(monkeypatch):
+def test_time_bonus_applied_field_set(monkeypatch: pytest.MonkeyPatch) -> None:
     """Verify time_bonus_applied field is set on SegmentResult."""
     with tempfile.TemporaryDirectory() as tmpdir:
         in_path = os.path.join(tmpdir, "input.xlsx")
@@ -383,16 +429,24 @@ def test_time_bonus_applied_field_set(monkeypatch):
         segments = excel_reader.read_segment_groups(in_path)
         runners_list = excel_reader.read_runners(in_path)
 
-        def fake_get_efforts(runner, segment_id, start_date, end_date):
-            return [{"elapsed_time": 100, "start_date_local": "2024-01-10T09:00:00Z"}]
-
         import strava_competition.services.segment_service as segment_service_mod
 
         monkeypatch.setattr(
-            segment_service_mod, "get_segment_efforts", fake_get_efforts
+            segment_service_mod, "get_activities", lambda *a, **k: [{"id": 9001}]
         )
-        monkeypatch.setattr(segment_service_mod, "get_activities", lambda *a, **k: [])
-        monkeypatch.setattr(segment_service_mod, "FORCE_ACTIVITY_SCAN_FALLBACK", False)
+        monkeypatch.setattr(
+            "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+            lambda runner, activity_id, **kw: {
+                "id": activity_id,
+                "segment_efforts": [
+                    {
+                        "segment": {"id": 101},
+                        "elapsed_time": 100,
+                        "start_date_local": "2024-01-10T09:00:00Z",
+                    }
+                ],
+            },
+        )
         monkeypatch.setattr(segment_service_mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
 
         service = SegmentService(max_workers=1)

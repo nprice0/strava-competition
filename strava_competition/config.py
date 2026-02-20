@@ -99,6 +99,19 @@ _cache_mode_saves = STRAVA_API_CACHE_MODE == "cache"
 _cache_mode_reads = STRAVA_API_CACHE_MODE in {"cache", "offline"}
 _cache_mode_offline = STRAVA_API_CACHE_MODE == "offline"
 
+# Fail-fast: require client credentials when communication with Strava is
+# expected.  In offline mode the credentials are never used, so we skip the
+# check.  auth.py has its own guard as a defence-in-depth measure.
+if not _cache_mode_offline and (not CLIENT_ID or not CLIENT_SECRET):
+    import warnings
+
+    warnings.warn(
+        "STRAVA_CLIENT_ID and/or STRAVA_CLIENT_SECRET are not set. "
+        "Token refresh and live API calls will fail. "
+        "Set STRAVA_API_CACHE_MODE=offline to run without credentials.",
+        stacklevel=1,
+    )
+
 # Maximum age (days) before a cached activity response is considered stale and
 # automatically refreshed from the live API. Set to 0 to disable the TTL.
 CACHE_TTL_DAYS = _env_int("CACHE_TTL_DAYS", 90)
@@ -261,9 +274,6 @@ GEOMETRY_RESAMPLE_INTERVAL_M = _env_float("GEOMETRY_RESAMPLE_INTERVAL_M", 5.0)
 GEOMETRY_MAX_SIMPLIFIED_POINTS = _env_int("GEOMETRY_MAX_SIMPLIFIED_POINTS", 2000)
 GEOMETRY_MAX_RESAMPLED_POINTS = _env_int("GEOMETRY_MAX_RESAMPLED_POINTS", 1200)
 
-# Global switch for the activity scan fallback.
-USE_ACTIVITY_SCAN_FALLBACK = _env_bool("USE_ACTIVITY_SCAN_FALLBACK", True)
-
 ACTIVITY_SCAN_MAX_ACTIVITY_PAGES: int | None = _env_int(
     "ACTIVITY_SCAN_MAX_ACTIVITY_PAGES",
     0,
@@ -277,9 +287,6 @@ if (
 ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS = _env_bool(
     "ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS", True
 )
-
-# When True, always bypass Strava efforts and use activity scan. Useful for debugging.
-FORCE_ACTIVITY_SCAN_FALLBACK = _env_bool("FORCE_ACTIVITY_SCAN_FALLBACK", True)
 
 # Maximum number of activity streams to keep in the in-memory cache.
 ACTIVITY_STREAM_CACHE_SIZE = _env_int("ACTIVITY_STREAM_CACHE_SIZE", 64)

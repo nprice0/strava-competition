@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import threading
-from typing import Dict
 
 from ..auth import get_access_token
 from .. import config
@@ -13,7 +12,7 @@ from ..models import Runner
 LOGGER = logging.getLogger(__name__)
 
 # Per-runner locks to prevent race conditions during token rotation
-_token_locks: Dict[str, threading.Lock] = {}
+_token_locks: dict[str, threading.Lock] = {}
 _locks_lock = threading.Lock()
 
 
@@ -68,7 +67,7 @@ def ensure_runner_token(runner: Runner) -> None:
                 )
 
 
-def auth_headers(runner: Runner) -> Dict[str, str]:
+def auth_headers(runner: Runner) -> dict[str, str]:
     """Return bearer auth headers for the runner (token assumed valid)."""
 
     token = getattr(runner, "access_token", None) or ""

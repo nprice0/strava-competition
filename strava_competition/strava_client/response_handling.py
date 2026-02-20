@@ -45,10 +45,15 @@ def classify_response_status(
     def with_detail(message: str) -> str:
         return f"{message} | {detail}" if detail else message
 
-    # Always retry 429s - rate limits are transient and should not count against
-    # the retry budget. The rate limiter handles logging and throttling.
+    # Retry 429s — rate limits are transient, but respect the retry budget
+    # to prevent infinite loops when the API persistently rate-limits.
     if status == 429:
-        return "retry", None
+        if can_retry:
+            return "retry", None
+        message = with_detail(
+            f"{context} rate limited (429) after max retries for runner {runner.name}"
+        )
+        return "raise", StravaAPIError(message)
 
     if status == 402:
         runner.payment_required = True

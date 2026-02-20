@@ -9,6 +9,8 @@ from __future__ import annotations
 import os
 import sys
 from datetime import datetime
+from typing import Any
+
 import pytest
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -48,7 +50,7 @@ class FakeResp:
         self._text = text
         self.headers = headers or {}
 
-    def json(self):
+    def json(self) -> Any:
         if isinstance(self._data, Exception):
             raise self._data
         return self._data
@@ -57,7 +59,7 @@ class FakeResp:
         if 400 <= self.status_code:
             import requests
 
-            raise requests.exceptions.HTTPError(response=self)
+            raise requests.exceptions.HTTPError(response=self)  # type: ignore[arg-type]
 
     @property
     def content(self) -> bytes:
@@ -76,7 +78,7 @@ class FakeResp:
         return self.content.decode()
 
 
-def _patch_session(monkeypatch, mock_session):
+def _patch_session(monkeypatch: pytest.MonkeyPatch, mock_session: Any) -> None:
     """Patch get_default_session in all modules that import it.
 
     Also resets the default client to force re-creation with the mocked session.
@@ -87,13 +89,11 @@ def _patch_session(monkeypatch, mock_session):
     """
     from strava_competition import strava_api
     from strava_competition.strava_client import (
-        segment_efforts as segment_client,
         session as session_module,
     )
 
     monkeypatch.setattr(session_module, "get_default_session", lambda: mock_session)
     monkeypatch.setattr(strava_api, "get_default_session", lambda: mock_session)
-    monkeypatch.setattr(segment_client, "get_default_session", lambda: mock_session)
     # Reset the module-level cached client so get_default_client creates a fresh one
     monkeypatch.setattr(strava_api, "_default_client", None)
     # Force recreation and update the module-level reference
@@ -101,7 +101,7 @@ def _patch_session(monkeypatch, mock_session):
 
 
 # --- Factory helpers -------------------------------------------------
-def make_segment_results():
+def make_segment_results() -> dict[str, dict[str, list[SegmentResult]]]:
     return {
         "Segment One": {
             "Team A": [
@@ -111,7 +111,7 @@ def make_segment_results():
                     segment="Segment One",
                     attempts=2,
                     fastest_time=100,
-                    fastest_date="2025-01-01T10:00:00",
+                    fastest_date="2025-01-01T10:00:00",  # type: ignore[arg-type]
                     fastest_distance_m=3100.0,
                 ),
                 SegmentResult(
@@ -120,7 +120,7 @@ def make_segment_results():
                     segment="Segment One",
                     attempts=1,
                     fastest_time=120,
-                    fastest_date="2025-01-01T10:05:00",
+                    fastest_date="2025-01-01T10:05:00",  # type: ignore[arg-type]
                     fastest_distance_m=3200.0,
                 ),
             ],
@@ -131,7 +131,7 @@ def make_segment_results():
                     segment="Segment One",
                     attempts=3,
                     fastest_time=90,
-                    fastest_date="2025-01-01T09:50:00",
+                    fastest_date="2025-01-01T09:50:00",  # type: ignore[arg-type]
                     fastest_distance_m=3000.0,
                 ),
             ],
@@ -144,7 +144,7 @@ def make_segment_results():
                     segment="Segment Two",
                     attempts=1,
                     fastest_time=110,
-                    fastest_date="2025-01-02T11:00:00",
+                    fastest_date="2025-01-02T11:00:00",  # type: ignore[arg-type]
                     fastest_distance_m=4100.0,
                 ),
             ],
@@ -155,7 +155,7 @@ def make_segment_results():
                     segment="Segment Two",
                     attempts=2,
                     fastest_time=80,
-                    fastest_date="2025-01-02T11:15:00",
+                    fastest_date="2025-01-02T11:15:00",  # type: ignore[arg-type]
                     fastest_distance_m=4200.0,
                 ),
             ],
@@ -163,7 +163,7 @@ def make_segment_results():
     }
 
 
-def make_activity(distance_m, elev_m, iso):
+def make_activity(distance_m: Any, elev_m: Any, iso: Any) -> dict[str, Any]:
     return {
         "distance": distance_m,
         "total_elevation_gain": elev_m,
@@ -173,22 +173,22 @@ def make_activity(distance_m, elev_m, iso):
 
 # --- Fixtures --------------------------------------------------------
 @pytest.fixture
-def segment_results():
+def segment_results() -> dict[str, dict[str, list[SegmentResult]]]:
     return make_segment_results()
 
 
 @pytest.fixture
-def distance_runners():
+def distance_runners() -> list[Runner]:
     r1 = Runner(
         name="Alice",
-        strava_id=1,
+        strava_id="1",
         refresh_token="tok1",
         segment_team=None,
         distance_team="DTeam",
     )
     r2 = Runner(
         name="Ben",
-        strava_id=2,
+        strava_id="2",
         refresh_token="tok2",
         segment_team=None,
         distance_team="DTeam",
@@ -197,20 +197,20 @@ def distance_runners():
 
 
 @pytest.fixture
-def distance_windows():
+def distance_windows() -> list[tuple[datetime, datetime, float]]:
     start = datetime(2025, 1, 1)
     end = datetime(2025, 1, 31)
     return [(start, end, 5.0)]
 
 
 @pytest.fixture
-def distance_activity_cache():
+def distance_activity_cache() -> dict[str, list[dict[str, Any]]]:
     return {
-        1: [
+        "1": [
             make_activity(6000.0, 50.0, "2025-01-05T10:00:00Z"),
             make_activity(4000.0, 30.0, "2025-01-10T10:00:00Z"),
         ],
-        2: [
+        "2": [
             make_activity(7000.0, 40.0, "2025-01-06T10:00:00Z"),
             make_activity(3000.0, 20.0, "2025-01-11T10:30:00Z"),
         ],
@@ -218,8 +218,8 @@ def distance_activity_cache():
 
 
 @pytest.fixture
-def assert_summary_columns():
-    def _assert(df):
+def assert_summary_columns() -> Any:
+    def _assert(df: Any) -> None:
         expected_cols = {
             "Team",
             "Runners Participating",

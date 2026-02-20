@@ -1,7 +1,6 @@
 """Scanner that infers segment attempts from runner activities.
 
-This module provides a fallback mechanism for runners who don't have direct
-segment API access. It scans their activities for segment efforts embedded
+This module scans runner activities for segment efforts embedded
 in the activity detail payloads.
 """
 
@@ -20,7 +19,7 @@ from ..effort_distance import derive_effort_distance_m
 from ..errors import StravaAPIError
 from ..models import Runner, Segment
 from ..strava_api import get_activities, get_activity_with_efforts
-from ..utils import parse_iso_datetime
+from ..utils import coerce_float, coerce_int, parse_iso_datetime
 from .models import ActivityScanResult
 
 # Type aliases for dependency injection
@@ -68,7 +67,7 @@ class _BestEffortTracker:
         self.raw_elapsed = raw_elapsed
         self.effort = effort
         self.activity_id = activity_id
-        self.moving_time = _coerce_float(effort.get("moving_time"))
+        self.moving_time = coerce_float(effort.get("moving_time"))
         self.start_date = start_date
         self.bonus_applied = bonus_applied
         self.distance_m = distance_m
@@ -100,9 +99,9 @@ class _ScanAccumulator:
 
 
 class ActivityEffortScanner:
-    """Activity-based fallback scanner for runners without Strava segment access.
+    """Scanner that finds segment efforts within runner activities.
 
-    This scanner fetches a runner's activities within a date range and inspects
+    Fetches a runner's activities within a date range and inspects
     each activity's embedded segment efforts to find attempts on a target segment.
 
     Attributes:
@@ -196,7 +195,7 @@ class ActivityEffortScanner:
         cancel_event: Event | None,
     ) -> None:
         """Process a single activity, extracting matching segment efforts."""
-        activity_id = _coerce_int(activity_summary.get("id"))
+        activity_id = coerce_int(activity_summary.get("id"))
         if activity_id is None:
             return
 
@@ -234,7 +233,7 @@ class ActivityEffortScanner:
             return
 
         # Validate elapsed time
-        elapsed = _coerce_float(effort.get("elapsed_time"))
+        elapsed = coerce_float(effort.get("elapsed_time"))
         if elapsed is None or elapsed <= 0:
             return
 
@@ -273,7 +272,15 @@ class ActivityEffortScanner:
             )
 
     def _parse_effort_date(self, effort: Dict[str, Any]) -> datetime | None:
-        """Extract the effort's start datetime from the payload."""
+        """Extract the effort's start datetime from the payload.
+
+        Prefers ``start_date_local`` because window boundaries from the
+        Excel workbook are naive "calendar dates" in the athlete's local
+        timezone.  Strava's ``start_date_local`` value *is* local time
+        despite carrying a misleading ``Z`` suffix.  ``_effort_within_window``
+        strips timezone info via ``_to_naive`` before comparison, so the
+        local-to-local comparison is correct.
+        """
         return parse_iso_datetime(
             effort.get("start_date_local") or effort.get("start_date")
         )
@@ -281,7 +288,14 @@ class ActivityEffortScanner:
     def _effort_within_window(
         self, effort_date: datetime | None, segment: Segment
     ) -> bool:
-        """Check if an effort date falls within the segment's date window."""
+        """Check if an effort date falls within the segment's date window.
+
+        Both ``effort_date`` (from ``start_date_local``) and the segment
+        window boundaries are local-time values.  We strip timezone info
+        so that the naive-vs-naive comparison works correctly even though
+        ``start_date_local`` carries a fake UTC tzinfo from the ``Z``
+        suffix in the Strava API.
+        """
         if effort_date is None:
             # No date available - allow the effort (conservative approach)
             return True
@@ -484,20 +498,7 @@ def _to_naive(dt: datetime | Any) -> datetime:
     return dt
 
 
-def _coerce_int(value: Any) -> int | None:
-    """Attempt to coerce a value to int, returning None on failure."""
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _coerce_float(value: Any) -> float | None:
-    """Attempt to coerce a value to float, returning None on failure."""
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
+# coerce_int and coerce_float imported from utils (module-level)
 
 
 def _coerce_effort_id(value: Any) -> int | str | None:

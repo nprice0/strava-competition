@@ -11,12 +11,9 @@ import time
 import urllib.parse
 import webbrowser
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any
 
-from flask import Flask, abort, request
-from flask.typing import ResponseReturnValue
 import requests
-from werkzeug.serving import BaseWSGIServer, make_server
 
 from .config import CLIENT_ID, CLIENT_SECRET
 
@@ -45,9 +42,9 @@ class OAuthSession:
     """
 
     expected_state: str = field(default_factory=lambda: secrets.token_urlsafe(16))
-    auth_code: Optional[str] = None
+    auth_code: str | None = None
     auth_event: threading.Event = field(default_factory=threading.Event)
-    server: Optional[BaseWSGIServer] = None
+    server: Any = None  # BaseWSGIServer, typed as Any to avoid eager import
 
     def reset(self) -> None:
         """Reset state for a new OAuth flow."""
@@ -60,8 +57,34 @@ class OAuthSession:
 # Module-level session instance used by Flask routes and flow functions
 _session = OAuthSession()
 
-# Flask app
-app = Flask(__name__)
+
+def _create_flask_app() -> Any:
+    """Create and configure the Flask application lazily.
+
+    Flask and Werkzeug are only imported when the OAuth flow is actually
+    started, avoiding a heavy import for the common case where OAuth is
+    not used.
+
+    Returns:
+        A configured Flask application instance.
+    """
+    from flask import Flask, abort, request
+    from flask.typing import ResponseReturnValue
+
+    flask_app = Flask(__name__)
+
+    @flask_app.route("/callback")
+    def callback() -> ResponseReturnValue:
+        state = request.args.get("state")
+        if not state or state != _session.expected_state:
+            logging.error("Invalid OAuth state received; possible CSRF. Aborting.")
+            abort(400, description="Invalid state")
+        _session.auth_code = request.args.get("code")
+        logging.info("Authorisation code received via callback.")
+        _session.auth_event.set()
+        return "Authorisation received! You can close this window now."
+
+    return flask_app
 
 
 def _mask_token(token: str, visible: int = 4) -> str:
@@ -78,22 +101,12 @@ def _mask_token(token: str, visible: int = 4) -> str:
     return ("*" * hidden_length) + token[-visible:]
 
 
-@app.route("/callback")
-def callback() -> ResponseReturnValue:
-    state = request.args.get("state")
-    if not state or state != _session.expected_state:
-        logging.error("Invalid OAuth state received; possible CSRF. Aborting.")
-        abort(400, description="Invalid state")
-    _session.auth_code = request.args.get("code")
-    logging.info("Authorisation code received via callback.")
-    # Signal that the code is received
-    _session.auth_event.set()
-    return "Authorisation received! You can close this window now."
-
-
 def _run_flask() -> None:
     """Start the Flask server and store reference in session."""
-    _session.server = make_server("localhost", OAUTH_PORT, app)
+    from werkzeug.serving import make_server
+
+    flask_app = _create_flask_app()
+    _session.server = make_server("127.0.0.1", OAUTH_PORT, flask_app)
     _session.server.serve_forever()
 
 

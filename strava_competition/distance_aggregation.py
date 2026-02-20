@@ -9,52 +9,73 @@ aggregation from orchestration in ``DistanceService``).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Dict, List, Tuple
 
 from .models import Runner
-from .utils import parse_iso_datetime, to_utc_aware
+from .utils import parse_iso_datetime
 
 Activity = (
     dict  # minimal structure expected: distance, total_elevation_gain, start_date_local
 )
 
+# Lookup cache keyed by id(act) to avoid mutating shared activity dicts.
+_start_local_cache: dict[int, datetime] = {}
 
-def _activity_start_utc(act: Activity) -> datetime | None:
-    """Return cached UTC start datetime for an activity."""
 
-    raw: str | None = None
-    start_date = act.get("start_date")
-    start_local = act.get("start_date_local")
-    if isinstance(start_date, str) and start_date:
-        raw = start_date
-    elif isinstance(start_local, str) and start_local:
-        raw = start_local
-    if not raw:
+def _to_naive(dt: datetime) -> datetime:
+    """Strip timezone info so both sides of a comparison are naive."""
+    return dt.replace(tzinfo=None)
+
+
+def _activity_start_local(act: Activity) -> datetime | None:
+    """Return the activity's *local* start datetime as a naive value.
+
+    Uses ``start_date_local`` by preference because the distance windows
+    originate from an Excel file in the athlete's local timezone.  This
+    mirrors the segment-scanner's ``_parse_effort_date`` which also uses
+    local-to-local comparison.
+
+    Falls back to ``start_date`` (true UTC) only when
+    ``start_date_local`` is absent, and strips the timezone so that the
+    comparison remains naive-to-naive (the offset error is bounded by the
+    athlete's UTC offset — a few hours at window boundaries).
+    """
+    raw = act.get("start_date_local") or act.get("start_date")
+    if not isinstance(raw, str) or not raw:
         return None
     dt = parse_iso_datetime(raw)
     if dt is None:
         return None
-    return to_utc_aware(dt)
+    return _to_naive(dt)
 
 
 def _activity_in_window(act: Activity, start_dt: datetime, end_dt: datetime) -> bool:
-    start_utc = act.get("_start_utc")
-    if start_utc is None:
-        start_utc = _activity_start_utc(act)
-        if start_utc is not None:
-            act["_start_utc"] = start_utc
-    if start_utc is None:
+    """Check whether *act* falls within the (inclusive) window.
+
+    Both *start_dt* / *end_dt* and the activity timestamp are naive
+    datetimes in the athlete's local timezone so the comparison is
+    local-to-local (consistent with the segment scanner).
+    """
+    start_local = _start_local_cache.get(id(act))
+    if start_local is None:
+        start_local = _activity_start_local(act)
+        if start_local is not None:
+            _start_local_cache[id(act)] = start_local
+    if start_local is None:
         return False
-    return start_dt <= start_utc <= end_dt
+    return start_dt <= start_local <= end_dt
 
 
 def _normalize_windows(
-    distance_windows: List[Tuple[datetime, datetime, float | None]],
-) -> List[Tuple[datetime, datetime, float | None]]:
-    """Normalize all window boundaries to UTC-aware once up front."""
+    distance_windows: list[tuple[datetime, datetime, float | None]],
+) -> list[tuple[datetime, datetime, float | None]]:
+    """Strip timezone info from window boundaries so comparisons are naive.
+
+    Excel-sourced dates are typically already naive (local time).  If any
+    have tzinfo attached we strip it to keep everything in the same naive
+    local domain.
+    """
     return [
-        (to_utc_aware(s), to_utc_aware(e), threshold)
-        for s, e, threshold in distance_windows
+        (_to_naive(s), _to_naive(e), threshold) for s, e, threshold in distance_windows
     ]
 
 
@@ -64,7 +85,7 @@ def _sheet_name_for_window(start_dt: datetime, end_dt: datetime) -> str:
 
 def _row_for_window(
     runner: Runner,
-    acts: List[Activity],
+    acts: list[Activity],
     start_dt: datetime,
     end_dt: datetime,
     threshold: float | None,
@@ -99,7 +120,7 @@ def _row_for_window(
     return row
 
 
-def _summary_row(runner: Runner, acts: List[Activity]) -> dict:
+def _summary_row(runner: Runner, acts: list[Activity]) -> dict:
     total_distance = 0.0
     total_elev = 0.0
     run_count = 0
@@ -125,22 +146,26 @@ def _summary_row(runner: Runner, acts: List[Activity]) -> dict:
 
 
 def build_distance_outputs(
-    runners: List[Runner],
-    distance_windows: List[Tuple[datetime, datetime, float | None]],
-    runner_activity_cache: Dict[int | str, List[Activity]],
-) -> List[Tuple[str, List[dict]]]:
+    runners: list[Runner],
+    distance_windows: list[tuple[datetime, datetime, float | None]],
+    runner_activity_cache: dict[int | str, list[Activity]],
+) -> list[tuple[str, list[dict]]]:
     """Return list of (sheet_name, rows) including Distance_Summary last.
 
     Summary is computed from the full activity cache (unique activities per
     runner) and is NOT a sum of the per-window sheets (avoids double counting
     when windows overlap).
     """
-    outputs: List[Tuple[str, List[dict]]] = []
+    # Clear the id()-keyed lookup cache between invocations so that stale
+    # object-identity keys from a previous call cannot return wrong results.
+    _start_local_cache.clear()
+
+    outputs: list[tuple[str, list[dict]]] = []
 
     # Per-window sheets
     normalised_windows = _normalize_windows(distance_windows)
     for start_dt, end_dt, threshold in normalised_windows:
-        rows: List[dict] = []
+        rows: list[dict] = []
         for runner in runners:
             if not runner.distance_team:
                 continue
@@ -156,7 +181,7 @@ def build_distance_outputs(
         outputs.append((_sheet_name_for_window(start_dt, end_dt), rows))
 
     # Summary from full activity cache (unique activities only once)
-    summary_rows: List[dict] = []
+    summary_rows: list[dict] = []
     for runner in runners:
         if not runner.distance_team:
             continue

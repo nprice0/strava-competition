@@ -26,15 +26,15 @@ You can override the runner, date, paging window, and verbosity via CLI flags.
 from __future__ import annotations
 
 import argparse
+import os
 import json
 import logging
 from datetime import date, datetime, time, timedelta, timezone
-from typing import Any, Dict, List, Tuple
-
-import requests
+from typing import Any
 
 from strava_competition.auth import get_access_token
-from strava_competition.config import REQUEST_TIMEOUT, STRAVA_BASE_URL
+from strava_competition.config import STRAVA_BASE_URL
+from strava_competition.tools._http import http_get as _http_get
 
 LOGGER = logging.getLogger("fetch_runner_segment_efforts")
 
@@ -58,7 +58,7 @@ def _parse_day(day_str: str) -> date:
             ) from exc
 
 
-def _day_window(day_value: date) -> Tuple[int, int]:
+def _day_window(day_value: date) -> tuple[int, int]:
     """Return inclusive ``after`` and exclusive ``before`` epoch seconds."""
 
     start_dt = datetime.combine(day_value, time.min, tzinfo=timezone.utc)
@@ -77,7 +77,7 @@ def _iso8601(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _window_from_args(args: argparse.Namespace) -> Tuple[int, int]:
+def _window_from_args(args: argparse.Namespace) -> tuple[int, int]:
     if args.start or args.end:
         if not args.start or not args.end:
             raise SystemExit("Both --start and --end must be supplied together")
@@ -89,36 +89,16 @@ def _window_from_args(args: argparse.Namespace) -> Tuple[int, int]:
     return _day_window(args.day)
 
 
-def _http_get(
-    url: str,
-    token: str,
-    *,
-    params: Dict[str, Any] | None = None,
-) -> Any:
-    """Wrapper for authenticated GET requests with basic logging."""
-
-    headers = {"Authorization": f"Bearer {token}"}
-    LOGGER.debug("GET %s params=%s", url, params)
-    response = requests.get(
-        url,
-        headers=headers,
-        params=params,
-        timeout=REQUEST_TIMEOUT,
-    )
-    response.raise_for_status()
-    return response.json()
-
-
 def _fetch_activities(
     token: str,
     after_ts: int,
     before_ts: int,
     *,
     per_page: int,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Collect all activities in the requested window."""
 
-    activities: List[Dict[str, Any]] = []
+    activities: list[dict[str, Any]] = []
     page = 1
     while True:
         params = {
@@ -145,7 +125,7 @@ def _fetch_activities(
     return activities
 
 
-def _fetch_activity_detail(token: str, activity_id: int) -> Dict[str, Any]:
+def _fetch_activity_detail(token: str, activity_id: int) -> dict[str, Any]:
     """Fetch ``/activities/{id}`` with ``include_all_efforts=true``."""
 
     url = f"{STRAVA_BASE_URL}/activities/{activity_id}"
@@ -158,7 +138,7 @@ def _fetch_activity_detail(token: str, activity_id: int) -> Dict[str, Any]:
     return payload
 
 
-def _print_efforts(activity: Dict[str, Any], *, show_raw: bool) -> None:
+def _print_efforts(activity: dict[str, Any], *, show_raw: bool) -> None:
     """Pretty-print the activity metadata plus each segment effort.
 
     Args:
@@ -211,8 +191,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--refresh-token",
-        required=True,
-        help="Refresh token for the runner (required)",
+        default=os.environ.get("STRAVA_REFRESH_TOKEN"),
+        help=(
+            "Refresh token for the runner. Defaults to STRAVA_REFRESH_TOKEN env var."
+        ),
     )
     parser.add_argument(
         "--day",
@@ -254,6 +236,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = _build_parser()
     args = parser.parse_args()
+    if not args.refresh_token:
+        parser.error("--refresh-token is required (or set STRAVA_REFRESH_TOKEN)")
     logging.basicConfig(level=getattr(logging, args.log_level))
 
     after_ts, before_ts = _window_from_args(args)
@@ -275,8 +259,8 @@ def main() -> None:
     )
     if maybe_new_refresh and maybe_new_refresh != args.refresh_token:
         LOGGER.warning(
-            "Strava rotated the refresh token. Save this new value: %s",
-            maybe_new_refresh,
+            "Strava rotated the refresh token (ends …%s). Update your credentials.",
+            maybe_new_refresh[-4:],
         )
 
     activities = _fetch_activities(

@@ -2,14 +2,15 @@ import pandas as pd
 from pathlib import Path
 
 from strava_competition.excel_writer import write_results
+from typing import Any
 
 # Helper to build results mapping structure expected by write_results
 # { segment_name: { team_name: [SegmentResult, ...] } }
 
 
 def test_summary_sheet_aggregates(
-    tmp_path: Path, segment_results, assert_summary_columns
-):
+    tmp_path: Path, segment_results: Any, assert_summary_columns: Any
+) -> None:
     results = segment_results
     out = tmp_path / "output.xlsx"
     write_results(out, results, include_summary=True)
@@ -55,7 +56,7 @@ def test_summary_sheet_aggregates(
     assert summary.loc["Team C", "Total Fastest Times (sec)"] == 80.0
 
 
-def test_no_summary_when_disabled(tmp_path: Path, segment_results):
+def test_no_summary_when_disabled(tmp_path: Path, segment_results: Any) -> None:
     results = segment_results
     out = tmp_path / "output_no_summary.xlsx"
     write_results(out, results, include_summary=False)

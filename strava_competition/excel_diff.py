@@ -12,7 +12,8 @@ import argparse
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Sequence, cast
+from collections.abc import Iterable, Sequence
+from typing import cast
 
 import pandas as pd
 
@@ -32,9 +33,9 @@ class CellDiff:
 class WorkbookDiff:
     """Aggregates sheet-level comparison results."""
 
-    missing_in_left: List[str]
-    missing_in_right: List[str]
-    cell_differences: List[CellDiff]
+    missing_in_left: list[str]
+    missing_in_right: list[str]
+    cell_differences: list[CellDiff]
 
 
 @dataclass(frozen=True)
@@ -44,20 +45,20 @@ class TimingDiff:
     sheet: str
     runner: object
     column: str
-    baseline_seconds: Optional[float]
-    candidate_seconds: Optional[float]
-    delta_seconds: Optional[float]
+    baseline_seconds: float | None
+    candidate_seconds: float | None
+    delta_seconds: float | None
 
 
-def _load_workbook(path: Path) -> Dict[str, pd.DataFrame]:
+def _load_workbook(path: Path) -> dict[str, pd.DataFrame]:
     """Load every sheet from an Excel workbook into pandas DataFrames."""
     sheets = pd.read_excel(path, sheet_name=None, engine="openpyxl")
-    return cast(Dict[str, pd.DataFrame], sheets)
+    return cast(dict[str, pd.DataFrame], sheets)
 
 
 def _align_frames(left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
     """Return both frames with matching columns and indexes for comparison."""
-    columns: List[str] = list(left.columns)
+    columns: list[str] = list(left.columns)
     for col in right.columns:
         if col not in columns:
             columns.append(col)
@@ -101,7 +102,7 @@ def compare_workbooks(
     left_only = sorted(set(left_sheets) - set(right_sheets))
     right_only = sorted(set(right_sheets) - set(left_sheets))
 
-    diffs: List[CellDiff] = []
+    diffs: list[CellDiff] = []
     shared_sheets = sorted(set(left_sheets) & set(right_sheets))
     for sheet in shared_sheets:
         diffs.extend(
@@ -120,14 +121,14 @@ def compare_segment_times(
     right_path: Path,
     float_tol: float = 1e-9,
     runner_column: str = "Runner",
-    time_columns: Optional[Sequence[str]] = None,
-) -> List[TimingDiff]:
+    time_columns: Sequence[str] | None = None,
+) -> list[TimingDiff]:
     """Compare runner timing columns across workbooks on a sheet-by-sheet basis."""
     left_sheets = _load_workbook(left_path)
     right_sheets = _load_workbook(right_path)
     shared_sheets = sorted(set(left_sheets) & set(right_sheets))
 
-    timing_diffs: List[TimingDiff] = []
+    timing_diffs: list[TimingDiff] = []
     for sheet in shared_sheets:
         sheet_diffs = _diff_sheet_timings(
             sheet_name=sheet,
@@ -146,7 +147,7 @@ def _diff_sheet(
     left_df: pd.DataFrame,
     right_df: pd.DataFrame,
     float_tol: float,
-) -> List[CellDiff]:
+) -> list[CellDiff]:
     """Return cell-level diffs for a single sheet."""
     aligned_left, aligned_right = _align_frames(left_df, right_df)
     comparison = aligned_left.compare(
@@ -161,7 +162,7 @@ def _diff_sheet(
 
     base_columns = comparison.columns.get_level_values(0)
     unique_columns = dict.fromkeys(base_columns).keys()
-    sheet_diffs: List[CellDiff] = []
+    sheet_diffs: list[CellDiff] = []
     for row_index, row in comparison.iterrows():
         for column in unique_columns:
             left_value = row.get((column, "left"), pd.NA)
@@ -185,9 +186,9 @@ def _diff_sheet_timings(
     left_df: pd.DataFrame,
     right_df: pd.DataFrame,
     runner_column: str,
-    time_columns: Optional[Sequence[str]],
+    time_columns: Sequence[str] | None,
     float_tol: float,
-) -> List[TimingDiff]:
+) -> list[TimingDiff]:
     """Return timing diffs for runners within a single sheet."""
     prepared = _prepare_runner_frames(left_df, right_df, runner_column)
     if prepared is None:
@@ -206,7 +207,7 @@ def _diff_sheet_timings(
     right_subset = right_prepared.reindex(columns=candidate_columns)
     aligned_left, aligned_right = _align_frames(left_subset, right_subset)
 
-    timing_diffs: List[TimingDiff] = []
+    timing_diffs: list[TimingDiff] = []
     all_runners = aligned_left.index.union(aligned_right.index)
     left_all = aligned_left.reindex(all_runners)
     right_all = aligned_right.reindex(all_runners)
@@ -231,9 +232,9 @@ def _diff_runner_timings(
     left_row: pd.Series,
     right_row: pd.Series,
     float_tol: float,
-) -> List[TimingDiff]:
+) -> list[TimingDiff]:
     """Return timing diffs for an individual runner."""
-    runner_diffs: List[TimingDiff] = []
+    runner_diffs: list[TimingDiff] = []
     for column in columns:
         left_value = _coerce_seconds(left_row.get(column, pd.NA))
         right_value = _coerce_seconds(right_row.get(column, pd.NA))
@@ -269,7 +270,7 @@ def _prepare_runner_frames(
     left_df: pd.DataFrame,
     right_df: pd.DataFrame,
     runner_column: str,
-) -> Optional[tuple[pd.DataFrame, pd.DataFrame]]:
+) -> tuple[pd.DataFrame, pd.DataFrame] | None:
     """Set the runner column as index for both sheets, skipping invalid layouts."""
     if runner_column not in left_df.columns or runner_column not in right_df.columns:
         return None
@@ -290,8 +291,8 @@ def _dedupe_runner_rows(df: pd.DataFrame, runner_column: str) -> pd.DataFrame:
 def _select_time_columns(
     left_columns: Iterable[str],
     right_columns: Iterable[str],
-    explicit: Optional[Sequence[str]],
-) -> List[str]:
+    explicit: Sequence[str] | None,
+) -> list[str]:
     """Determine which columns represent runner timings to evaluate."""
     if explicit:
         return [col for col in explicit if col in left_columns or col in right_columns]
@@ -305,7 +306,7 @@ def _select_time_columns(
     return sorted(candidates)
 
 
-def _coerce_seconds(value: object) -> Optional[float]:
+def _coerce_seconds(value: object) -> float | None:
     """Convert a cell value into seconds when possible."""
     if pd.isna(value):
         return None
@@ -322,9 +323,9 @@ def _coerce_seconds(value: object) -> Optional[float]:
     return None
 
 
-def _format_diff(diff: WorkbookDiff, max_rows: Optional[int]) -> str:
+def _format_diff(diff: WorkbookDiff, max_rows: int | None) -> str:
     """Build a human-readable report from the raw difference data."""
-    lines: List[str] = []
+    lines: list[str] = []
     if diff.missing_in_left:
         lines.append(
             "Sheets only in right workbook: " + ", ".join(diff.missing_in_left)
@@ -361,21 +362,21 @@ def _format_diff(diff: WorkbookDiff, max_rows: Optional[int]) -> str:
 
 
 def _format_segment_diffs(
-    timing_diffs: List[TimingDiff],
-    max_rows: Optional[int],
+    timing_diffs: list[TimingDiff],
+    max_rows: int | None,
 ) -> str:
     """Render runner timing differences in a readable format."""
     if not timing_diffs:
         return "No timing differences detected."
 
-    lines: List[str] = ["Runner timing differences:"]
+    lines: list[str] = ["Runner timing differences:"]
     ordered = sorted(
         timing_diffs,
         key=lambda diff: (diff.sheet, str(diff.runner), diff.column),
     )
     displayed = 0
 
-    def fmt(value: Optional[float]) -> str:
+    def fmt(value: float | None) -> str:
         if value is None:
             return "—"
         text = f"{value:.3f}"

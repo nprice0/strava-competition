@@ -1,11 +1,10 @@
-"""Tests for SegmentService fallback processing and default time handling."""
+"""Tests for SegmentService processing and default time handling."""
 
 from __future__ import annotations
 
 import threading
 import time
 from types import MethodType
-from typing import List
 
 import pytest
 
@@ -35,32 +34,30 @@ def segment() -> Segment:
         )
 
 
-def test_fallback_queue_processes_in_parallel(runner: Runner, segment: Segment) -> None:
-    """Ensure fallback runners are processed concurrently when queued."""
+def test_segment_processes_runners_in_parallel(
+    runner: Runner, segment: Segment
+) -> None:
+    """Ensure runners are processed concurrently via activity scan."""
 
     service = SegmentService(max_workers=2)
 
-    fallback_runners = []
+    runners = []
     for idx in range(2):
-        queued_runner = Runner(
+        r = Runner(
             name=f"Runner {idx}",
             strava_id=str(idx + 1),
             refresh_token="token",
             segment_team="A",
         )
-        queued_runner.payment_required = True  # type: ignore[attr-defined]
-        fallback_runners.append(queued_runner)
+        runners.append(r)
 
-    segment_results: dict[str, List[SegmentResult]] = {}
-    progress_steps: List[int] = []
-    start_times: List[float] = []
+    start_times: list[float] = []
     lock = threading.Lock()
 
-    def fake_process_runner(
+    def fake_scan(
         self: SegmentService,
         runner_arg: Runner,
         segment_arg: Segment,
-        efforts: List[dict] | None,
         cancel_event: threading.Event | None = None,
     ) -> SegmentResult | None:
         with lock:
@@ -73,70 +70,49 @@ def test_fallback_queue_processes_in_parallel(runner: Runner, segment: Segment) 
                     if len(start_times) >= 2:
                         break
             else:
-                raise AssertionError("Fallback tasks did not start concurrently")
+                raise AssertionError("Tasks did not start concurrently")
         time.sleep(0.02)
         return None
 
-    service._process_runner_results = MethodType(fake_process_runner, service)
+    service._result_from_activity_scan = MethodType(fake_scan, service)  # type: ignore[method-assign]
 
-    completed = service._process_fallback_queue(
-        segment,
-        segment_results,
-        fallback_runners,
-        threading.Event(),
-        0,
-        progress_steps.append,
-    )
+    service._process_segment(segment, runners, 1, 1, threading.Event(), None)
 
-    assert len(start_times) == len(fallback_runners)
-    assert completed == len(fallback_runners)
-    assert progress_steps == [1, 2]
+    assert len(start_times) == len(runners)
     assert max(start_times) - min(start_times) < 0.1
 
 
-def test_fallback_queue_skips_when_cancelled(runner: Runner, segment: Segment) -> None:
-    """Verify cancellation prevents fallback submission or execution."""
+def test_segment_skips_when_cancelled(runner: Runner, segment: Segment) -> None:
+    """Verify cancellation prevents processing."""
 
     service = SegmentService(max_workers=2)
 
-    queued_runner = Runner(
+    r = Runner(
         name="Cancelled",
         strava_id="42",
         refresh_token="token",
         segment_team="A",
     )
-    queued_runner.payment_required = True  # type: ignore[attr-defined]
 
     cancel_event = threading.Event()
     cancel_event.set()
 
-    segment_results: dict[str, List[SegmentResult]] = {}
-    progress_steps: List[int] = []
     invoked = threading.Event()
 
-    def fake_process_runner(
+    def fake_scan(
         self: SegmentService,
         runner_arg: Runner,
         segment_arg: Segment,
-        efforts: List[dict] | None,
         cancel_event_arg: threading.Event | None = None,
     ) -> SegmentResult | None:
         invoked.set()
         return None
 
-    service._process_runner_results = MethodType(fake_process_runner, service)
+    service._result_from_activity_scan = MethodType(fake_scan, service)  # type: ignore[method-assign]
 
-    completed = service._process_fallback_queue(
-        segment,
-        segment_results,
-        [queued_runner],
-        cancel_event,
-        0,
-        progress_steps.append,
-    )
+    results = service._process_segment(segment, [r], 1, 1, cancel_event, None)
 
-    assert completed == 0
-    assert progress_steps == []
+    assert results == {}
     assert not invoked.is_set()
 
 
@@ -191,77 +167,3 @@ def test_default_time_results_added_for_missing_runners() -> None:
     assert beta_default.fastest_time == pytest.approx(150.0)
     assert beta_default.fastest_date == segment.start_date
     assert beta_default.fastest_distance_m == 0.0
-
-
-def test_result_from_efforts_filters_below_min_distance(
-    monkeypatch: pytest.MonkeyPatch, runner: Runner, segment: Segment
-) -> None:
-    monkeypatch.setattr(
-        "strava_competition.services.segment_service.FORCE_ACTIVITY_SCAN_FALLBACK",
-        False,
-        raising=False,
-    )
-    service = SegmentService(max_workers=1)
-    segment.min_distance_meters = 400.0
-    efforts = [
-        {
-            "id": "short",
-            "elapsed_time": 150,
-            "start_date_local": "2024-01-01T09:00:00Z",
-        },
-        {
-            "id": "long",
-            "elapsed_time": 140,
-            "start_date_local": "2024-01-01T09:15:00Z",
-        },
-    ]
-
-    distance_map = {"short": 350.0, "long": 450.0}
-
-    def _fake_distance(_runner, effort, *, allow_stream=True):
-        return distance_map[effort["id"]]
-
-    monkeypatch.setattr(
-        "strava_competition.services.segment_service.derive_effort_distance_m",
-        _fake_distance,
-    )
-
-    result = service._result_from_efforts(runner, segment, efforts)
-
-    assert result is not None
-    assert result.attempts == 1
-    assert result.fastest_time == pytest.approx(140)
-    assert result.diagnostics.get("filtered_efforts_below_distance") == 1
-    assert result.fastest_distance_m == pytest.approx(450.0)
-
-
-def test_result_from_efforts_fallbacks_to_payload_distance(
-    monkeypatch: pytest.MonkeyPatch, runner: Runner, segment: Segment
-) -> None:
-    monkeypatch.setattr(
-        "strava_competition.services.segment_service.FORCE_ACTIVITY_SCAN_FALLBACK",
-        False,
-        raising=False,
-    )
-    service = SegmentService(max_workers=1)
-    segment.min_distance_meters = 400.0
-    efforts = [
-        {
-            "id": "candidate",
-            "elapsed_time": 150,
-            "distance": 410.0,
-            "start_date_local": "2024-01-01T09:00:00Z",
-        }
-    ]
-
-    monkeypatch.setattr(
-        "strava_competition.effort_distance.compute_effort_distance_from_payload",
-        lambda *_args, **_kwargs: None,
-    )
-
-    result = service._result_from_efforts(runner, segment, efforts)
-
-    assert result is not None
-    assert result.attempts == 1
-    assert result.diagnostics.get("best_effort_id") == "candidate"
-    assert result.fastest_distance_m == pytest.approx(410.0)

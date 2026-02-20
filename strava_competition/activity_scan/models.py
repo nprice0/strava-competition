@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Dict, List
 
 
 @dataclass(slots=True)
@@ -19,8 +18,8 @@ class ActivityScanResult:
     fastest_start_date: datetime | None
     moving_time: float | None
     fastest_distance_m: float | None = None
-    effort_ids: List[int | str] = field(default_factory=list)
-    inspected_activities: List[Dict[str, object]] = field(default_factory=list)
+    effort_ids: list[int | str] = field(default_factory=list)
+    inspected_activities: list[dict[str, object]] = field(default_factory=list)
     birthday_bonus_applied: bool = False
     time_bonus_applied: bool = False
     filtered_efforts_below_distance: int = 0
