@@ -3,6 +3,20 @@ description: "Python coding conventions for production-ready code"
 applyTo: "**/*.py"
 ---
 
+## Project Overview
+
+- **Target Python version:** 3.10+
+- **Tooling:** ruff (lint + format), mypy (strict), bandit (security), pytest
+- **Package layout:**
+  - `strava_competition/` — core library (models, services, API client, Excel I/O)
+  - `strava_competition/services/` — orchestration (distance, segment)
+  - `strava_competition/strava_client/` — HTTP client, caching, rate limiting
+  - `strava_competition/tools/` — standalone CLI utilities (run via `python -m`)
+  - `strava_competition/activity_scan/` — activity + segment effort scanning
+  - `tests/` — pytest suite with cached API fixtures in `tests/strava_cache/`
+- **Threading:** services use `ThreadPoolExecutor` with per-runner token locks
+- **Caching:** disk-based response cache in `strava_cache/` (hashed paths, PII redaction)
+
 ## Code Quality Standards
 
 All code must be **production-ready**. This means:
@@ -27,6 +41,7 @@ All code must be **production-ready**. This means:
 - Use `typing` and `collections.abc` for complex types.
 - Prefer `X | None` over `Optional[X]` (Python 3.10+).
 - Use `TypedDict`, `NamedTuple`, or dataclasses for structured data—avoid raw dicts.
+- `dict[str, Any]` is acceptable for raw Strava API JSON responses that are passed through without field-level access.
 
 ## Docstrings
 
@@ -80,7 +95,9 @@ Group imports in this order, separated by blank lines:
 2. Third-party packages
 3. Local modules
 
-Use absolute imports. Avoid `from module import *`.
+Use relative imports within the `strava_competition` package (e.g. `from ..models import Runner`).
+Use absolute imports for standard library and third-party packages.
+Avoid `from module import *`.
 
 ## Functions & Classes
 
@@ -176,7 +193,7 @@ All must pass with zero warnings. No `# type: ignore` without a comment explaini
 - Comments that repeat what the code says
 - Catching exceptions only to re-raise without added context
 - Ignoring return values from functions that can fail
-- Using `print()` instead of proper logging
+- Using `print()` for diagnostics instead of `logging` (use `print()` only for user-facing CLI output in tools)
 
 ## Performance & Reliability
 
