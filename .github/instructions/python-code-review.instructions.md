@@ -5,23 +5,14 @@ applyTo: "**/*.py"
 
 # Code Review Guidelines
 
-⚠️ **Important**  
-This document defines expectations for AI-assisted or human-led code reviews.
-It is **not** a GitHub Copilot instruction file and must not be treated as one.
-
 ---
 
 ## Purpose
 
-This document describes the standard approach for performing a **production‑grade review**
-of Python applications using Large Language Models (LLMs) or human reviewers.
-
-The goal is to ensure code is:
-
-- Functionally correct
-- Secure and reliable
-- Performant and maintainable
-- Production-ready
+This document defines the three-pass review methodology used when performing a
+**full code review** (AI-assisted or human-led). It applies when a review is
+explicitly requested — not during routine code generation, where the conventions
+in `copilot-instructions.md` take precedence.
 
 ---
 
@@ -57,7 +48,7 @@ Focus on:
 
 ### Pass 2 — Security & Reliability
 
-Focus on:
+Focus on (in addition to the security rules in `copilot-instructions.md`):
 
 - Security risks
   - Injection vectors, unsafe deserialization, path traversal, SSRF
@@ -80,7 +71,7 @@ Focus on:
 
 ### Pass 3 — Performance & Maintainability
 
-Focus on:
+Focus on (in addition to the performance rules in `copilot-instructions.md`):
 
 - Performance
   - Algorithmic complexity, unnecessary I/O, N+1 patterns
