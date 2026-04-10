@@ -151,12 +151,62 @@ Helper scripts live under `strava_competition/tools/`:
 | `clip_activity_segment`        | Slice track points from a GPX file for a segment effort        |
 | `deviation_map`                | Build an interactive map showing gate crossings and deviations |
 | `capture_gc`                   | Delete cache responses older than a retention window           |
+| `wednesday_stats`              | Club run statistics — day/time filters, attendance, records    |
 
 Run any tool with `--help` for usage:
 
 ```bash
 python -m strava_competition.tools.fetch_activity_gps --help
 ```
+
+### Club Run Statistics (`wednesday_stats`)
+
+A standalone tool for analysing recurring club runs (e.g. a weekly Wednesday
+evening run). It reads runners from the same Excel workbook and produces
+per-runner stats, rankings, records, running-buddy pairs, monthly breakdowns,
+and year-over-year comparisons.
+
+**Features:**
+
+- Configurable day of week (`--day`) and start-time window (`--time-from` / `--time-to`)
+- Attendance rate and consecutive-week streaks
+- Per-runner rankings (distance, attendance, pace, streak)
+- Group records (longest run, fastest/slowest speed)
+- Most common running pairs (who runs together most often)
+- Monthly and yearly breakdown sheets in Excel output
+
+**Examples:**
+
+```bash
+# Wednesday club runs starting between 19:25 and 19:40, with Excel output
+python -m strava_competition.tools.wednesday_stats \
+    -i competition_input.xlsx \
+    -s 2022-01-01 -e 2026-04-10 \
+    --day wednesday --time-from 19:25 --time-to 19:40 \
+    -o wednesday_results.xlsx
+
+# Thursday runs, no time filter, console output only
+python -m strava_competition.tools.wednesday_stats \
+    -i competition_input.xlsx \
+    -s 2023-01-01 -e 2026-04-10 \
+    --day thursday
+
+# Wednesday runs, only filter by earliest start time
+python -m strava_competition.tools.wednesday_stats \
+    -i competition_input.xlsx \
+    -s 2022-01-01 -e 2026-04-10 \
+    --day wednesday --time-from 19:00
+```
+
+Results are always printed to the console. Pass `--output` to also write an Excel file with these sheets:
+
+| Sheet              | Content                                                       |
+| ------------------ | ------------------------------------------------------------- |
+| Summary            | One row per runner with all stats and rankings                |
+| Monthly Breakdown  | Per-runner per-month: runs, attendance %, distance, pace      |
+| Year over Year     | Same columns grouped by year for progression tracking         |
+| Records            | Group records — longest, fastest, slowest runs                |
+| Running Pairs      | Top 15 pairs of runners who share the most club run days      |
 
 ---
 
