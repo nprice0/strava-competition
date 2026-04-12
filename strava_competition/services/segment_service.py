@@ -10,6 +10,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor, as_completed, Future
 import logging
 import threading
+import time
 from datetime import datetime
 from typing import Any, Callable, Dict, List, Sequence, Tuple
 
@@ -17,11 +18,12 @@ from cachetools import TTLCache
 
 from ..activity_scan import ActivityEffortScanner
 from ..config import (
+    RATE_LIMIT_THROTTLE_SECONDS,
     RUNNER_ACTIVITY_CACHE_SIZE,
     MAX_WORKERS,
     SEGMENT_SPLIT_WINDOWS_ENABLED,
 )
-from ..errors import StravaAPIError
+from ..errors import StravaAPIError, StravaRateLimitError
 from ..models import Segment, Runner, SegmentResult, SegmentGroup, SegmentWindow
 from ..strava_api import get_activities
 
@@ -31,6 +33,11 @@ _ActivityCacheKey = Tuple[int | str, datetime, datetime]
 
 # Cache TTL for runner activities (1 hour)
 _ACTIVITY_CACHE_TTL_SECONDS = 3600
+
+# Max times to retry all rate-limited runners for a segment before giving up
+_RATE_LIMIT_RUNNER_RETRIES = 3
+# Cooldown multiplier between runner-level retry rounds (seconds)
+_RATE_LIMIT_RUNNER_COOLDOWN = 60
 
 
 class SegmentService:
@@ -88,9 +95,11 @@ class SegmentService:
                 )
                 for team_results in segment_results.values():
                     team_results.sort(
-                        key=lambda r: r.fastest_time
-                        if r.fastest_time is not None
-                        else float("inf")
+                        key=lambda r: (
+                            r.fastest_time
+                            if r.fastest_time is not None
+                            else float("inf")
+                        )
                     )
                 results[segment.name] = segment_results
         finally:
@@ -130,9 +139,11 @@ class SegmentService:
                     )
                     for team_results in group_results.values():
                         team_results.sort(
-                            key=lambda r: r.fastest_time
-                            if r.fastest_time is not None
-                            else float("inf")
+                            key=lambda r: (
+                                r.fastest_time
+                                if r.fastest_time is not None
+                                else float("inf")
+                            )
                         )
                     results[group.name] = group_results
                 else:
@@ -151,9 +162,11 @@ class SegmentService:
                         )
                         for team_results in window_results.values():
                             team_results.sort(
-                                key=lambda r: r.fastest_time
-                                if r.fastest_time is not None
-                                else float("inf")
+                                key=lambda r: (
+                                    r.fastest_time
+                                    if r.fastest_time is not None
+                                    else float("inf")
+                                )
                             )
                         results[sheet_name] = window_results
         finally:
@@ -235,49 +248,95 @@ class SegmentService:
                 )
 
         # Process each runner across all windows
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_runner: Dict[Future, Runner] = {}
-            for runner in eligible_runners:
-                if cancel_event and cancel_event.is_set():
-                    break
-                future = executor.submit(
-                    self._process_runner_across_windows,
-                    runner,
-                    group,
-                    union_start,
-                    union_end,
-                    cancel_event,
+        pending_runners = list(eligible_runners)
+        rate_limited_runners: List[Runner] = []
+
+        for retry_round in range(_RATE_LIMIT_RUNNER_RETRIES + 1):
+            if not pending_runners:
+                break
+            if retry_round > 0:
+                cooldown = _RATE_LIMIT_RUNNER_COOLDOWN * retry_round
+                self._log.warning(
+                    "Retrying %d rate-limited runners for group %s "
+                    "(round %d/%d) after %ds cooldown",
+                    len(pending_runners),
+                    group.name,
+                    retry_round,
+                    _RATE_LIMIT_RUNNER_RETRIES,
+                    cooldown,
                 )
-                future_to_runner[future] = runner
+                time.sleep(cooldown)
+            rate_limited_runners = []
 
-            for fut in as_completed(future_to_runner):
-                if cancel_event and cancel_event.is_set():
-                    for pending in future_to_runner:
-                        pending.cancel()
-                    break
-                runner = future_to_runner[fut]
-                try:
-                    result = fut.result()
-                except Exception:  # noqa: BLE001
-                    self._log.debug(
-                        "Failed processing runner %s for group %s",
-                        runner.name,
-                        group.name,
-                        exc_info=True,
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                future_to_runner: Dict[Future, Runner] = {}
+                for runner in pending_runners:
+                    if cancel_event and cancel_event.is_set():
+                        break
+                    future = executor.submit(
+                        self._process_runner_across_windows,
+                        runner,
+                        group,
+                        union_start,
+                        union_end,
+                        cancel_event,
                     )
-                    result = None
+                    future_to_runner[future] = runner
 
-                if result:
-                    team = runner.segment_team
-                    if team:
-                        bucket = segment_results.setdefault(team, [])
-                        bucket.append(result)
+                for fut in as_completed(future_to_runner):
+                    if cancel_event and cancel_event.is_set():
+                        for pending in future_to_runner:
+                            pending.cancel()
+                        break
+                    runner = future_to_runner[fut]
+                    try:
+                        result = fut.result()
+                    except StravaRateLimitError:
+                        self._log.warning(
+                            "Rate-limited runner=%s group=%s; queued for retry",
+                            runner.name,
+                            group.name,
+                        )
+                        rate_limited_runners.append(runner)
+                        result = None
+                    except Exception:  # noqa: BLE001
+                        self._log.debug(
+                            "Failed processing runner %s for group %s",
+                            runner.name,
+                            group.name,
+                            exc_info=True,
+                        )
+                        result = None
 
-                completed += 1
-                notify_progress(completed)
+                    if result:
+                        team = runner.segment_team
+                        if team:
+                            bucket = segment_results.setdefault(team, [])
+                            bucket.append(result)
 
-        # Inject default times for runners without results
-        self._inject_default_group_results(group, eligible_runners, segment_results)
+                    completed += 1
+                    notify_progress(completed)
+
+            pending_runners = rate_limited_runners
+
+        if rate_limited_runners:
+            names = [r.name for r in rate_limited_runners]
+            self._log.error(
+                "Gave up on %d rate-limited runners for group %s after %d retries: %s",
+                len(rate_limited_runners),
+                group.name,
+                _RATE_LIMIT_RUNNER_RETRIES,
+                ", ".join(names),
+            )
+
+        # Only assign default_time to runners we successfully scanned.
+        # Rate-limited runners were never fully scanned, so they must be
+        # excluded — penalising them for an API failure would be unfair.
+        rate_limited_names = {r.name for r in rate_limited_runners}
+        scanned_runners = [
+            r for r in eligible_runners if r.name not in rate_limited_names
+        ]
+        self._inject_default_group_results(group, scanned_runners, segment_results)
         return segment_results
 
     def _process_runner_across_windows(
@@ -465,52 +524,98 @@ class SegmentService:
                     exc_info=True,
                 )
 
-        with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
-            future_to_runner: Dict[Future, Runner] = {}
-            for runner in eligible_runners:
-                if cancel_event and cancel_event.is_set():
-                    self._log.info(
-                        "Cancellation requested during submission for segment %s; halting.",
-                        segment.name,
-                    )
-                    break
-                future = executor.submit(
-                    self._result_from_activity_scan,
-                    runner,
-                    segment,
-                    cancel_event,
+        pending_runners = list(eligible_runners)
+        rate_limited_runners: List[Runner] = []
+
+        for retry_round in range(_RATE_LIMIT_RUNNER_RETRIES + 1):
+            if not pending_runners:
+                break
+            if retry_round > 0:
+                cooldown = _RATE_LIMIT_RUNNER_COOLDOWN * retry_round
+                self._log.warning(
+                    "Retrying %d rate-limited runners for segment %s "
+                    "(round %d/%d) after %ds cooldown",
+                    len(pending_runners),
+                    segment.name,
+                    retry_round,
+                    _RATE_LIMIT_RUNNER_RETRIES,
+                    cooldown,
                 )
-                future_to_runner[future] = runner
+                time.sleep(cooldown)
+            rate_limited_runners = []
 
-            for fut in as_completed(future_to_runner):
-                runner = future_to_runner[fut]
-                result: SegmentResult | None = None
-                try:
-                    result = fut.result()
-                except Exception:  # noqa: BLE001
-                    self._log.debug(
-                        "Activity scan failed runner=%s segment=%s",
-                        runner.name,
-                        segment.id,
-                        exc_info=True,
+            with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
+                future_to_runner: Dict[Future, Runner] = {}
+                for runner in pending_runners:
+                    if cancel_event and cancel_event.is_set():
+                        self._log.info(
+                            "Cancellation requested during submission for segment %s; halting.",
+                            segment.name,
+                        )
+                        break
+                    future = executor.submit(
+                        self._result_from_activity_scan,
+                        runner,
+                        segment,
+                        cancel_event,
                     )
-                if result:
-                    team = runner.segment_team
-                    if team:
-                        bucket = segment_results.setdefault(team, [])
-                        bucket.append(result)
-                completed += 1
-                notify_progress(completed)
-                if cancel_event and cancel_event.is_set():
-                    self._log.info(
-                        "Cancellation requested while processing segment %s; stopping early.",
-                        segment.name,
-                    )
-                    for pending in future_to_runner:
-                        pending.cancel()
-                    break
+                    future_to_runner[future] = runner
 
-        self._inject_default_segment_results(segment, eligible_runners, segment_results)
+                for fut in as_completed(future_to_runner):
+                    runner = future_to_runner[fut]
+                    result: SegmentResult | None = None
+                    try:
+                        result = fut.result()
+                    except StravaRateLimitError:
+                        self._log.warning(
+                            "Rate-limited runner=%s segment=%s; queued for retry",
+                            runner.name,
+                            segment.id,
+                        )
+                        rate_limited_runners.append(runner)
+                    except Exception:  # noqa: BLE001
+                        self._log.debug(
+                            "Activity scan failed runner=%s segment=%s",
+                            runner.name,
+                            segment.id,
+                            exc_info=True,
+                        )
+                    if result:
+                        team = runner.segment_team
+                        if team:
+                            bucket = segment_results.setdefault(team, [])
+                            bucket.append(result)
+                    completed += 1
+                    notify_progress(completed)
+                    if cancel_event and cancel_event.is_set():
+                        self._log.info(
+                            "Cancellation requested while processing segment %s; stopping early.",
+                            segment.name,
+                        )
+                        for pending in future_to_runner:
+                            pending.cancel()
+                        break
+
+            pending_runners = rate_limited_runners
+
+        if rate_limited_runners:
+            names = [r.name for r in rate_limited_runners]
+            self._log.error(
+                "Gave up on %d rate-limited runners for segment %s after %d retries: %s",
+                len(rate_limited_runners),
+                segment.name,
+                _RATE_LIMIT_RUNNER_RETRIES,
+                ", ".join(names),
+            )
+
+        # Only assign default_time to runners we successfully scanned.
+        # Rate-limited runners were never fully scanned, so they must be
+        # excluded — penalising them for an API failure would be unfair.
+        rate_limited_names = {r.name for r in rate_limited_runners}
+        scanned_runners = [
+            r for r in eligible_runners if r.name not in rate_limited_names
+        ]
+        self._inject_default_segment_results(segment, scanned_runners, segment_results)
         return segment_results
 
     def _inject_default_segment_results(
@@ -553,13 +658,20 @@ class SegmentService:
         segment: Segment,
         cancel_event: threading.Event | None,
     ) -> SegmentResult | None:
-        """Scan runner's activities for segment efforts and return the best result."""
+        """Scan runner's activities for segment efforts and return the best result.
+
+        Raises:
+            StravaRateLimitError: Propagated so callers can retry
+                the runner after a cooldown instead of losing data.
+        """
         try:
             scan = self._activity_scanner.scan_segment(
                 runner,
                 segment,
                 cancel_event=cancel_event,
             )
+        except StravaRateLimitError:
+            raise
         except StravaAPIError as exc:
             self._log.warning(
                 "Activity scan failed runner=%s segment=%s: %s",

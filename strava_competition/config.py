@@ -193,6 +193,14 @@ RATE_LIMIT_JITTER_RANGE = (0.05, 0.2)
 RATE_LIMIT_NEAR_LIMIT_BUFFER = 3
 # RATE_LIMIT_THROTTLE_SECONDS is the pause applied on 429s or near-limit signals.
 RATE_LIMIT_THROTTLE_SECONDS = _env_int("RATE_LIMIT_THROTTLE_SECONDS", 15)
+# RATE_LIMIT_429_MAX_RETRIES is the number of 429 retries before giving up.
+# Separate from STRAVA_MAX_RETRIES so transient rate limits don't consume the
+# general retry budget.
+RATE_LIMIT_429_MAX_RETRIES = _env_int("RATE_LIMIT_429_MAX_RETRIES", 10)
+# RATE_LIMIT_429_BACKOFF_MAX_SECONDS caps the escalating backoff between 429 retries.
+RATE_LIMIT_429_BACKOFF_MAX_SECONDS = _env_float(
+    "RATE_LIMIT_429_BACKOFF_MAX_SECONDS", 60.0
+)
 
 # Retry/backoff behaviour for the Strava fetch loops.
 # STRAVA_MAX_RETRIES covers network failures, 5xx, or bad payloads.

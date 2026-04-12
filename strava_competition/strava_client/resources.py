@@ -10,6 +10,8 @@ import requests
 
 from ..api_capture import get_cached_response, save_response_to_cache
 from ..config import (
+    RATE_LIMIT_429_BACKOFF_MAX_SECONDS,
+    RATE_LIMIT_429_MAX_RETRIES,
     RATE_LIMIT_THROTTLE_SECONDS,
     REQUEST_TIMEOUT,
     STRAVA_BACKOFF_MAX_SECONDS,
@@ -17,15 +19,20 @@ from ..config import (
     _cache_mode_offline,
     _cache_mode_saves,
 )
-from ..errors import StravaAPIError
+from ..errors import StravaAPIError, StravaRateLimitError
 from ..models import Runner
 from .base import auth_headers, ensure_runner_token
 from .cache_helpers import runner_identity
 from .rate_limiter import RateLimiter
-from .response_handling import classify_response_status
+from .response_handling import classify_response_status, extract_error
 from .session import get_default_session
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _extract_error_detail(response: requests.Response) -> str | None:
+    """Extract error detail from a response for inclusion in error messages."""
+    return extract_error(response)
 
 
 class ResourceAPI:
@@ -52,6 +59,8 @@ class ResourceAPI:
         backoff = 1.0
         attempt = 0
         attempted_refresh = False
+        rate_limit_retries = 0
+        rate_limit_backoff = float(RATE_LIMIT_THROTTLE_SECONDS)
         while True:
             attempt += 1
             can_retry = attempt < STRAVA_MAX_RETRIES
@@ -105,6 +114,37 @@ class ResourceAPI:
                 attempted_refresh = True
                 continue
 
+            # Handle 429 rate limits with a dedicated retry budget and
+            # escalating backoff so transient limits don't consume the
+            # general retry counter.
+            if response.status_code == 429:
+                rate_limit_retries += 1
+                if rate_limit_retries <= RATE_LIMIT_429_MAX_RETRIES:
+                    LOGGER.info(
+                        "%s runner=%s 429 retry %s/%s; backing off %.0fs",
+                        context,
+                        runner.name,
+                        rate_limit_retries,
+                        RATE_LIMIT_429_MAX_RETRIES,
+                        rate_limit_backoff,
+                    )
+                    time.sleep(rate_limit_backoff)
+                    rate_limit_backoff = min(
+                        rate_limit_backoff * 2,
+                        RATE_LIMIT_429_BACKOFF_MAX_SECONDS,
+                    )
+                    continue
+                detail = _extract_error_detail(response)
+                message = (
+                    f"{context} rate limited (429) after "
+                    f"{RATE_LIMIT_429_MAX_RETRIES} retries "
+                    f"for runner {runner.name}"
+                )
+                if detail:
+                    message = f"{message} | {detail}"
+                LOGGER.error(message)
+                raise StravaRateLimitError(message)
+
             action, error = classify_response_status(
                 runner,
                 response,
@@ -114,13 +154,8 @@ class ResourceAPI:
                 can_retry=can_retry,
             )
             if action == "retry":
-                # Use longer throttle for 429 rate limits, short backoff for others.
-                # We already logged the 429 above when after_response returned throttled.
-                if response.status_code == 429:
-                    time.sleep(RATE_LIMIT_THROTTLE_SECONDS)
-                else:
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+                time.sleep(backoff)
+                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
                 continue
             if action == "raise" and error is not None:
                 raise error

@@ -23,6 +23,10 @@ class StravaResourceNotFoundError(StravaAPIError):
     """Raised when a segment, activity, or stream does not exist."""
 
 
+class StravaRateLimitError(StravaAPIError):
+    """Raised when the API rate limit is exceeded after all retries."""
+
+
 class StravaStreamEmptyError(StravaAPIError):
     """Raised when an activity stream is missing required data series."""
 
@@ -32,6 +36,7 @@ __all__ = [
     "StravaAPIError",
     "StravaPermissionError",
     "StravaPaymentRequiredError",
+    "StravaRateLimitError",
     "StravaResourceNotFoundError",
     "StravaStreamEmptyError",
 ]

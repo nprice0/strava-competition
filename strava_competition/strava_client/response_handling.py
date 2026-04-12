@@ -11,6 +11,7 @@ from ..errors import (
     StravaAPIError,
     StravaPaymentRequiredError,
     StravaPermissionError,
+    StravaRateLimitError,
     StravaResourceNotFoundError,
 )
 from ..models import Runner
@@ -53,7 +54,7 @@ def classify_response_status(
         message = with_detail(
             f"{context} rate limited (429) after max retries for runner {runner.name}"
         )
-        return "raise", StravaAPIError(message)
+        return "raise", StravaRateLimitError(message)
 
     if status == 402:
         runner.payment_required = True
