@@ -12,7 +12,7 @@ applyTo: "**/*.py"
 This document defines the three-pass review methodology used when performing a
 **full code review** (AI-assisted or human-led). It applies when a review is
 explicitly requested — not during routine code generation, where the conventions
-in `copilot-instructions.md` take precedence.
+in `copilot-instructions.md` and `python.instructions.md` take precedence.
 
 ---
 
