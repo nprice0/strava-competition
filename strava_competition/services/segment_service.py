@@ -18,7 +18,6 @@ from cachetools import TTLCache
 
 from ..activity_scan import ActivityEffortScanner
 from ..config import (
-    RATE_LIMIT_THROTTLE_SECONDS,
     RUNNER_ACTIVITY_CACHE_SIZE,
     MAX_WORKERS,
     SEGMENT_SPLIT_WINDOWS_ENABLED,

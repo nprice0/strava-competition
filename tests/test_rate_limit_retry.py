@@ -7,7 +7,6 @@ import warnings
 from datetime import datetime, timedelta, timezone
 from types import MethodType
 from typing import Any
-from unittest.mock import MagicMock
 
 import pytest
 
@@ -279,7 +278,6 @@ class TestSegmentServiceRateLimitRetry:
     def test_non_rate_limit_api_error_not_retried(self) -> None:
         """A runner that fails with a generic StravaAPIError (e.g. 403)
         should NOT be retried — only rate-limit errors trigger retry."""
-        from strava_competition.errors import StravaPermissionError
 
         service = SegmentService(max_workers=1)
         seg = _segment()
@@ -306,7 +304,7 @@ class TestSegmentServiceRateLimitRetry:
         orig_cooldown = svc_mod._RATE_LIMIT_RUNNER_COOLDOWN
         svc_mod._RATE_LIMIT_RUNNER_COOLDOWN = 0
         try:
-            results = service._process_segment(seg, [runner], 1, 1, None, None)
+            service._process_segment(seg, [runner], 1, 1, None, None)
         finally:
             svc_mod._RATE_LIMIT_RUNNER_COOLDOWN = orig_cooldown
 
