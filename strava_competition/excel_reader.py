@@ -59,6 +59,26 @@ _REQUIRED_DISTANCE_COLS = {
 }
 
 
+def _parse_date_column(column: pd.Series) -> pd.Series:
+    """Parse a date column into timezone-naive datetimes.
+
+    Excel date columns can mix timezone-aware values (e.g. an ISO string
+    ending in ``Z``) with timezone-naive ones (e.g. a plain date cell). Passing
+    such a mixed column straight to :func:`pandas.to_datetime` either raises
+    ``ValueError: Mixed timezones`` or silently coerces the naive values to
+    ``NaT`` — which previously caused otherwise-valid rows to be dropped.
+
+    ``format="mixed"`` parses each cell independently (rather than inferring a
+    single format from the first value, which would coerce differently-shaped
+    cells to ``NaT``). ``utc=True`` normalises every value to UTC, after which
+    the tz is stripped so all boundaries live in the same naive-local domain
+    expected downstream. Unparseable cells become ``NaT`` (via
+    ``errors="coerce"``).
+    """
+    parsed = pd.to_datetime(column, errors="coerce", utc=True, format="mixed")
+    return parsed.dt.tz_localize(None)
+
+
 def _is_blank(value: object) -> bool:
     return pd.isna(value) or str(value).strip() == ""
 
@@ -336,8 +356,8 @@ def read_segments(
             f"Sheet '{SEGMENTS_SHEET}' is required but was missing or empty"
         )
     _validate_columns(df, _REQUIRED_SEGMENT_COLS, SEGMENTS_SHEET)
-    df[_SEGMENT_START_COL] = pd.to_datetime(df[_SEGMENT_START_COL], errors="coerce")
-    df[_SEGMENT_END_COL] = pd.to_datetime(df[_SEGMENT_END_COL], errors="coerce")
+    df[_SEGMENT_START_COL] = _parse_date_column(df[_SEGMENT_START_COL])
+    df[_SEGMENT_END_COL] = _parse_date_column(df[_SEGMENT_END_COL])
     segs: list[Segment] = []
     columns = [
         _SEGMENT_ID_COL,
@@ -416,8 +436,8 @@ def read_segment_groups(
             f"Sheet '{SEGMENTS_SHEET}' is required but was missing or empty"
         )
     _validate_columns(df, _REQUIRED_SEGMENT_COLS, SEGMENTS_SHEET)
-    df[_SEGMENT_START_COL] = pd.to_datetime(df[_SEGMENT_START_COL], errors="coerce")
-    df[_SEGMENT_END_COL] = pd.to_datetime(df[_SEGMENT_END_COL], errors="coerce")
+    df[_SEGMENT_START_COL] = _parse_date_column(df[_SEGMENT_START_COL])
+    df[_SEGMENT_END_COL] = _parse_date_column(df[_SEGMENT_END_COL])
 
     # Check for optional Window Label column
     has_window_label = _SEGMENT_WINDOW_LABEL_COL in df.columns
@@ -643,8 +663,8 @@ def read_distance_windows(
     if df is None:
         return []
     _validate_columns(df, _REQUIRED_DISTANCE_COLS, DISTANCE_SHEET)
-    df[_SEGMENT_START_COL] = pd.to_datetime(df[_SEGMENT_START_COL], errors="coerce")
-    df[_SEGMENT_END_COL] = pd.to_datetime(df[_SEGMENT_END_COL], errors="coerce")
+    df[_SEGMENT_START_COL] = _parse_date_column(df[_SEGMENT_START_COL])
+    df[_SEGMENT_END_COL] = _parse_date_column(df[_SEGMENT_END_COL])
     windows: list[tuple[pd.Timestamp, pd.Timestamp, float | None]] = []
     for start_dt, end_dt, threshold in df[
         [_SEGMENT_START_COL, _SEGMENT_END_COL, "Distance Threshold (km)"]
