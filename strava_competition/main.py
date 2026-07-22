@@ -69,7 +69,9 @@ def _ensure_tokens_early(runners: Sequence[Runner], input_file: str) -> None:
     for r in runners:
         before = getattr(r, "refresh_token", None)
         try:
-            get_default_client().ensure_runner_token(r)
+            # persist=False: we batch-write all rotated tokens once below,
+            # avoiding a full Runners-sheet rewrite per rotated runner.
+            get_default_client().ensure_runner_token(r, persist=False)
         except (TokenError, StravaAPIError) as e:
             logging.warning(
                 "Initial token ensure failed for runner=%s: %s",

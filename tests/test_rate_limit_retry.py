@@ -177,6 +177,45 @@ class TestResourceAPI429Retries:
             api.fetch_json(runner, "https://example.com/api", None, "test_ctx")
 
 
+class TestResourceAPILimiterLeak:
+    """Guard against the rate-limiter in-flight counter leaking on failure."""
+
+    def test_in_flight_released_on_unexpected_exception(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A non-RequestException during the request must still free the slot.
+
+        Without the ``try/finally`` guard the in-flight counter would never be
+        decremented, eventually blocking every worker forever.
+        """
+        from strava_competition.strava_client.resources import ResourceAPI
+        from strava_competition.strava_client import rate_limiter as rl_mod
+
+        class ExplodingSession:
+            def get(self, *_a: Any, **_kw: Any) -> Any:
+                # Not a requests.RequestException -> not caught by the retry
+                # branch, so it exercises the finally-based release.
+                raise ValueError("boom")
+
+        runner = _runner("Test", 1)
+        runner.access_token = "valid"
+
+        monkeypatch.setattr(
+            "strava_competition.strava_client.resources.ensure_runner_token",
+            lambda r: None,
+        )
+
+        limiter = rl_mod.RateLimiter(max_concurrent=1, jitter_range=(0, 0))
+        api = ResourceAPI(session=ExplodingSession(), limiter=limiter, timeout=5)  # type: ignore[arg-type]
+
+        with pytest.raises(ValueError, match="boom"):
+            api.fetch_json(runner, "https://example.com/api", None, "test_ctx")
+
+        assert limiter.snapshot()["in_flight"] == 0, (
+            "Limiter slot leaked after an unexpected exception"
+        )
+
+
 # ---------------------------------------------------------------------------
 # SegmentService runner-level retry tests
 # ---------------------------------------------------------------------------

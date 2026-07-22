@@ -45,6 +45,7 @@ def fetch_page_with_retries(
         attempts += 1
         limiter.before_request()
         resp: Optional[requests.Response] = None
+        limiter_released = False
         try:
             resp = session.get(
                 url,
@@ -54,6 +55,7 @@ def fetch_page_with_retries(
             )
         except requests.RequestException as exc:
             limiter.after_response(None, None)
+            limiter_released = True
             if attempts < STRAVA_MAX_RETRIES:
                 _log_retry(
                     runner.name,
@@ -73,6 +75,7 @@ def fetch_page_with_retries(
             throttled, rate_info = limiter.after_response(
                 resp.headers, resp.status_code
             )
+            limiter_released = True
             if throttled:
                 LOGGER.warning(
                     "%s runner=%s page=%s rate limited %s; throttling %ss",
@@ -82,6 +85,11 @@ def fetch_page_with_retries(
                     rate_info,
                     RATE_LIMIT_THROTTLE_SECONDS,
                 )
+        finally:
+            # Release the limiter slot even if an unexpected exception escapes
+            # before after_response ran, preventing an in-flight count leak.
+            if not limiter_released:
+                limiter.after_response(None, None)
 
         is_html = "text/html" in (resp.headers.get("Content-Type", "").lower())
         # Retry 429s up to a cap — rate limits are transient but may persist

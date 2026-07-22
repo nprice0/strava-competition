@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import importlib
 import os
+import warnings
 
 
 def _env_float(key: str, default: float) -> float:
@@ -44,16 +45,23 @@ def _env_bool(key: str, default: bool) -> bool:
 
 
 # Load .env variables when python-dotenv is available.
-_load_dotenv = None
-try:
-    _dotenv_mod = importlib.import_module("dotenv")
-    _load_dotenv = getattr(_dotenv_mod, "load_dotenv", None)
-except Exception:
-    _load_dotenv = None
+def _load_dotenv_file() -> None:
+    """Load variables from a local ``.env`` when python-dotenv is installed.
 
-if callable(_load_dotenv):
-    # Load .env from the current directory or any parent folder.
-    _load_dotenv()
+    Best-effort: silently skips if the package is missing so the tool still
+    runs from plain environment variables.
+    """
+    try:
+        dotenv_mod = importlib.import_module("dotenv")
+    except ImportError:
+        return
+    load_dotenv = getattr(dotenv_mod, "load_dotenv", None)
+    if callable(load_dotenv):
+        # Load .env from the current directory or any parent folder.
+        load_dotenv()
+
+
+_load_dotenv_file()
 
 
 # ---------------------------------------------------------------------------
@@ -86,31 +94,41 @@ CLIENT_SECRET = os.getenv("STRAVA_CLIENT_SECRET", "")
 #   live    = Always call Strava, never use or save cache
 #   cache   = Use cache + fetch new data since last run (default)
 #   offline = Cache only, fail if data is missing
-STRAVA_API_CACHE_MODE = os.getenv("STRAVA_API_CACHE_MODE", "cache").strip().lower()
+def _validate_cache_mode(mode: str) -> str:
+    """Return ``mode`` if valid, else raise ``ValueError``."""
+    if mode not in {"live", "cache", "offline"}:
+        raise ValueError(
+            f"Invalid STRAVA_API_CACHE_MODE: '{mode}'. "
+            "Must be 'live', 'cache', or 'offline'."
+        )
+    return mode
 
-if STRAVA_API_CACHE_MODE not in {"live", "cache", "offline"}:
-    raise ValueError(
-        f"Invalid STRAVA_API_CACHE_MODE: '{STRAVA_API_CACHE_MODE}'. "
-        "Must be 'live', 'cache', or 'offline'."
-    )
+
+STRAVA_API_CACHE_MODE = _validate_cache_mode(
+    os.getenv("STRAVA_API_CACHE_MODE", "cache").strip().lower()
+)
 
 # Derived flags for internal use
 _cache_mode_saves = STRAVA_API_CACHE_MODE == "cache"
 _cache_mode_reads = STRAVA_API_CACHE_MODE in {"cache", "offline"}
 _cache_mode_offline = STRAVA_API_CACHE_MODE == "offline"
 
+
 # Fail-fast: require client credentials when communication with Strava is
 # expected.  In offline mode the credentials are never used, so we skip the
 # check.  auth.py has its own guard as a defence-in-depth measure.
-if not _cache_mode_offline and (not CLIENT_ID or not CLIENT_SECRET):
-    import warnings
+def _warn_if_missing_credentials() -> None:
+    """Warn when Strava credentials are absent outside offline mode."""
+    if not _cache_mode_offline and (not CLIENT_ID or not CLIENT_SECRET):
+        warnings.warn(
+            "STRAVA_CLIENT_ID and/or STRAVA_CLIENT_SECRET are not set. "
+            "Token refresh and live API calls will fail. "
+            "Set STRAVA_API_CACHE_MODE=offline to run without credentials.",
+            stacklevel=1,
+        )
 
-    warnings.warn(
-        "STRAVA_CLIENT_ID and/or STRAVA_CLIENT_SECRET are not set. "
-        "Token refresh and live API calls will fail. "
-        "Set STRAVA_API_CACHE_MODE=offline to run without credentials.",
-        stacklevel=1,
-    )
+
+_warn_if_missing_credentials()
 
 # Maximum age (days) before a cached activity response is considered stale and
 # automatically refreshed from the live API. Set to 0 to disable the TTL.

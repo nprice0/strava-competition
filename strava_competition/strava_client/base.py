@@ -24,25 +24,32 @@ def _get_runner_lock(runner_id: str) -> threading.Lock:
         return _token_locks[runner_id]
 
 
-def ensure_runner_token(runner: Runner) -> None:
-    """Ensure the runner has a valid access token, refreshing when needed."""
+def ensure_runner_token(runner: Runner, *, persist: bool = True) -> None:
+    """Ensure the runner has a valid access token, refreshing when needed.
+
+    Args:
+        runner: Participant whose access token should be ensured.
+        persist: When True (default) a rotated refresh token is written back to
+            the workbook immediately for crash-safety. Callers that perform
+            their own batch persistence afterwards (e.g. the startup pre-warm)
+            should pass ``persist=False`` to avoid an O(N^2) rewrite of the
+            Runners sheet — one full rewrite per rotated runner.
+    """
 
     if config._cache_mode_offline:
-        if not getattr(runner, "access_token", None) and not getattr(
-            runner, "_skip_token_logged", False
-        ):
+        if not runner.access_token and not runner._skip_token_logged:
             LOGGER.info(
                 "Skipping Strava token refresh for runner=%s (STRAVA_API_CACHE_MODE=offline)",
-                getattr(runner, "name", "?"),
+                runner.name,
             )
-            setattr(runner, "_skip_token_logged", True)
+            runner._skip_token_logged = True
         return
 
     # Use per-runner locking to prevent race conditions during token rotation
     runner_lock = _get_runner_lock(str(runner.strava_id))
     with runner_lock:
         # Re-check after acquiring lock (another thread may have refreshed)
-        if getattr(runner, "access_token", None):
+        if runner.access_token:
             return
 
         access_token, new_refresh_token = get_access_token(
@@ -51,24 +58,29 @@ def ensure_runner_token(runner: Runner) -> None:
         runner.access_token = access_token
         if new_refresh_token and new_refresh_token != runner.refresh_token:
             runner.refresh_token = new_refresh_token
-            try:
-                from ..excel_writer import (
-                    update_single_runner_refresh_token,
-                )  # local import
-                from ..config import INPUT_FILE
+            if persist:
+                _persist_rotated_token(runner)
 
-                update_single_runner_refresh_token(INPUT_FILE, runner)
-            except Exception as exc:  # pragma: no cover - best-effort persistence
-                LOGGER.debug(
-                    "Failed to persist refresh token for runner %s: %s",
-                    runner.name,
-                    exc,
-                    exc_info=True,
-                )
+
+def _persist_rotated_token(runner: Runner) -> None:
+    """Best-effort immediate write-back of a rotated refresh token."""
+
+    try:
+        from ..excel_writer import update_single_runner_refresh_token  # local import
+        from ..config import INPUT_FILE
+
+        update_single_runner_refresh_token(INPUT_FILE, runner)
+    except Exception as exc:  # pragma: no cover - best-effort persistence
+        LOGGER.debug(
+            "Failed to persist refresh token for runner %s: %s",
+            runner.name,
+            exc,
+            exc_info=True,
+        )
 
 
 def auth_headers(runner: Runner) -> dict[str, str]:
     """Return bearer auth headers for the runner (token assumed valid)."""
 
-    token = getattr(runner, "access_token", None) or ""
+    token = runner.access_token or ""
     return {"Authorization": f"Bearer {token}"}

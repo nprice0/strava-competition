@@ -186,19 +186,15 @@ class SegmentService:
         self, group: SegmentGroup, window: SegmentWindow
     ) -> Segment:
         """Create a temporary Segment from a SegmentGroup and SegmentWindow."""
-        import warnings
-
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            return Segment(
-                id=group.id,
-                name=group.name,
-                start_date=window.start_date,
-                end_date=window.end_date,
-                default_time_seconds=group.default_time_seconds,
-                min_distance_meters=group.min_distance_meters,
-                birthday_bonus_seconds=window.birthday_bonus_seconds,
-            )
+        return Segment(
+            id=group.id,
+            name=group.name,
+            start_date=window.start_date,
+            end_date=window.end_date,
+            default_time_seconds=group.default_time_seconds,
+            min_distance_meters=group.min_distance_meters,
+            birthday_bonus_seconds=window.birthday_bonus_seconds,
+        )
 
     def _process_segment_group(
         self,

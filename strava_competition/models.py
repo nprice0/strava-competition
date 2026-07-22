@@ -3,12 +3,16 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
-import warnings
 
 
 @dataclass
 class Segment:
-    """Deprecated: Use SegmentGroup with SegmentWindow instead."""
+    """A single segment date window used as the unit of effort processing.
+
+    ``SegmentGroup``/``SegmentWindow`` model the workbook input (a segment with
+    one or more windows); a ``Segment`` is the flattened per-window view the
+    segment service processes internally.
+    """
 
     id: int
     name: str
@@ -17,13 +21,6 @@ class Segment:
     default_time_seconds: float | None = None
     min_distance_meters: float | None = None
     birthday_bonus_seconds: float | None = None
-
-    def __post_init__(self) -> None:
-        warnings.warn(
-            "Segment is deprecated; use SegmentGroup with SegmentWindow instead.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
 
 
 @dataclass
@@ -64,6 +61,9 @@ class Runner:
     # Set to True after first 402 Payment Required so we can skip further API calls
     payment_required: bool = False
     birthday: tuple[int, int] | None = None
+    # Set once we have logged that token refresh is skipped in offline mode,
+    # to avoid repeating the same log line for every request.
+    _skip_token_logged: bool = False
 
     def __post_init__(self) -> None:
         """Normalise strava_id to str for consistent comparisons."""

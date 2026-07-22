@@ -67,6 +67,7 @@ class ResourceAPI:
             ensure_runner_token(runner)
             self._limiter.before_request()
             response: Optional[requests.Response] = None
+            limiter_released = False
             try:
                 response = self._session.get(
                     url,
@@ -76,6 +77,7 @@ class ResourceAPI:
                 )
             except requests.RequestException as exc:
                 self._limiter.after_response(None, None)
+                limiter_released = True
                 if can_retry:
                     LOGGER.warning(
                         "%s network error runner=%s attempt=%s err=%s; retrying in %.1fs",
@@ -95,6 +97,7 @@ class ResourceAPI:
                 throttled, rate_info = self._limiter.after_response(
                     response.headers, response.status_code
                 )
+                limiter_released = True
                 if throttled:
                     LOGGER.warning(
                         "%s runner=%s rate limited %s; throttling %ss",
@@ -103,6 +106,12 @@ class ResourceAPI:
                         rate_info,
                         RATE_LIMIT_THROTTLE_SECONDS,
                     )
+            finally:
+                # Guard against an unexpected exception escaping before the
+                # limiter slot was released, which would otherwise leak the
+                # in-flight count and eventually deadlock all workers.
+                if not limiter_released:
+                    self._limiter.after_response(None, None)
 
             if response.status_code == 401 and not attempted_refresh:
                 LOGGER.info(

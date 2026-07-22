@@ -134,10 +134,16 @@ class StravaClient:
             timeout=DEFAULT_TIMEOUT,
         )
 
-    def ensure_runner_token(self, runner: Runner) -> None:
-        """Ensure ``runner`` has a valid access token via shared helper."""
+    def ensure_runner_token(self, runner: Runner, *, persist: bool = True) -> None:
+        """Ensure ``runner`` has a valid access token via shared helper.
 
-        _ensure_runner_token(runner)
+        Args:
+            runner: Participant whose access token should be ensured.
+            persist: Forwarded to the shared helper; pass ``False`` when the
+                caller batch-persists rotated tokens itself.
+        """
+
+        _ensure_runner_token(runner, persist=persist)
 
     def get_activities(
         self,

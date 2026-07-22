@@ -5,6 +5,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
+import os
+import shutil
+import tempfile
 import threading
 from os import PathLike
 from typing import Any, Iterable, Sequence
@@ -85,6 +88,32 @@ DistanceWindowRows = Sequence[dict[str, Any]]
 
 def _coerce_path(pathlike: PathInput) -> str:
     return str(Path(pathlike))
+
+
+def _atomic_replace_sheet(filepath: str, sheet_name: str, df: pd.DataFrame) -> None:
+    """Replace a single sheet in an existing workbook atomically.
+
+    Writes to a temporary copy of the workbook in the same directory and then
+    swaps it into place with :func:`os.replace`, so a crash mid-write leaves the
+    original workbook (and every runner's refresh token) intact. All other
+    sheets are preserved because the temp file starts as a copy of the original.
+    """
+    source = Path(filepath)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{source.stem}.", suffix=source.suffix, dir=str(source.parent)
+    )
+    os.close(fd)
+    tmp_path = Path(tmp_name)
+    try:
+        shutil.copy2(source, tmp_path)
+        with pd.ExcelWriter(
+            tmp_path, engine="openpyxl", mode="a", if_sheet_exists="replace"
+        ) as writer:
+            df.to_excel(writer, sheet_name=sheet_name, index=False)
+        os.replace(tmp_path, source)
+    finally:
+        if tmp_path.exists():
+            tmp_path.unlink()
 
 
 ## Segment aggregation lives in segment_aggregation.build_segment_outputs
@@ -382,10 +411,7 @@ def update_runner_refresh_tokens(
                 continue
             df.loc[mask, REFRESH_TOKEN_COLUMN] = runner.refresh_token
         _format_runner_birthday_column(df)
-        with pd.ExcelWriter(
-            filepath, engine="openpyxl", mode="a", if_sheet_exists="replace"
-        ) as writer:
-            df.to_excel(writer, sheet_name=RUNNERS_SHEET, index=False)
+        _atomic_replace_sheet(filepath, RUNNERS_SHEET, df)
 
 
 def update_single_runner_refresh_token(filepath: PathInput, runner: Runner) -> None:
@@ -399,7 +425,12 @@ def update_single_runner_refresh_token(filepath: PathInput, runner: Runner) -> N
     with _WORKBOOK_LOCK:
         try:
             df = pd.read_excel(filepath, sheet_name=RUNNERS_SHEET)
-        except Exception:
+        except (OSError, ValueError) as exc:
+            LOGGER.warning(
+                "Failed to read Runners sheet to persist token for runner %s: %s",
+                runner.name,
+                exc,
+            )
             return
         if STRAVA_ID_COLUMN not in df.columns or REFRESH_TOKEN_COLUMN not in df.columns:
             return
@@ -408,11 +439,8 @@ def update_single_runner_refresh_token(filepath: PathInput, runner: Runner) -> N
         df.loc[id_series == runner_id, REFRESH_TOKEN_COLUMN] = runner.refresh_token
         _format_runner_birthday_column(df)
         try:
-            with pd.ExcelWriter(
-                filepath, engine="openpyxl", mode="a", if_sheet_exists="replace"
-            ) as writer:
-                df.to_excel(writer, sheet_name=RUNNERS_SHEET, index=False)
-        except Exception as exc:
+            _atomic_replace_sheet(filepath, RUNNERS_SHEET, df)
+        except (OSError, ValueError) as exc:
             LOGGER.warning(
                 "Failed to persist refresh token for runner %s: %s",
                 runner.name,

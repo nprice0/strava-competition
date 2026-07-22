@@ -11,6 +11,7 @@ from strava_competition.excel_writer import (
     SEGMENT_TEAM_COLUMN,
     DISTANCE_TEAM_COLUMN,
     BIRTHDAY_COLUMN,
+    _atomic_replace_sheet,
     update_runner_refresh_tokens,
     update_single_runner_refresh_token,
 )
@@ -96,3 +97,64 @@ def test_update_single_runner_refresh_token_threadsafe(runners_sheet: Any) -> No
         expected = f"{runner.refresh_token}:thread"
         actual = _refresh_token_for(result, str(runner.strava_id))
         assert actual == expected
+
+
+def test_atomic_replace_sheet_failure_preserves_workbook(
+    runners_sheet: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A crash mid-write must leave the original workbook untouched.
+
+    Simulates a failure while writing the temporary copy and asserts the
+    original tokens survive and no stray temp file is left behind.
+    """
+
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise RuntimeError("simulated crash mid-write")
+
+    monkeypatch.setattr("strava_competition.excel_writer.pd.ExcelWriter", boom)
+
+    df = pd.DataFrame({"Name": ["Ana"], STRAVA_ID_COLUMN: ["101"]})
+    with pytest.raises(RuntimeError, match="simulated crash"):
+        _atomic_replace_sheet(str(runners_sheet), RUNNERS_SHEET, df)
+
+    # Original workbook intact
+    result = pd.read_excel(runners_sheet, sheet_name=RUNNERS_SHEET)
+    assert _refresh_token_for(result, "101") == "tok1"
+    assert _refresh_token_for(result, "202") == "tok2"
+    assert _refresh_token_for(result, "303") == "tok3"
+
+    # No leftover temp files in the workbook's directory
+    workbook = Path(runners_sheet)
+    leftovers = [
+        p
+        for p in workbook.parent.iterdir()
+        if p != workbook and p.name.startswith(f".{workbook.stem}.")
+    ]
+    assert not leftovers, f"Temp files leaked: {leftovers}"
+
+
+def test_update_single_runner_token_write_failure_preserves_workbook(
+    runners_sheet: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A write error during single-runner persistence must not corrupt data."""
+
+    def boom(*_a: Any, **_kw: Any) -> Any:
+        raise OSError("disk full")
+
+    monkeypatch.setattr("strava_competition.excel_writer.pd.ExcelWriter", boom)
+
+    # Swallowed (OSError) and logged — should not raise.
+    update_single_runner_refresh_token(
+        str(runners_sheet), Runner("Ana", "101", "rotated-token")
+    )
+
+    result = pd.read_excel(runners_sheet, sheet_name=RUNNERS_SHEET)
+    assert _refresh_token_for(result, "101") == "tok1"
+
+    workbook = Path(runners_sheet)
+    leftovers = [
+        p
+        for p in workbook.parent.iterdir()
+        if p != workbook and p.name.startswith(f".{workbook.stem}.")
+    ]
+    assert not leftovers, f"Temp files leaked: {leftovers}"

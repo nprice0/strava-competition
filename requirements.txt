@@ -1,5 +1,13 @@
 # Runtime dependencies
-pandas>=2.1
+#
+# These are supported lower bounds. For reproducible installs pin exact
+# versions via the companion lock file:
+#
+#     pip install -r requirements.txt -c constraints.txt
+#
+# pandas is capped below 4.0 because major releases have changed
+# timezone/date parsing semantics that this project relies on.
+pandas>=2.1,<4.0
 openpyxl>=3.1
 requests>=2.31
 Flask>=3.0
