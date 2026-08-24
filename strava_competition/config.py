@@ -162,6 +162,9 @@ STRAVA_CACHE_ID_SALT = os.getenv("STRAVA_CACHE_ID_SALT", "")
 # Redact sensitive fields before persisting payloads to disk.
 # Supports dot-notation for nested fields (e.g., "athlete.firstname").
 # Simple field names match at any nesting level.
+# WARNING: never include structurally required response keys here (e.g.
+# "segment_efforts"). Redaction is applied on save, so validated payloads
+# would fail post-redaction validation and never be persisted.
 STRAVA_CACHE_REDACT_PII = _env_bool("STRAVA_CACHE_REDACT_PII", True)
 _redact_defaults = (
     # Tokens and credentials

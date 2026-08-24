@@ -68,6 +68,18 @@ def _get_activities_impl(
     )
 
 
+def _valid_activity_detail(payload: Any) -> bool:
+    """Return True when an activity-detail payload has a usable shape.
+
+    A valid payload is a dict whose ``segment_efforts`` key is a list. An
+    empty list is valid (runs with no segments are legitimate); an absent
+    key or null value is invalid.
+    """
+    return isinstance(payload, dict) and isinstance(
+        payload.get("segment_efforts"), list
+    )
+
+
 def get_activity_with_efforts(
     runner: Runner,
     activity_id: int,
@@ -176,7 +188,13 @@ class StravaClient:
         url = f"{STRAVA_BASE_URL}/activities/{activity_id}"
         context = "activity_detail"
         if include_all_efforts and ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS:
-            payload = self._resources.fetch_with_capture(runner, url, params, context)
+            payload = self._resources.fetch_with_capture(
+                runner,
+                url,
+                params,
+                context,
+                validate=_valid_activity_detail,
+            )
         else:
             payload = self._resources.fetch_json(runner, url, params, context)
         if isinstance(payload, dict):

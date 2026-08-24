@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
-from typing import Any, Dict, Optional
+from typing import Any, Callable, Dict, Optional
 
 import requests
 
-from ..api_capture import get_cached_response, save_response_to_cache
+from ..api_capture import (
+    _redact_payload,
+    get_cached_response,
+    save_overlay_to_cache,
+    save_response_to_cache,
+)
 from ..config import (
     RATE_LIMIT_429_BACKOFF_MAX_SECONDS,
     RATE_LIMIT_429_MAX_RETRIES,
@@ -24,10 +30,22 @@ from ..models import Runner
 from .base import auth_headers, ensure_runner_token
 from .cache_helpers import runner_identity
 from .rate_limiter import RateLimiter
+from ..utils import json_dumps_sorted
 from .response_handling import classify_response_status, extract_error
 from .session import get_default_session
 
 LOGGER = logging.getLogger(__name__)
+
+# Per-key locks deduplicating concurrent refetches of invalid cached entries.
+# The registry grows with distinct invalid keys; that is bounded and acceptable.
+_refetch_locks: dict[str, threading.Lock] = {}
+_refetch_locks_guard = threading.Lock()
+
+
+def _refetch_lock(key: str) -> threading.Lock:
+    """Return (creating if needed) the refetch dedup lock for a capture key."""
+    with _refetch_locks_guard:
+        return _refetch_locks.setdefault(key, threading.Lock())
 
 
 def _extract_error_detail(response: requests.Response) -> str | None:
@@ -195,7 +213,31 @@ class ResourceAPI:
         url: str,
         params: Optional[Dict[str, Any]],
         context: str,
+        *,
+        validate: Optional[Callable[[Any], bool]] = None,
     ) -> Any:
+        """Fetch a JSON resource, serving and persisting via the capture cache.
+
+        Args:
+            runner: Participant whose credentials authorise the request.
+            url: Absolute resource URL.
+            params: Optional query parameters.
+            context: Label used in log messages and errors.
+            validate: Optional predicate applied to cached and live payloads.
+                A cached payload that fails validation is treated as a cache
+                miss and re-fetched; a valid replacement is persisted as an
+                overlay so it supersedes the bad base file. A live payload
+                that fails validation is returned but never cached. The
+                callable must not raise; any exception it raises propagates
+                to the caller.
+
+        Returns:
+            The cached or freshly fetched JSON payload.
+
+        Raises:
+            StravaAPIError: On a cache miss or invalid cached payload while
+                offline mode is enabled, or if the live fetch fails.
+        """
         params_for_capture = dict(params) if params else None
         identity = runner_identity(runner)
         cached = get_cached_response(
@@ -204,29 +246,136 @@ class ResourceAPI:
             identity,
             params=params_for_capture,
         )
+        cached_invalid = False
         if cached is not None:
-            LOGGER.debug(
-                "Cache hit for %s runner=%s type=%s",
+            if validate is None or validate(cached):
+                LOGGER.debug(
+                    "Cache hit for %s runner=%s type=%s",
+                    context,
+                    runner.name,
+                    type(cached).__name__,
+                )
+                return cached
+            cached_invalid = True
+            LOGGER.warning(
+                "Cached payload failed validation for %s runner=%s; refetching",
                 context,
                 runner.name,
-                type(cached).__name__,
             )
-            return cached
         if _cache_mode_offline:
+            reason = "invalid cached payload" if cached_invalid else "cache miss"
             message = (
-                f"{context} cache miss for runner {runner.name} while "
+                f"{context} {reason} for runner {runner.name} while "
                 "STRAVA_API_CACHE_MODE=offline is enabled"
             )
             LOGGER.error(message)
             raise StravaAPIError(message)
 
+        if cached_invalid:
+            return self._refetch_invalid_cached(
+                runner,
+                url,
+                params,
+                context,
+                identity=identity,
+                params_for_capture=params_for_capture,
+                validate=validate,
+            )
+
         data = self.fetch_json(runner, url, params, context)
-        if _cache_mode_saves:
-            save_response_to_cache(
+        self._persist_validated(
+            data,
+            runner=runner,
+            url=url,
+            identity=identity,
+            params_for_capture=params_for_capture,
+            context=context,
+            validate=validate,
+            overlay=False,
+        )
+        return data
+
+    def _refetch_invalid_cached(
+        self,
+        runner: Runner,
+        url: str,
+        params: Optional[Dict[str, Any]],
+        context: str,
+        *,
+        identity: str,
+        params_for_capture: Optional[Dict[str, Any]],
+        validate: Optional[Callable[[Any], bool]],
+    ) -> Any:
+        """Refetch an invalid cached entry, deduplicating concurrent callers.
+
+        Holding a per-key lock, the cache is re-checked first: another worker
+        may already have refetched and persisted a valid replacement, in
+        which case that payload is served without a duplicate live fetch.
+        """
+        key = f"{url}|{identity}|{json_dumps_sorted(params_for_capture or {})}"
+        with _refetch_lock(key):
+            cached = get_cached_response(
                 "GET",
                 url,
                 identity,
-                response=data,
                 params=params_for_capture,
             )
-        return data
+            if cached is not None and (validate is None or validate(cached)):
+                LOGGER.debug(
+                    "Cache healed by concurrent refetch for %s runner=%s",
+                    context,
+                    runner.name,
+                )
+                return cached
+            data = self.fetch_json(runner, url, params, context)
+            self._persist_validated(
+                data,
+                runner=runner,
+                url=url,
+                identity=identity,
+                params_for_capture=params_for_capture,
+                context=context,
+                validate=validate,
+                overlay=True,
+            )
+            return data
+
+    def _persist_validated(
+        self,
+        data: Any,
+        *,
+        runner: Runner,
+        url: str,
+        identity: str,
+        params_for_capture: Optional[Dict[str, Any]],
+        context: str,
+        validate: Optional[Callable[[Any], bool]],
+        overlay: bool,
+    ) -> None:
+        """Persist a live payload unless validation (pre/post-redaction) fails.
+
+        Saving redacts the payload first, so a redaction config that strips a
+        structurally required key would persist a payload that fails
+        validation on every future read (a permanent refetch loop). Guard by
+        validating the redacted payload before persisting.
+        """
+        if not _cache_mode_saves:
+            return
+        if validate is not None:
+            if not validate(data):
+                LOGGER.warning(
+                    "Live payload failed validation for %s runner=%s; not caching",
+                    context,
+                    runner.name,
+                )
+                return
+            if not validate(_redact_payload(data)):
+                LOGGER.error(
+                    "Redaction breaks payload validation for %s runner=%s; "
+                    "not persisting (check STRAVA_CACHE_REDACT_FIELDS)",
+                    context,
+                    runner.name,
+                )
+                return
+        save = save_overlay_to_cache if overlay else save_response_to_cache
+        save("GET", url, identity, response=data, params=params_for_capture)
