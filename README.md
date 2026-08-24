@@ -151,6 +151,7 @@ Helper scripts live under `strava_competition/tools/`:
 | `clip_activity_segment`        | Slice track points from a GPX file for a segment effort        |
 | `deviation_map`                | Build an interactive map showing gate crossings and deviations |
 | `capture_gc`                   | Delete cache responses older than a retention window           |
+| `purge_cache`                  | Purge cached API responses matching date/URL filters            |
 | `wednesday_stats`              | Club run statistics — day/time filters, attendance, records    |
 
 Run any tool with `--help` for usage:
@@ -158,6 +159,72 @@ Run any tool with `--help` for usage:
 ```bash
 python -m strava_competition.tools.fetch_activity_gps --help
 ```
+
+### Cache Purge (`purge_cache`)
+
+Evicts cached Strava API responses — for example after an API incident left
+bad payloads in the cache, or to force a re-fetch of a date range. It scans
+`STRAVA_CACHE_DIR` (override with `--cache-dir`) for `*.json` cache files
+(including overlays) and selects those matching **all** provided filters:
+
+| Flag                | Description                                                             |
+| ------------------- | ----------------------------------------------------------------------- |
+| `--captured-after`  | ISO date/datetime; match files captured at/after this instant           |
+| `--captured-before` | ISO date/datetime; match files captured at/before this instant          |
+| `--activity-after`  | ISO date/datetime; match by the response's activity `start_date`        |
+| `--activity-before` | ISO date/datetime; match by the response's activity `start_date`        |
+| `--url-pattern`     | Regex searched against the captured request URL                         |
+| `--all-entries`     | List responses match only when **all** dated entries are in range       |
+| `--include-tmp`     | Also scan `*.tmp` files; unparseable `.tmp` files always match          |
+| `--cache-dir`       | Cache directory (defaults to `STRAVA_CACHE_DIR`)                        |
+| `--delete`          | Actually delete matches — without it the tool runs a **dry run**        |
+
+Naive datetimes are treated as UTC. Activity listing pages (list responses)
+match when **any** entry's `start_date` is in range; with `--all-entries`
+they match only when **all** entries with a parseable `start_date` fall
+inside the activity date range (and at least one such entry exists) —
+detail (single-activity) responses are unaffected. At least one filter is
+required; the tool refuses to run without filters so it can never wipe the
+whole cache by accident. The default mode is a dry run that lists matching
+files and a summary count — nothing is deleted until you pass `--delete`.
+
+Only files whose names match the capture-cache shape
+(`<64-hex-sha256>[.overlay].json`, plus the `.tmp` variants with
+`--include-tmp`) are eligible for scanning and deletion; anything else is
+ignored and counted separately, so a mis-pointed `--cache-dir` can never
+delete arbitrary JSON files. With `--include-tmp`, `*.tmp` files (partial
+writes orphaned by a crashed run) are also scanned: a `.tmp` file that
+parses as a cache record is subject to the normal filters, while one that
+cannot be parsed is orphaned garbage and matches unconditionally. The
+summary reports valid-JSON-but-non-record files ("not cache records")
+distinctly from malformed/unreadable ones.
+
+Exit codes: `0` on success or dry run, `1` when `--delete` was given and one
+or more matched files failed to delete, `2` on usage errors (no filters,
+invalid regex, bad flags).
+
+**Examples:**
+
+```bash
+# Purge everything captured during an API incident window (dry run first)
+python -m strava_competition.tools.purge_cache \
+    --captured-after 2026-08-20T09:00 --captured-before 2026-08-20T14:30
+python -m strava_competition.tools.purge_cache \
+    --captured-after 2026-08-20T09:00 --captured-before 2026-08-20T14:30 --delete
+
+# Purge activity details for activities started in the last 2 days
+python -m strava_competition.tools.purge_cache \
+    --activity-after 2026-08-22 --url-pattern '/activities/[0-9]+$' --delete
+```
+
+Note on cache validation: activity-detail responses are validated when read
+from or written to the cache — a payload without a `segment_efforts` list is
+re-fetched automatically and never cached, and a valid replacement supersedes
+the bad cached copy via an overlay file. Validation applies only on the
+cached path, i.e. when `include_all_efforts` is used **and**
+`ACTIVITY_SCAN_CACHE_INCLUDE_ALL_EFFORTS=true`; the plain (uncached) fetch
+path is not validated. Manual purging is therefore only needed for other
+endpoints or bulk date-range evictions.
 
 ### Club Run Statistics (`wednesday_stats`)
 
