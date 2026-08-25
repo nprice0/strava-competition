@@ -81,6 +81,20 @@ class ResourceAPI:
 
         return self._session or session_mod.get_default_session()
 
+    def _sleep_429_backoff(self, backoff: float) -> float:
+        """Sleep the escalating 429 backoff and return the next backoff value.
+
+        Skipped (backoff unchanged) while the limiter holds an active
+        window-reset deadline: ``before_request`` on the next attempt waits
+        until the boundary instead, so an extra sleep here would only delay
+        recovery.
+        """
+
+        if self._limiter.throttle_deadline() is not None:
+            return backoff
+        time.sleep(backoff)
+        return min(backoff * 2, RATE_LIMIT_429_BACKOFF_MAX_SECONDS)
+
     def _raise_if_offline(self, runner: Runner, context: str) -> None:
         """Raise when offline mode forbids live HTTP calls.
 
@@ -195,11 +209,7 @@ class ResourceAPI:
                         RATE_LIMIT_429_MAX_RETRIES,
                         rate_limit_backoff,
                     )
-                    time.sleep(rate_limit_backoff)
-                    rate_limit_backoff = min(
-                        rate_limit_backoff * 2,
-                        RATE_LIMIT_429_BACKOFF_MAX_SECONDS,
-                    )
+                    rate_limit_backoff = self._sleep_429_backoff(rate_limit_backoff)
                     continue
                 detail = _extract_error_detail(response)
                 message = (

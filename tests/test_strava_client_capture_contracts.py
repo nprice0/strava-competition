@@ -15,9 +15,10 @@ from strava_competition.strava_client import pagination
 class StubLimiter:
     """Record rate-limiter invocations for assertions."""
 
-    def __init__(self) -> None:
+    def __init__(self, deadline: float | None = None) -> None:
         self.before_calls = 0
         self.after_calls: list[tuple[dict[str, object] | None, int | None]] = []
+        self.deadline = deadline
 
     def before_request(self) -> None:
         """Track limiter acquisitions."""
@@ -33,6 +34,11 @@ class StubLimiter:
 
         self.after_calls.append((headers, status_code))
         return False, ""
+
+    def throttle_deadline(self) -> float | None:
+        """Return the scripted window-reset deadline (None by default)."""
+
+        return self.deadline
 
 
 class FakeResponse:
@@ -201,6 +207,41 @@ def test_fetch_page_with_retries_429_budget_uses_config_knobs(
 
     assert session.calls == 3
     assert sleeps == [4.0, 6.0]
+
+
+def test_fetch_page_with_retries_skips_backoff_during_reset_wait(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: Runner,
+) -> None:
+    """An active window-reset deadline supersedes the 429 backoff sleep."""
+
+    import time
+
+    runner.access_token = "token"
+    sequence = [FakeResponse(429, []), FakeResponse(200, [{"id": 1}])]
+    session = ScriptedSession(sequence)
+    limiter = StubLimiter(deadline=time.time() + 300.0)
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(
+        pagination.time,
+        "sleep",
+        lambda value: sleeps.append(value),
+    )
+
+    result = pagination.fetch_page_with_retries(
+        runner=runner,
+        url="https://example.test/segment_efforts",
+        params={"page": 1},
+        context_label="segment_efforts",
+        page=1,
+        session=session,  # type: ignore[arg-type]
+        limiter=limiter,  # type: ignore[arg-type]
+    )
+
+    assert result == [{"id": 1}]
+    assert session.calls == 2
+    assert sleeps == [], "backoff sleep must be skipped during a reset wait"
 
 
 def test_fetch_page_with_retries_raises_on_non_list_payload(

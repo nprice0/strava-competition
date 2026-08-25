@@ -108,6 +108,11 @@ class TestResourceAPI429Retries:
             "strava_competition.strava_client.rate_limiter.RATE_LIMIT_THROTTLE_SECONDS",
             0,
         )
+        # Pin the legacy fixed-throttle behaviour this test asserts.
+        monkeypatch.setattr(
+            "strava_competition.strava_client.rate_limiter.RATE_LIMIT_WAIT_FOR_RESET",
+            False,
+        )
         monkeypatch.setattr(
             "strava_competition.strava_client.resources.RATE_LIMIT_429_BACKOFF_MAX_SECONDS",
             0.01,
@@ -160,6 +165,11 @@ class TestResourceAPI429Retries:
             "strava_competition.strava_client.rate_limiter.RATE_LIMIT_THROTTLE_SECONDS",
             0,
         )
+        # Pin the legacy fixed-throttle behaviour this test asserts.
+        monkeypatch.setattr(
+            "strava_competition.strava_client.rate_limiter.RATE_LIMIT_WAIT_FOR_RESET",
+            False,
+        )
         monkeypatch.setattr(
             "strava_competition.strava_client.resources.RATE_LIMIT_429_MAX_RETRIES", 3
         )
@@ -175,6 +185,74 @@ class TestResourceAPI429Retries:
             StravaRateLimitError, match="rate limited.*429.*after 3 retries"
         ):
             api.fetch_json(runner, "https://example.com/api", None, "test_ctx")
+
+    def test_boundary_wait_supersedes_backoff_sleep(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """With reset-waiting on, the 429 backoff sleep is skipped.
+
+        The limiter's reactive throttle sets a boundary deadline; the retry
+        loop must not additionally sleep its escalating backoff — the next
+        attempt's ``before_request`` performs the (single) boundary wait.
+        """
+        from strava_competition.strava_client.resources import ResourceAPI
+        from strava_competition.strava_client import rate_limiter as rl_mod
+        from strava_competition.strava_client import resources as res_mod
+
+        HEADERS_429: dict[str, str] = {
+            "X-RateLimit-Usage": "300,500",
+            "X-RateLimit-Limit": "300,3000",
+        }
+        HEADERS_OK: dict[str, str] = {
+            "X-RateLimit-Usage": "1,501",
+            "X-RateLimit-Limit": "300,3000",
+        }
+
+        call_count = 0
+
+        class FakeResp:
+            def __init__(self, status: int, headers: dict[str, str], body: Any):
+                self.status_code = status
+                self.headers = headers
+                self._body = body
+
+            def json(self) -> Any:
+                return self._body
+
+        class FakeSession:
+            def get(self, *_a: Any, **_kw: Any) -> FakeResp:
+                nonlocal call_count
+                call_count += 1
+                if call_count == 1:
+                    return FakeResp(
+                        429, HEADERS_429, {"message": "Rate Limit Exceeded"}
+                    )
+                return FakeResp(200, HEADERS_OK, {"id": 7})
+
+        runner = _runner("Test", 1)
+        runner.access_token = "valid"
+        monkeypatch.setattr(
+            "strava_competition.strava_client.resources.ensure_runner_token",
+            lambda r: None,
+        )
+        # Flag on (default). Use a synthetic boundary far enough away that
+        # throttle_deadline() is reliably active for the retry decision.
+        monkeypatch.setattr(rl_mod, "seconds_until_window_reset", lambda now=None: 60.0)
+
+        limiter = rl_mod.RateLimiter(max_concurrent=1, jitter_range=(0, 0))
+        boundary_waits: list[float] = []
+        monkeypatch.setattr(limiter, "_interruptible_sleep", boundary_waits.append)
+        backoff_sleeps: list[float] = []
+        monkeypatch.setattr(res_mod.time, "sleep", backoff_sleeps.append)
+
+        api = ResourceAPI(session=FakeSession(), limiter=limiter, timeout=5)  # type: ignore[arg-type]
+        result = api.fetch_json(runner, "https://example.com/api", None, "test_ctx")
+
+        assert result == {"id": 7}
+        assert call_count == 2
+        assert backoff_sleeps == [], "escalating 429 backoff must be skipped"
+        assert len(boundary_waits) == 1, "retry must wait once for the boundary"
+        assert boundary_waits[0] == pytest.approx(60.0, abs=2.0)
 
 
 class TestResourceAPILimiterLeak:

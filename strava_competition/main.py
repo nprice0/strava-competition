@@ -175,6 +175,9 @@ def _format_api_usage_summary(
         f"cached={counters.get(telemetry.CACHE_HITS, 0)} "
         f"validation_refetches={counters.get(telemetry.VALIDATION_REFETCHES, 0)}"
     )
+    reset_waits = counters.get(telemetry.RESET_WAITS, 0)
+    if reset_waits > 0:
+        usage += f" reset_waits={reset_waits}"
     short_used = limiter_snapshot.get("short_used")
     short_limit = limiter_snapshot.get("short_limit")
     if short_used is None or short_limit is None:

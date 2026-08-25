@@ -55,12 +55,27 @@ class _PageRetryState:
         time.sleep(self.backoff)
         self.backoff = min(self.backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
 
-    def retry_429(self) -> bool:
-        """Consume one 429 retry; return False once the budget is spent."""
+    def retry_429(self, limiter: RateLimiter) -> bool:
+        """Consume one 429 retry; return False once the budget is spent.
+
+        The backoff sleep is skipped while the limiter holds an active
+        window-reset deadline: ``before_request`` on the next attempt waits
+        until the boundary instead.
+        """
 
         self.rate_limit_retries += 1
         if self.rate_limit_retries > RATE_LIMIT_429_MAX_RETRIES:
             return False
+        if limiter.throttle_deadline() is not None:
+            LOGGER.info(
+                "%s runner=%s page=%s 429 retry %s/%s; window reset wait pending",
+                self.context_label,
+                self.runner_name,
+                self.page,
+                self.rate_limit_retries,
+                RATE_LIMIT_429_MAX_RETRIES,
+            )
+            return True
         LOGGER.info(
             "%s runner=%s page=%s 429 retry %s/%s; backing off %.0fs",
             self.context_label,
@@ -120,7 +135,7 @@ def fetch_page_with_retries(
         if resp is None:
             continue
         if resp.status_code == 429:
-            if state.retry_429():
+            if state.retry_429(limiter):
                 continue
             message = (
                 f"{context_label} runner={runner.name} page={page} rate "

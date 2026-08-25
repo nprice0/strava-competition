@@ -60,6 +60,7 @@ def test_reset_restores_known_counters_at_zero() -> None:
         telemetry.LIVE_CALLS: 0,
         telemetry.CACHE_HITS: 0,
         telemetry.VALIDATION_REFETCHES: 0,
+        telemetry.RESET_WAITS: 0,
     }
 
 
@@ -317,4 +318,33 @@ def test_summary_with_short_window_only() -> None:
     snap = _limiter_snapshot(short_used=7, short_limit=200)
     assert _format_api_usage_summary(counters, snap) == (
         "API usage: live=7 cached=0 validation_refetches=0 | rate limit: 7/200 (15min)"
+    )
+
+
+def test_summary_includes_reset_waits_when_positive() -> None:
+    """A non-zero reset_waits counter appears in the summary line."""
+    counters = {
+        "live_calls": 5,
+        "cache_hits": 0,
+        "validation_refetches": 0,
+        "reset_waits": 2,
+    }
+    snap = _limiter_snapshot(short_used=5, short_limit=200)
+    assert _format_api_usage_summary(counters, snap) == (
+        "API usage: live=5 cached=0 validation_refetches=0 reset_waits=2 | "
+        "rate limit: 5/200 (15min)"
+    )
+
+
+def test_summary_omits_reset_waits_when_zero() -> None:
+    """A zero reset_waits counter is left out of the summary line."""
+    counters = {
+        "live_calls": 5,
+        "cache_hits": 0,
+        "validation_refetches": 0,
+        "reset_waits": 0,
+    }
+    snap = _limiter_snapshot(short_used=5, short_limit=200)
+    assert _format_api_usage_summary(counters, snap) == (
+        "API usage: live=5 cached=0 validation_refetches=0 | rate limit: 5/200 (15min)"
     )

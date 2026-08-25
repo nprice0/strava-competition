@@ -424,16 +424,26 @@ This opens Strava's authorisation screen. Once the runner approves, copy the ref
 | ------------------------ | --------------------------------------------------------------- |
 | 401 Unauthorised         | Refresh token or credentials are wrong—rerun the OAuth helper   |
 | 402 Payment Required     | The athlete needs a paid Strava subscription for segment data   |
-| 429 Too Many Requests    | Wait for the rate-limit window; the app backs off automatically |
+| 429 Too Many Requests    | The app pauses until the rate-limit window resets automatically |
 | Port 5000 in use (OAuth) | Change `OAUTH_PORT` in `oauth.py` or free the port              |
+
+Strava's 15-minute rate-limit windows reset at fixed quarter-hour UTC
+boundaries (:00/:15/:30/:45). When the 15-minute budget is exhausted (or a
+429 is returned), the app pauses until the next boundary instead of retrying
+into an exhausted window — an `INFO` log line reports the wait duration and
+the UTC resume time. If the *daily* budget is exhausted the run fails fast
+with a rate-limit error rather than waiting until midnight UTC. Set
+`RATE_LIMIT_WAIT_FOR_RESET=false` to disable boundary waits and restore the
+fixed backoff behaviour.
 
 At the end of every run the app logs a single `API usage` summary line, e.g.
 `API usage: live=143 cached=892 validation_refetches=3 | rate limit: 143/200 (15min), 143/2000 (daily)`.
 `live` counts completed HTTP round-trips to Strava (including retries), `cached`
 counts responses served from the disk cache, and `validation_refetches` counts
-live refetches triggered by cached payloads failing validation. The rate-limit
-figures are the last usage/limit headers Strava returned; a fully cached run
-shows `rate limit: n/a`.
+live refetches triggered by cached payloads failing validation. When the run
+had to pause for window resets, a `reset_waits=<n>` figure is included. The
+rate-limit figures are the last usage/limit headers Strava returned; a fully
+cached run shows `rate limit: n/a`.
 
 ---
 

@@ -216,6 +216,10 @@ RATE_LIMIT_429_MAX_RETRIES = _env_int("RATE_LIMIT_429_MAX_RETRIES", 10)
 RATE_LIMIT_429_BACKOFF_MAX_SECONDS = _env_float(
     "RATE_LIMIT_429_BACKOFF_MAX_SECONDS", 60.0
 )
+# RATE_LIMIT_WAIT_FOR_RESET pauses requests until the next quarter-hour UTC
+# window boundary when the 15-minute budget is exhausted, instead of blind
+# exponential backoff. Set to false to restore the fixed-throttle behaviour.
+RATE_LIMIT_WAIT_FOR_RESET = _env_bool("RATE_LIMIT_WAIT_FOR_RESET", True)
 
 # Retry/backoff behaviour for the Strava fetch loops.
 # STRAVA_MAX_RETRIES covers network failures, 5xx, or bad payloads.

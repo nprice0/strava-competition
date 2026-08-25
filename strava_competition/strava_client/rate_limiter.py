@@ -6,6 +6,7 @@ import logging
 import random
 import threading
 import time
+from datetime import datetime, timedelta, timezone
 from typing import Mapping
 
 from ..config import (
@@ -13,9 +14,39 @@ from ..config import (
     RATE_LIMIT_MAX_CONCURRENT,
     RATE_LIMIT_NEAR_LIMIT_BUFFER,
     RATE_LIMIT_THROTTLE_SECONDS,
+    RATE_LIMIT_WAIT_FOR_RESET,
 )
+from ..errors import StravaRateLimitError
+from . import telemetry
 
-__all__ = ["RateLimiter"]
+__all__ = ["RateLimiter", "seconds_until_window_reset"]
+
+# Strava's short rate-limit window length: 15 minutes.
+_WINDOW_SECONDS = 15 * 60
+# Extra seconds slept past the boundary so the new window is definitely open.
+_RESET_SAFETY_BUFFER_SECONDS = 5.0
+# Maximum single sleep slice while waiting for a reset, so cancellation via
+# the limiter's cancel event is honoured promptly.
+_WAIT_POLL_SLICE_SECONDS = 1.0
+
+
+def seconds_until_window_reset(now: datetime | None = None) -> float:
+    """Return seconds until the next quarter-hour UTC boundary plus a buffer.
+
+    Strava's 15-minute rate-limit windows reset at fixed :00/:15/:30/:45 UTC
+    boundaries. An input exactly on a boundary waits for the *next* boundary
+    plus the safety buffer so callers never resume inside a window that is
+    still exhausted.
+
+    Args:
+        now: Reference time, injectable for tests. Defaults to current UTC.
+
+    Returns:
+        Seconds to sleep before the window is guaranteed to have reset.
+    """
+    current = now if now is not None else datetime.now(timezone.utc)
+    elapsed = current.timestamp() % _WINDOW_SECONDS
+    return (_WINDOW_SECONDS - elapsed) + _RESET_SAFETY_BUFFER_SECONDS
 
 
 class RateLimiter:
@@ -40,6 +71,18 @@ class RateLimiter:
         self._last_short_limit: int | None = None
         self._last_daily_used: int | None = None
         self._last_daily_limit: int | None = None
+        # Last-seen X-ReadRateLimit short-window usage, for exhaustion checks.
+        self._last_read_used: int | None = None
+        self._last_read_limit: int | None = None
+        # True when the current throttle deadline targets a window reset.
+        self._throttle_is_reset = False
+        # Optional event that aborts reset waits promptly when set.
+        self._cancel_event: threading.Event | None = None
+
+    def set_cancel_event(self, event: threading.Event | None) -> None:
+        """Install (or clear) the event that aborts reset waits when set."""
+
+        self._cancel_event = event
 
     def resize(self, new_max: int) -> None:
         """Adjust maximum concurrent requests (soft limit) at runtime."""
@@ -53,18 +96,106 @@ class RateLimiter:
         logging.info("RateLimiter resized from %s to %s", old, new_max)
 
     def before_request(self) -> None:
+        self._raise_if_daily_exhausted()
         with self._cond:
             while self._in_flight >= self._max_allowed:
                 self._cond.wait()
             self._in_flight += 1
             wait_for = max(0.0, self._throttle_until - time.time())
-        if wait_for > 0:
+            throttle_is_reset = self._throttle_is_reset
+            reset_wait = self._proactive_reset_wait_locked()
+        if reset_wait is not None or (wait_for > 0 and throttle_is_reset):
+            self._wait_for_window_reset(max(reset_wait or 0.0, wait_for))
+            self._clear_short_usage()
+        elif wait_for > 0:
             time.sleep(wait_for)
         lo, hi = self._jitter_range
         if hi > 0:
             jitter = random.uniform(lo, hi)  # nosec B311
             # Random jitter smooths bursts; not used for security-sensitive logic.
             time.sleep(jitter)
+
+    @staticmethod
+    def _exhausted(used: int | None, limit: int | None) -> bool:
+        """Return True when a tracked usage figure has reached a real limit."""
+
+        return used is not None and limit is not None and limit > 0 and used >= limit
+
+    def _raise_if_daily_exhausted(self) -> None:
+        """Fail fast when the last-seen daily usage has hit the daily limit.
+
+        Raises:
+            StravaRateLimitError: When the daily budget is exhausted; waiting
+                until the midnight UTC reset is not practical.
+        """
+
+        if not RATE_LIMIT_WAIT_FOR_RESET:
+            return
+        with self._lock:
+            used, limit = self._last_daily_used, self._last_daily_limit
+        if self._exhausted(used, limit):
+            raise StravaRateLimitError(
+                f"Daily Strava rate limit exhausted ({used}/{limit}); "
+                "it resets at midnight UTC — aborting instead of waiting"
+            )
+
+    def _proactive_reset_wait_locked(self) -> float | None:
+        """Return the boundary wait when the short window is exhausted.
+
+        Must be called with the limiter lock held. Returns None when the
+        reset-wait feature is disabled or the short window has headroom.
+        """
+
+        if not RATE_LIMIT_WAIT_FOR_RESET:
+            return None
+        if not (
+            self._exhausted(self._last_short_used, self._last_short_limit)
+            or self._exhausted(self._last_read_used, self._last_read_limit)
+        ):
+            return None
+        return seconds_until_window_reset()
+
+    def _wait_for_window_reset(self, wait_seconds: float) -> None:
+        """Log, count, and perform an interruptible wait for the window reset."""
+
+        resume = datetime.now(timezone.utc) + timedelta(seconds=wait_seconds)
+        logging.info(
+            "15-min rate-limit window exhausted; waiting %.0fs for reset "
+            "(resuming ~%s UTC)",
+            wait_seconds,
+            resume.strftime("%H:%M:%S"),
+        )
+        telemetry.increment(telemetry.RESET_WAITS)
+        self._interruptible_sleep(wait_seconds)
+
+    def _interruptible_sleep(self, seconds: float) -> None:
+        """Sleep in short slices, aborting promptly if the cancel event fires."""
+
+        deadline = time.time() + seconds
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                return
+            slice_seconds = min(_WAIT_POLL_SLICE_SECONDS, remaining)
+            event = self._cancel_event
+            if event is None:
+                time.sleep(slice_seconds)
+            elif event.wait(slice_seconds):
+                logging.info("Rate-limit reset wait cancelled; proceeding")
+                return
+
+    def _clear_short_usage(self) -> None:
+        """Optimistically zero short-window usage after a reset wait.
+
+        Lets requests go out again after the boundary; the first response
+        refreshes the real usage headers.
+        """
+
+        with self._lock:
+            if self._last_short_used is not None:
+                self._last_short_used = 0
+            if self._last_read_used is not None:
+                self._last_read_used = 0
 
     def after_response(
         self,
@@ -128,8 +259,14 @@ class RateLimiter:
                 read_daily_limit,
             ) = _parse_limits(read_usage, read_limit_header)
 
-        if short_used is not None and short_limit is not None:
-            self._record_last_usage(short_used, short_limit, daily_used, daily_limit)
+        self._record_last_usage(
+            short_used,
+            short_limit,
+            daily_used,
+            daily_limit,
+            read_used,
+            read_limit,
+        )
 
         # Build rate limit info for caller's log messages
         parts: list[str] = []
@@ -177,8 +314,7 @@ class RateLimiter:
                 )
 
         if throttle:
-            with self._cond:
-                self._throttle_until = time.time() + RATE_LIMIT_THROTTLE_SECONDS
+            self._apply_throttle(status_code == 429)
         with self._cond:
             self._in_flight = max(0, self._in_flight - 1)
             if self._in_flight < self._max_allowed:
@@ -186,21 +322,61 @@ class RateLimiter:
 
         return throttle, rate_info
 
+    def _apply_throttle(self, is_429: bool) -> None:
+        """Set the throttle deadline: window boundary for 429s, fixed otherwise."""
+
+        use_reset = is_429 and RATE_LIMIT_WAIT_FOR_RESET
+        seconds = (
+            seconds_until_window_reset()
+            if use_reset
+            else float(RATE_LIMIT_THROTTLE_SECONDS)
+        )
+        with self._cond:
+            self._throttle_until = time.time() + seconds
+            self._throttle_is_reset = use_reset
+        if use_reset:
+            logging.info(
+                "429 received; throttling all requests %.0fs until the "
+                "15-min window reset",
+                seconds,
+            )
+
+    def throttle_deadline(self) -> float | None:
+        """Return the epoch deadline of an active window-reset throttle.
+
+        Returns:
+            The deadline set by a 429 while reset-waiting is enabled, or
+            ``None`` when no boundary throttle is active. Retry loops use
+            this to skip their own backoff sleep — ``before_request`` on the
+            next attempt performs the boundary wait instead.
+        """
+
+        with self._lock:
+            if self._throttle_is_reset and self._throttle_until > time.time():
+                return self._throttle_until
+        return None
+
     def _record_last_usage(
         self,
-        short_used: int,
-        short_limit: int,
+        short_used: int | None,
+        short_limit: int | None,
         daily_used: int | None,
         daily_limit: int | None,
+        read_used: int | None = None,
+        read_limit: int | None = None,
     ) -> None:
         """Remember the most recent rate-limit usage headers for diagnostics."""
 
         with self._lock:
-            self._last_short_used = short_used
-            self._last_short_limit = short_limit
+            if short_used is not None and short_limit is not None:
+                self._last_short_used = short_used
+                self._last_short_limit = short_limit
             if daily_used is not None and daily_limit is not None:
                 self._last_daily_used = daily_used
                 self._last_daily_limit = daily_limit
+            if read_used is not None and read_limit is not None:
+                self._last_read_used = read_used
+                self._last_read_limit = read_limit
 
     def snapshot(self) -> dict[str, float | int | None]:
         """Return current limiter stats plus last-seen rate-limit usage.

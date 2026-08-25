@@ -9,6 +9,8 @@ cache so an end-of-run summary can be logged. Counters:
 - ``validation_refetches``: live refetches triggered by a cached payload
   failing validation (counted in addition to the ``live_calls`` the refetch
   itself performs).
+- ``reset_waits``: pauses taken to wait for the next quarter-hour rate-limit
+  window reset (one per thread that actually waited).
 
 OAuth token refreshes are intentionally not counted — data calls only.
 """
@@ -20,8 +22,14 @@ import threading
 LIVE_CALLS = "live_calls"
 CACHE_HITS = "cache_hits"
 VALIDATION_REFETCHES = "validation_refetches"
+RESET_WAITS = "reset_waits"
 
-_KNOWN_COUNTERS: tuple[str, ...] = (LIVE_CALLS, CACHE_HITS, VALIDATION_REFETCHES)
+_KNOWN_COUNTERS: tuple[str, ...] = (
+    LIVE_CALLS,
+    CACHE_HITS,
+    VALIDATION_REFETCHES,
+    RESET_WAITS,
+)
 
 _lock = threading.Lock()
 _counters: dict[str, int] = dict.fromkeys(_KNOWN_COUNTERS, 0)
