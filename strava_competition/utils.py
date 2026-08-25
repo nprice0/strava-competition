@@ -9,13 +9,6 @@ from decimal import Decimal
 from typing import Any, Optional
 
 
-def format_time(seconds: int) -> str:
-    """Format seconds into a ``Xm Ys`` string."""
-
-    mins, sec = divmod(seconds, 60)
-    return f"{mins}m {sec}s"
-
-
 def to_utc_aware(dt: datetime) -> datetime:
     """Return a UTC-aware datetime regardless of input.
 

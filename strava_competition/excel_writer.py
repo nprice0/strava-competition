@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import logging
-from datetime import datetime
 from pathlib import Path
 import os
 import shutil
 import tempfile
 import threading
 from os import PathLike
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 import pandas as pd
+from openpyxl import load_workbook
 from openpyxl.styles import Font, PatternFill, Border, Side
+from openpyxl.workbook import Workbook
 from openpyxl.worksheet.worksheet import Worksheet
 
 from .models import Runner
@@ -90,13 +91,14 @@ def _coerce_path(pathlike: PathInput) -> str:
     return str(Path(pathlike))
 
 
-def _atomic_replace_sheet(filepath: str, sheet_name: str, df: pd.DataFrame) -> None:
-    """Replace a single sheet in an existing workbook atomically.
+def _atomic_update_workbook(filepath: str, mutate: Callable[[Workbook], None]) -> None:
+    """Apply *mutate* to a temp copy of the workbook and swap it into place.
 
-    Writes to a temporary copy of the workbook in the same directory and then
-    swaps it into place with :func:`os.replace`, so a crash mid-write leaves the
-    original workbook (and every runner's refresh token) intact. All other
-    sheets are preserved because the temp file starts as a copy of the original.
+    The workbook is copied to a temporary file in the same directory, loaded
+    with openpyxl, mutated, saved, then promoted with :func:`os.replace`, so a
+    crash mid-write leaves the original workbook (and every runner's refresh
+    token) intact. Formatting, validation and untouched cells are preserved
+    because only the mutated cells change.
     """
     source = Path(filepath)
     fd, tmp_name = tempfile.mkstemp(
@@ -106,10 +108,12 @@ def _atomic_replace_sheet(filepath: str, sheet_name: str, df: pd.DataFrame) -> N
     tmp_path = Path(tmp_name)
     try:
         shutil.copy2(source, tmp_path)
-        with pd.ExcelWriter(
-            tmp_path, engine="openpyxl", mode="a", if_sheet_exists="replace"
-        ) as writer:
-            df.to_excel(writer, sheet_name=sheet_name, index=False)
+        workbook = load_workbook(tmp_path)
+        try:
+            mutate(workbook)
+            workbook.save(tmp_path)
+        finally:
+            workbook.close()
         os.replace(tmp_path, source)
     finally:
         if tmp_path.exists():
@@ -166,37 +170,6 @@ def _autosize(ws: Worksheet) -> None:
 
 
 ## Row construction handled in segment_aggregation
-
-
-def _format_runner_birthday_column(df: pd.DataFrame) -> None:
-    if BIRTHDAY_COLUMN not in df.columns:
-        return
-
-    def _format_cell(value: object) -> object:
-        if pd.isna(value) or str(value).strip() == "":
-            return None
-        parsed: pd.Timestamp | None = None
-        if isinstance(value, tuple) and len(value) == 2:
-            month, day = value
-            try:
-                parsed = pd.Timestamp(datetime(2000, int(month), int(day)))
-            except (TypeError, ValueError):
-                parsed = None
-        if parsed is None:
-            parsed = pd.to_datetime(value, errors="coerce")
-        if (parsed is None or pd.isna(parsed)) and isinstance(value, str):
-            text = value.strip()
-            if text:
-                try:
-                    parsed = pd.Timestamp(datetime.strptime(f"{text}-2000", "%d-%b-%Y"))
-                except ValueError:
-                    parsed = None
-        if parsed is None or pd.isna(parsed):
-            return value
-        month_label = parsed.strftime("%b")
-        return f"{int(parsed.day):02d}-{month_label}"
-
-    df[BIRTHDAY_COLUMN] = df[BIRTHDAY_COLUMN].map(_format_cell)
 
 
 def _write_segment_sheets(
@@ -387,63 +360,112 @@ def _normalise_value(value: object) -> str:
     return normalised
 
 
-def _normalise_ids(series: pd.Series) -> pd.Series:
-    return series.map(_normalise_value)
+_HEADER_SEARCH_ROWS = 10
+
+
+def _find_runners_header(ws: Worksheet) -> tuple[int, dict[str, int]] | None:
+    """Locate the Runners header row and map header name -> column index.
+
+    Searches the first ``_HEADER_SEARCH_ROWS`` rows for one containing both
+    the Strava ID and Refresh Token headers. Returns (row_index, header_map)
+    or None when no such row exists.
+    """
+    max_row = min(ws.max_row, _HEADER_SEARCH_ROWS)
+    for row in ws.iter_rows(min_row=1, max_row=max_row):
+        headers = {
+            str(cell.value).strip(): cell.column
+            for cell in row
+            if cell.value is not None
+        }
+        if STRAVA_ID_COLUMN in headers and REFRESH_TOKEN_COLUMN in headers:
+            return row[0].row, headers
+    return None
+
+
+def _map_runner_rows(ws: Worksheet, header_row: int, id_col: int) -> dict[str, int]:
+    """Map normalised Strava ID -> worksheet row index below the header row."""
+    mapping: dict[str, int] = {}
+    for row_idx in range(header_row + 1, ws.max_row + 1):
+        runner_id = _normalise_value(ws.cell(row=row_idx, column=id_col).value)
+        if runner_id:
+            mapping.setdefault(runner_id, row_idx)
+    return mapping
+
+
+def _apply_token_updates(workbook: Workbook, runners: Sequence[Runner]) -> None:
+    """Set refresh-token cells in place on the Runners sheet of *workbook*.
+
+    Raises:
+        ExcelFormatError: If the Runners sheet or required columns are missing.
+    """
+    if RUNNERS_SHEET not in workbook.sheetnames:
+        raise ExcelFormatError(f"Sheet '{RUNNERS_SHEET}' not found in workbook")
+    ws = workbook[RUNNERS_SHEET]
+    located = _find_runners_header(ws)
+    if located is None:
+        raise ExcelFormatError(
+            f"Missing columns in '{RUNNERS_SHEET}' sheet: "
+            f"{', '.join(sorted(_REQUIRED_RUNNER_COLS))}"
+        )
+    header_row, headers = located
+    missing = _REQUIRED_RUNNER_COLS - set(headers)
+    if missing:
+        raise ExcelFormatError(
+            f"Missing columns in '{RUNNERS_SHEET}' sheet: {', '.join(sorted(missing))}"
+        )
+    row_by_id = _map_runner_rows(ws, header_row, headers[STRAVA_ID_COLUMN])
+    token_col = headers[REFRESH_TOKEN_COLUMN]
+    for runner in runners:
+        row_idx = row_by_id.get(_normalise_value(runner.strava_id))
+        if row_idx is None:
+            LOGGER.warning(
+                "Runner '%s' (Strava ID %s) matches no row in '%s' sheet; "
+                "rotated refresh token was NOT persisted",
+                runner.name,
+                runner.strava_id,
+                RUNNERS_SHEET,
+            )
+            continue
+        ws.cell(row=row_idx, column=token_col, value=runner.refresh_token)
 
 
 def update_runner_refresh_tokens(
     filepath: PathInput, runners: Sequence[Runner]
 ) -> None:
+    """Persist refresh tokens for *runners* by editing token cells in place.
+
+    Only the Refresh Token cells are modified (via openpyxl on an atomic
+    temp-copy), preserving all other cells, formatting and validation.
+    Runners whose Strava ID matches no sheet row are logged and skipped.
+
+    Raises:
+        FileNotFoundError: If the workbook does not exist.
+        ExcelFormatError: If the Runners sheet or required columns are missing.
+    """
     filepath = _coerce_path(filepath)
     _assert_file_exists(filepath)
     with _WORKBOOK_LOCK:
-        df = pd.read_excel(filepath, sheet_name=RUNNERS_SHEET)
-        missing = _REQUIRED_RUNNER_COLS - set(df.columns)
-        if missing:
-            raise ExcelFormatError(
-                f"Missing columns in '{RUNNERS_SHEET}' sheet: {', '.join(sorted(missing))}"
-            )
-        normalised_ids = _normalise_ids(df[STRAVA_ID_COLUMN])
-        for runner in runners:
-            runner_id = _normalise_value(runner.strava_id)
-            mask = normalised_ids == runner_id
-            if not mask.any():
-                continue
-            df.loc[mask, REFRESH_TOKEN_COLUMN] = runner.refresh_token
-        _format_runner_birthday_column(df)
-        _atomic_replace_sheet(filepath, RUNNERS_SHEET, df)
+        _atomic_update_workbook(
+            filepath, lambda workbook: _apply_token_updates(workbook, runners)
+        )
 
 
 def update_single_runner_refresh_token(filepath: PathInput, runner: Runner) -> None:
     """Persist refresh token for a single runner (crash-safe incremental update).
 
-    Reads only the Runners sheet, updates the row for the given runner, rewrites
-    that sheet. Lightweight enough for occasional rotations.
+    Edits only the runner's token cell in place. Failures are logged as
+    warnings and never raised so a rotation mid-run cannot abort processing.
     """
     filepath = _coerce_path(filepath)
     _assert_file_exists(filepath)
     with _WORKBOOK_LOCK:
         try:
-            df = pd.read_excel(filepath, sheet_name=RUNNERS_SHEET)
-        except (OSError, ValueError) as exc:
-            LOGGER.warning(
-                "Failed to read Runners sheet to persist token for runner %s: %s",
-                runner.name,
-                exc,
+            _atomic_update_workbook(
+                filepath, lambda workbook: _apply_token_updates(workbook, [runner])
             )
-            return
-        if STRAVA_ID_COLUMN not in df.columns or REFRESH_TOKEN_COLUMN not in df.columns:
-            return
-        id_series = _normalise_ids(df[STRAVA_ID_COLUMN])
-        runner_id = _normalise_value(runner.strava_id)
-        df.loc[id_series == runner_id, REFRESH_TOKEN_COLUMN] = runner.refresh_token
-        _format_runner_birthday_column(df)
-        try:
-            _atomic_replace_sheet(filepath, RUNNERS_SHEET, df)
-        except (OSError, ValueError) as exc:
+        except (OSError, ValueError, KeyError, ExcelFormatError) as exc:
             LOGGER.warning(
                 "Failed to persist refresh token for runner %s: %s",
                 runner.name,
                 exc,
             )
-            return

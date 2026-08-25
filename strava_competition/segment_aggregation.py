@@ -64,26 +64,50 @@ __all__ = [
 ]
 
 
+def _split_and_rank(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Split into ranked (valid time) and unranked (attempts, no time) frames."""
+    df[FASTEST_SEC_COL] = pd.to_numeric(df[FASTEST_SEC_COL], errors="coerce")
+    no_time = df[FASTEST_SEC_COL].isna()
+    unranked = pd.DataFrame(columns=df.columns)
+    if ATTEMPTS_COL in df.columns:
+        attempts = pd.to_numeric(df[ATTEMPTS_COL], errors="coerce").fillna(0)
+        unranked = df[no_time & (attempts > 0)].copy()
+    ranked = df[~no_time].copy()
+    if not ranked.empty:
+        ranked[RANK_COL] = (
+            ranked[FASTEST_SEC_COL].rank(method="min", ascending=True).astype(int)
+        )
+        if TEAM_COL in ranked.columns:
+            ranked[TEAM_RANK_COL] = (
+                ranked.groupby(TEAM_COL)[FASTEST_SEC_COL]
+                .rank(method="min", ascending=True)
+                .astype(int)
+            )
+    return ranked, unranked
+
+
 def _rank_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Rank rows by fastest time, keeping attempt-only rows unranked at the bottom.
+
+    Rows with a valid fastest time are ranked and sorted as before. Rows with
+    attempts but no valid time are appended unranked (blank rank/time, attempts
+    shown) so their attempts data is not silently dropped. Rows with neither a
+    time nor attempts are excluded.
+    """
     if FASTEST_DATE_COL in df.columns:
         dt = pd.to_datetime(df[FASTEST_DATE_COL], utc=True, errors="coerce")
         df[FASTEST_DATE_COL] = dt.dt.tz_localize(None)
+    unranked = pd.DataFrame(columns=df.columns)
     if FASTEST_SEC_COL in df.columns:
-        df[FASTEST_SEC_COL] = pd.to_numeric(df[FASTEST_SEC_COL], errors="coerce")
-        df = df.dropna(subset=[FASTEST_SEC_COL])
-        if not df.empty:
-            df[RANK_COL] = (
-                df[FASTEST_SEC_COL].rank(method="min", ascending=True).astype(int)
-            )
-            if TEAM_COL in df.columns:
-                df[TEAM_RANK_COL] = (
-                    df.groupby(TEAM_COL)[FASTEST_SEC_COL]
-                    .rank(method="min", ascending=True)
-                    .astype(int)
-                )
+        df, unranked = _split_and_rank(df)
     sort_cols = [c for c in [TEAM_COL, FASTEST_SEC_COL] if c in df.columns]
     if sort_cols:
         df = df.sort_values(by=sort_cols)
+    if not unranked.empty:
+        df = pd.concat([df, unranked], ignore_index=True)
+        for col in (RANK_COL, TEAM_RANK_COL):
+            if col in df.columns:
+                df[col] = df[col].astype("Int64")
     preferred_source = (
         SEGMENT_COLUMN_ORDER
         if SEGMENT_ENFORCE_COLUMN_ORDER
@@ -209,7 +233,7 @@ def _build_segment_team_summary(
 
     rows.sort(key=lambda item: (item["_rank_sum"], item["_total_seconds"]))
     leader_total = min(row["_total_seconds"] for row in rows)
-    for rank, row in enumerate(rows, start=1):
+    for row in rows:
         row[SUMMARY_RANK_COL] = (
             None if row["_rank_sum"] in (None, float("inf")) else int(row["_rank_sum"])
         )

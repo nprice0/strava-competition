@@ -135,8 +135,13 @@ def wait_for_port(port: int, host: str = "localhost", timeout: int = 10) -> bool
     return False
 
 
-def _exchange_code_for_tokens(print_tokens: bool) -> None:
-    """Exchange the captured code for tokens and log according to policy."""
+def _exchange_code_for_tokens(print_tokens: bool) -> bool:
+    """Exchange the captured code for tokens and log according to policy.
+
+    Returns:
+        True when tokens were obtained, False when the exchange failed or
+        the response was missing expected keys.
+    """
 
     if not _session.auth_code:
         raise RuntimeError(
@@ -162,8 +167,11 @@ def _exchange_code_for_tokens(print_tokens: bool) -> None:
         if not all(
             key in tokens for key in ("access_token", "refresh_token", "expires_at")
         ):
-            logging.error("Token response missing expected keys: %s", tokens)
-            return
+            logging.error(
+                "Token response missing expected keys; received keys: %s",
+                sorted(tokens.keys()),
+            )
+            return False
         access_token = tokens.get("access_token") or ""
         refresh_token = tokens.get("refresh_token") or ""
         expires_at = tokens.get("expires_at")
@@ -179,12 +187,14 @@ def _exchange_code_for_tokens(print_tokens: bool) -> None:
                 _mask_token(refresh_token),
                 expires_at,
             )
+        return True
     except (
         requests.exceptions.RequestException,
         ValueError,
         KeyError,
-    ) as exc:  # pragma: no cover - network failures
-        logging.error("Failed to exchange code for tokens: %s", exc)
+    ):  # pragma: no cover - network failures
+        logging.exception("Failed to exchange code for tokens")
+        return False
 
 
 def _shutdown_server(flask_thread: threading.Thread) -> None:
@@ -223,10 +233,13 @@ def start_oauth_flow(*, print_tokens: bool, wait_timeout: int = 60) -> None:
 
     logging.info("Authorisation code received.")
     try:
-        _exchange_code_for_tokens(print_tokens)
+        exchange_succeeded = _exchange_code_for_tokens(print_tokens)
     finally:
         logging.info("Shutting down local OAuth server.")
         _shutdown_server(flask_thread)
+    if not exchange_succeeded:
+        logging.error("Token exchange failed; exiting with error status.")
+        raise SystemExit(1)
 
 
 def _parse_args() -> argparse.Namespace:

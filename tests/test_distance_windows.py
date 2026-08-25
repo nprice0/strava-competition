@@ -53,4 +53,6 @@ def test_read_distance_windows_basic() -> None:
         windows = read_distance_windows(path)
         assert len(windows) == 2
         assert windows[0][0] == datetime(2024, 1, 1)
-        assert windows[1][1] == datetime(2024, 1, 10)
+        # Date-only End Date cells are promoted to end-of-day (inclusive).
+        assert windows[0][1] == datetime(2024, 1, 7, 23, 59, 59, 999999)
+        assert windows[1][1] == datetime(2024, 1, 10, 23, 59, 59, 999999)

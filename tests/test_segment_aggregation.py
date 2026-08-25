@@ -88,3 +88,53 @@ def test_fastest_distance_zero_for_default_results() -> None:
     df = dict(outputs)["Zero Seg"]
     row = df[df["Runner"] == "No Attempts"].iloc[0]
     assert row["Fastest Distance (m)"] == 0
+
+
+def test_attempts_without_valid_time_kept_unranked_at_bottom() -> None:
+    """Runners with attempts but no valid time appear unranked at the bottom."""
+    results = {
+        "Seg": {
+            "Team A": [
+                SegmentResult(
+                    runner="HasTime",
+                    team="Team A",
+                    segment="Seg",
+                    attempts=2,
+                    fastest_time=100.0,
+                    fastest_date="2025-01-01T10:00:00",  # type: ignore[arg-type]
+                    fastest_distance_m=3000.0,
+                ),
+                SegmentResult(
+                    runner="AttemptsOnly",
+                    team="Team A",
+                    segment="Seg",
+                    attempts=3,
+                    fastest_time=None,
+                    fastest_date=None,
+                    fastest_distance_m=None,
+                ),
+                SegmentResult(
+                    runner="NoAttempts",
+                    team="Team A",
+                    segment="Seg",
+                    attempts=0,
+                    fastest_time=None,
+                    fastest_date=None,
+                    fastest_distance_m=None,
+                ),
+            ],
+        }
+    }
+    outputs = build_segment_outputs(results, include_summary=False)
+    df = dict(outputs)["Seg"]
+    runners = [r for r in df["Runner"].tolist() if pd.notna(r)]
+    # Attempts-only runner kept; no-attempts/no-time runner excluded as before.
+    assert runners == ["HasTime", "AttemptsOnly"]
+    unranked = df[df["Runner"] == "AttemptsOnly"].iloc[0]
+    assert pd.isna(unranked["Rank"])
+    assert pd.isna(unranked["Fastest Time (sec)"])
+    assert unranked["Attempts"] == 3
+    ranked = df[df["Runner"] == "HasTime"].iloc[0]
+    assert ranked["Rank"] == 1
+    # Unranked row sits at the bottom
+    assert df["Runner"].tolist()[-1] == "AttemptsOnly"

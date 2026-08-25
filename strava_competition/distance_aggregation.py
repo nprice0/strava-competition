@@ -8,6 +8,7 @@ aggregation from orchestration in ``DistanceService``).
 
 from __future__ import annotations
 
+from collections.abc import Collection
 from datetime import datetime
 
 from .models import Runner
@@ -16,6 +17,13 @@ from .utils import parse_iso_datetime
 Activity = (
     dict  # minimal structure expected: distance, total_elevation_gain, start_date_local
 )
+
+# Marker written to the Runs / Total Runs cell when a runner's activity fetch
+# failed, so a failed fetch is distinguishable from a genuinely inactive runner.
+FETCH_FAILED_MARKER = "FETCH FAILED"
+
+_TOTAL_DISTANCE_COL = "Total Distance (km)"
+_TOTAL_ELEV_COL = "Total Elev Gain (m)"
 
 # Lookup cache keyed by id(act) to avoid mutating shared activity dicts.
 _start_local_cache: dict[int, datetime] = {}
@@ -112,8 +120,8 @@ def _row_for_window(
         "Runner": runner.name,
         "Team": runner.distance_team,
         "Runs": run_count,
-        "Total Distance (km)": round(km, 2),
-        "Total Elev Gain (m)": round(total_elev, 1),
+        _TOTAL_DISTANCE_COL: round(km, 2),
+        _TOTAL_ELEV_COL: round(total_elev, 1),
     }
     if threshold is not None:
         row[f"Runs >= {threshold} km"] = thr_count
@@ -137,8 +145,8 @@ def _summary_row(runner: Runner, acts: list[Activity]) -> dict:
         "Runner": runner.name,
         "Team": runner.distance_team,
         "Total Runs": run_count,
-        "Total Distance (km)": round(km_total, 2),
-        "Total Elev Gain (m)": round(total_elev, 1),
+        _TOTAL_DISTANCE_COL: round(km_total, 2),
+        _TOTAL_ELEV_COL: round(total_elev, 1),
         "Avg Distance per Run (km)": round(km_total / run_count, 2)
         if run_count
         else 0.0,
@@ -149,12 +157,18 @@ def build_distance_outputs(
     runners: list[Runner],
     distance_windows: list[tuple[datetime, datetime, float | None]],
     runner_activity_cache: dict[int | str, list[Activity]],
+    failed_runner_names: Collection[str] = frozenset(),
 ) -> list[tuple[str, list[dict]]]:
     """Return list of (sheet_name, rows) including Distance_Summary last.
 
     Summary is computed from the full activity cache (unique activities per
     runner) and is NOT a sum of the per-window sheets (avoids double counting
     when windows overlap).
+
+    Runners whose name appears in ``failed_runner_names`` (activity fetch
+    failed) get the marker ``FETCH FAILED`` in the "Runs" column of every
+    per-window sheet and in the "Total Runs" column of the summary sheet, so
+    a failed fetch is never mistaken for an inactive runner (0 runs).
     """
     # Clear the id()-keyed lookup cache between invocations so that stale
     # object-identity keys from a previous call cannot return wrong results.
@@ -170,11 +184,14 @@ def build_distance_outputs(
             if not runner.distance_team:
                 continue
             acts = runner_activity_cache.get(runner.strava_id, [])
-            rows.append(_row_for_window(runner, acts, start_dt, end_dt, threshold))
+            row = _row_for_window(runner, acts, start_dt, end_dt, threshold)
+            if runner.name in failed_runner_names:
+                row["Runs"] = FETCH_FAILED_MARKER
+            rows.append(row)
         rows.sort(
             key=lambda r: (
-                -r["Total Distance (km)"],
-                -r["Total Elev Gain (m)"],
+                -r[_TOTAL_DISTANCE_COL],
+                -r[_TOTAL_ELEV_COL],
                 r["Runner"],
             )
         )
@@ -186,11 +203,14 @@ def build_distance_outputs(
         if not runner.distance_team:
             continue
         acts = runner_activity_cache.get(runner.strava_id, [])
-        summary_rows.append(_summary_row(runner, acts))
+        summary_row = _summary_row(runner, acts)
+        if runner.name in failed_runner_names:
+            summary_row["Total Runs"] = FETCH_FAILED_MARKER
+        summary_rows.append(summary_row)
     summary_rows.sort(
         key=lambda r: (
-            -r["Total Distance (km)"],
-            -r["Total Elev Gain (m)"],
+            -r[_TOTAL_DISTANCE_COL],
+            -r[_TOTAL_ELEV_COL],
             r["Runner"],
         )
     )
@@ -198,4 +218,4 @@ def build_distance_outputs(
     return outputs
 
 
-__all__ = ["build_distance_outputs"]
+__all__ = ["build_distance_outputs", "FETCH_FAILED_MARKER"]

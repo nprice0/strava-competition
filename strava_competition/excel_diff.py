@@ -56,7 +56,9 @@ def _load_workbook(path: Path) -> dict[str, pd.DataFrame]:
     return cast(dict[str, pd.DataFrame], sheets)
 
 
-def _align_frames(left: pd.DataFrame, right: pd.DataFrame) -> pd.DataFrame:
+def _align_frames(
+    left: pd.DataFrame, right: pd.DataFrame
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     """Return both frames with matching columns and indexes for comparison."""
     columns: list[str] = list(left.columns)
     for col in right.columns:

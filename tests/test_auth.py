@@ -78,3 +78,101 @@ def test_get_access_token_missing_client_creds(monkeypatch: pytest.MonkeyPatch) 
     monkeypatch.setattr(auth, "CLIENT_SECRET", "")
     with pytest.raises(auth.TokenError):
         auth.get_access_token("refresh123")
+
+
+def test_mask_tail_fully_masks_short_values() -> None:
+    assert auth._mask_tail("abcd", visible=4) == "****"
+    assert auth._mask_tail("ab", visible=4) == "**"
+    assert auth._mask_tail("abcdefgh", visible=4) == "****efgh"
+    assert auth._mask_tail("", visible=4) == ""
+    assert auth._mask_tail(None, visible=4) == ""
+
+
+def _setup_429_env(monkeypatch: pytest.MonkeyPatch) -> list[float]:
+    """Common 429-test setup: creds, no cooldown carry-over, recorded sleeps."""
+    _set_creds(monkeypatch)
+    monkeypatch.setattr(auth, "_rate_limit_cooldown_until", 0.0)
+    sleeps: list[float] = []
+    monkeypatch.setattr(auth.time, "sleep", lambda s: sleeps.append(s))
+    return sleeps
+
+
+def test_429_honors_retry_after_header(monkeypatch: pytest.MonkeyPatch) -> None:
+    sleeps = _setup_429_env(monkeypatch)
+    # Computed backoff would be 50s; Retry-After must win.
+    monkeypatch.setattr(auth, "RATE_LIMIT_THROTTLE_SECONDS", 50)
+    calls = {"n": 0}
+
+    def fake_post(url: Any, data: Any = None, timeout: Any = None) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResp(429, data={}, headers={"Retry-After": "3"})
+        return FakeResp(200, data={"access_token": "AAA", "refresh_token": "BBB"})
+
+    _mock_session_with_post(monkeypatch, fake_post)
+    at, _ = auth.get_access_token("refresh123")
+    assert at == "AAA"
+    assert 3.0 in sleeps
+    assert 50 not in sleeps
+
+
+def test_429_invalid_retry_after_falls_back_to_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps = _setup_429_env(monkeypatch)
+    monkeypatch.setattr(auth, "RATE_LIMIT_THROTTLE_SECONDS", 7)
+    calls = {"n": 0}
+
+    def fake_post(url: Any, data: Any = None, timeout: Any = None) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResp(429, data={}, headers={"Retry-After": "soon"})
+        return FakeResp(200, data={"access_token": "AAA"})
+
+    _mock_session_with_post(monkeypatch, fake_post)
+    auth.get_access_token("refresh123")
+    assert 7 in sleeps
+
+
+def test_429_retry_after_capped_at_max_backoff(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps = _setup_429_env(monkeypatch)
+    monkeypatch.setattr(auth, "RATE_LIMIT_THROTTLE_SECONDS", 1)
+    calls = {"n": 0}
+
+    def fake_post(url: Any, data: Any = None, timeout: Any = None) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResp(429, data={}, headers={"Retry-After": "500"})
+        return FakeResp(200, data={"access_token": "AAA"})
+
+    _mock_session_with_post(monkeypatch, fake_post)
+    auth.get_access_token("refresh123")
+    assert auth._RATE_LIMIT_MAX_BACKOFF_SECONDS in sleeps
+    assert 500.0 not in sleeps
+
+
+def test_429_sets_shared_cooldown_other_calls_wait(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps = _setup_429_env(monkeypatch)
+    monkeypatch.setattr(auth, "RATE_LIMIT_THROTTLE_SECONDS", 1)
+    calls = {"n": 0}
+
+    def fake_post(url: Any, data: Any = None, timeout: Any = None) -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return FakeResp(429, data={}, headers={"Retry-After": "30"})
+        return FakeResp(200, data={"access_token": "AAA"})
+
+    _mock_session_with_post(monkeypatch, fake_post)
+    auth.get_access_token("refresh123")
+    # The 429 recorded a process-wide cooldown in the future.
+    assert auth._rate_limit_cooldown_until > auth.time.monotonic()
+
+    # A subsequent refresh waits out the shared cooldown before posting.
+    sleeps.clear()
+    auth.get_access_token("refresh456")
+    assert sleeps, "second refresh should wait out the shared cooldown"
+    assert sleeps[0] == pytest.approx(30.0, abs=1.0)

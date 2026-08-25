@@ -71,7 +71,7 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch: pytest.MonkeyPatch) 
         in_path = os.path.join(tmpdir, "input.xlsx")
         out_path = os.path.join(tmpdir, "out.xlsx")
         make_input_workbook(in_path)
-        segments = excel_reader.read_segments(in_path)
+        segment_groups = excel_reader.read_segment_groups(in_path)
         runners = excel_reader.read_runners(in_path)
 
         def fake_get_activities(
@@ -133,7 +133,7 @@ def test_excel_integration_roundtrip_and_ranks(monkeypatch: pytest.MonkeyPatch) 
         )
 
         service = SegmentService(max_workers=2)
-        results = service.process(segments, runners)
+        results = service.process_groups(segment_groups, runners)
         excel_writer.write_results(out_path, results)
         df = pd.read_excel(out_path, sheet_name="Hill Climb")
         wb = load_workbook(out_path, data_only=True)

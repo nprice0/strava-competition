@@ -1,4 +1,7 @@
-from strava_competition.distance_aggregation import build_distance_outputs
+from strava_competition.distance_aggregation import (
+    FETCH_FAILED_MARKER,
+    build_distance_outputs,
+)
 from typing import Any
 
 
@@ -21,3 +24,32 @@ def test_distance_summary_includes_all_distance_runners(
     # Check threshold count appears in window sheet
     window_rows = outputs[0][1]
     assert any(k.startswith("Runs >=") for k in window_rows[0].keys())
+
+
+def test_failed_runners_marked_in_window_and_summary_sheets(
+    distance_runners: Any, distance_windows: Any, distance_activity_cache: Any
+) -> None:
+    """Runners in the failed set show FETCH FAILED instead of 0 runs."""
+    outputs = build_distance_outputs(
+        distance_runners,
+        distance_windows,
+        distance_activity_cache,
+        failed_runner_names={"Ben"},
+    )
+    for sheet_name, rows in outputs:
+        by_runner = {r["Runner"]: r for r in rows}
+        runs_key = "Total Runs" if sheet_name == "Distance_Summary" else "Runs"
+        assert by_runner["Ben"][runs_key] == FETCH_FAILED_MARKER
+        assert isinstance(by_runner["Alice"][runs_key], int)
+
+
+def test_failed_runner_set_defaults_to_empty(
+    distance_runners: Any, distance_windows: Any, distance_activity_cache: Any
+) -> None:
+    """Omitting the failed set keeps the legacy behaviour (no markers)."""
+    outputs = build_distance_outputs(
+        distance_runners, distance_windows, distance_activity_cache
+    )
+    for _sheet_name, rows in outputs:
+        assert all(row.get("Runs") != FETCH_FAILED_MARKER for row in rows)
+        assert all(row.get("Total Runs") != FETCH_FAILED_MARKER for row in rows)

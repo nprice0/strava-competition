@@ -4,11 +4,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from strava_competition.replay_tail import (
     ActivityStats,
-    cache_is_stale,
     chunk_activities,
     dedupe_activities,
     merge_activity_lists,
@@ -47,15 +44,6 @@ def test_merge_activity_lists_gives_precedence_to_first() -> None:
     cached = [_activity(3, base), _activity(4, base + timedelta(hours=2))]
     merged = merge_activity_lists(tail, cached)
     assert [item["id"] for item in merged] == [3, 4]
-
-
-@pytest.mark.parametrize(
-    "delta_days,expected",
-    [(-1, False), (0, False), (8, True)],
-)
-def test_cache_is_stale(delta_days: int, expected: bool) -> None:
-    captured = datetime.now(timezone.utc) - timedelta(days=max(delta_days, 0))
-    assert cache_is_stale(captured, ttl_days=7) is expected
 
 
 def test_chunk_activities_handles_arbitrary_lengths() -> None:

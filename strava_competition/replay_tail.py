@@ -123,18 +123,6 @@ def chunk_activities(
     ]
 
 
-def cache_is_stale(captured_at: datetime | None, ttl_days: int | None) -> bool:
-    """Return True when cache TTL is exceeded (0/None disables TTL)."""
-
-    if ttl_days is None or ttl_days <= 0:
-        return False
-    if captured_at is None:
-        return False
-    now = datetime.now(timezone.utc)
-    delta = now - captured_at
-    return delta.total_seconds() >= ttl_days * 86400
-
-
 def exceeds_lookback(latest: datetime | None, max_days: int | None) -> bool:
     """Return True when the latest cached activity is beyond the lookback."""
 
@@ -155,6 +143,5 @@ __all__ = [
     "merge_activity_lists",
     "clamp_window",
     "chunk_activities",
-    "cache_is_stale",
     "exceeds_lookback",
 ]

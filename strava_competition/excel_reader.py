@@ -17,7 +17,7 @@ from typing import Any
 import pandas as pd
 
 from .errors import ExcelFormatError
-from .models import Segment, Runner, SegmentWindow, SegmentGroup
+from .models import Runner, SegmentWindow, SegmentGroup
 
 LOGGER = logging.getLogger(__name__)
 
@@ -78,6 +78,29 @@ def _parse_date_column(column: pd.Series) -> pd.Series:
     """
     parsed = pd.to_datetime(column, errors="coerce", utc=True, format="mixed")
     return parsed.dt.tz_localize(None)
+
+
+_END_OF_DAY = pd.Timedelta(hours=23, minutes=59, seconds=59, microseconds=999999)
+
+
+def _promote_date_only_end(column: pd.Series) -> pd.Series:
+    """Promote date-only end values (midnight) to the end of the same day.
+
+    End dates entered as plain date cells parse to midnight, which would
+    silently exclude every effort/activity later on the final day (the
+    downstream comparisons are ``start <= t <= end``). Values that carry an
+    explicit time component are left untouched; ``NaT`` values pass through.
+    """
+    at_midnight = (
+        column.notna()
+        & (column.dt.hour == 0)
+        & (column.dt.minute == 0)
+        & (column.dt.second == 0)
+        & (column.dt.microsecond == 0)
+    )
+    result = column.copy()
+    result.loc[at_midnight] = result.loc[at_midnight] + _END_OF_DAY
+    return result
 
 
 def _is_blank(value: object) -> bool:
@@ -217,14 +240,47 @@ def _coerce_duration_seconds(value: object) -> float | None:
 def _parse_segment_default_time(
     value: object, seg_name: str, row_label: str
 ) -> float | None:
+    """Parse a Default Time cell into seconds.
+
+    Blank cells mean "no default time" and return ``None``. Non-blank values
+    that cannot be parsed as a duration raise :class:`ExcelFormatError` so an
+    invalid entry cannot silently change scoring.
+    """
+    if _is_blank(value):
+        return None
     seconds = _coerce_duration_seconds(value)
     if seconds is None:
-        return None
+        raise ExcelFormatError(
+            f"Segment '{seg_name}' in {row_label} has invalid Default Time "
+            f"value '{value}' in '{SEGMENTS_SHEET}' sheet"
+        )
     if seconds <= 0:
         raise ExcelFormatError(
             f"Segment '{seg_name}' in {row_label} has non-positive default time '{value}'"
         )
     return float(seconds)
+
+
+def _parse_segment_row_id(value: object, seg_name: str, row_label: str) -> int:
+    """Parse a Segment ID cell, raising ``ExcelFormatError`` for blank/invalid values."""
+    if _is_blank(value):
+        raise ExcelFormatError(
+            f"Segment '{seg_name}' in {row_label} is missing a Segment ID in "
+            f"'{SEGMENTS_SHEET}' sheet"
+        )
+    try:
+        numeric = float(str(value).strip())
+    except ValueError:
+        raise ExcelFormatError(
+            f"Segment '{seg_name}' in {row_label} has invalid Segment ID "
+            f"'{value}' in '{SEGMENTS_SHEET}' sheet"
+        ) from None
+    if not numeric.is_integer():
+        raise ExcelFormatError(
+            f"Segment '{seg_name}' in {row_label} has non-integer Segment ID "
+            f"'{value}' in '{SEGMENTS_SHEET}' sheet"
+        )
+    return int(numeric)
 
 
 def _parse_segment_birthday_bonus(
@@ -345,71 +401,6 @@ def _resolve_sheet(
         raise ExcelFormatError(f"Sheet '{sheet_name}' not found: {exc}") from exc
 
 
-def read_segments(
-    filepath: str | Path, workbook: object | None = None
-) -> list[Segment]:
-    filepath = _coerce_path(filepath)
-    if workbook is None:
-        _assert_file_exists(filepath)
-    df = _resolve_sheet(filepath, workbook, SEGMENTS_SHEET)
-    if df is None:
-        raise ExcelFormatError(
-            f"Sheet '{SEGMENTS_SHEET}' is required but was missing or empty"
-        )
-    _validate_columns(df, _REQUIRED_SEGMENT_COLS, SEGMENTS_SHEET)
-    df[_SEGMENT_START_COL] = _parse_date_column(df[_SEGMENT_START_COL])
-    df[_SEGMENT_END_COL] = _parse_date_column(df[_SEGMENT_END_COL])
-    segs: list[Segment] = []
-    columns = [
-        _SEGMENT_ID_COL,
-        _SEGMENT_NAME_COL,
-        _SEGMENT_START_COL,
-        _SEGMENT_END_COL,
-        _SEGMENT_DEFAULT_TIME_COL,
-        _SEGMENT_MIN_DISTANCE_COL,
-        _SEGMENT_BIRTHDAY_BONUS_COL,
-    ]
-    for row_offset, (
-        seg_id,
-        seg_name,
-        start_dt,
-        end_dt,
-        default_time_raw,
-        min_distance_raw,
-        birthday_bonus_raw,
-    ) in enumerate(df[columns].itertuples(index=False, name=None), start=2):
-        row_label = f"row {row_offset}"
-        # Validate date range early
-        if pd.isna(start_dt) or pd.isna(end_dt):
-            raise ExcelFormatError(
-                f"Segment '{seg_name}' in {row_label} has invalid date(s) in "
-                f"'{SEGMENTS_SHEET}' sheet"
-            )
-        if start_dt > end_dt:
-            raise ExcelFormatError(
-                f"Segment '{seg_name}' in {row_label} has inverted date range "
-                f"(start={start_dt} > end={end_dt}) in '{SEGMENTS_SHEET}' sheet"
-            )
-        segs.append(
-            Segment(
-                id=int(seg_id),
-                name=str(seg_name),
-                start_date=start_dt,
-                end_date=end_dt,
-                default_time_seconds=_parse_segment_default_time(
-                    default_time_raw, str(seg_name), row_label
-                ),
-                min_distance_meters=_parse_segment_min_distance(
-                    min_distance_raw, str(seg_name), row_label
-                ),
-                birthday_bonus_seconds=_parse_segment_birthday_bonus(
-                    birthday_bonus_raw, str(seg_name), row_label
-                ),
-            )
-        )
-    return segs
-
-
 def _windows_fully_overlap(w1: SegmentWindow, w2: SegmentWindow) -> bool:
     """Check if two windows have identical date ranges."""
     return w1.start_date == w2.start_date and w1.end_date == w2.end_date
@@ -479,7 +470,7 @@ def _parse_segment_group_row(
         row_dict[_SEGMENT_BIRTHDAY_BONUS_COL], str(seg_name), row_label
     )
     return (
-        int(row_dict[_SEGMENT_ID_COL]),
+        _parse_segment_row_id(row_dict[_SEGMENT_ID_COL], str(seg_name), row_label),
         str(seg_name).strip(),
         start_dt,
         end_dt,
@@ -561,6 +552,10 @@ def read_segment_groups(
 ) -> list[SegmentGroup]:
     """Parse segment rows into SegmentGroup objects, grouping by Segment ID.
 
+    End dates entered as plain dates (no time component) are promoted to
+    23:59:59.999999 on the same day so the window is inclusive of its final
+    day; start dates stay at midnight.
+
     Validates:
     - All rows in a group must have the same Segment Name (error if mismatch).
     - If Default Time appears on multiple rows, values must match.
@@ -577,7 +572,9 @@ def read_segment_groups(
         )
     _validate_columns(df, _REQUIRED_SEGMENT_COLS, SEGMENTS_SHEET)
     df[_SEGMENT_START_COL] = _parse_date_column(df[_SEGMENT_START_COL])
-    df[_SEGMENT_END_COL] = _parse_date_column(df[_SEGMENT_END_COL])
+    df[_SEGMENT_END_COL] = _promote_date_only_end(
+        _parse_date_column(df[_SEGMENT_END_COL])
+    )
 
     columns = _segment_group_columns(df)
 
@@ -649,6 +646,13 @@ def read_distance_windows(
     filepath: str | Path,
     workbook: object | None = None,
 ) -> list[tuple[pd.Timestamp, pd.Timestamp, float | None]]:
+    """Read distance windows as (start, end, threshold_km) tuples.
+
+    End dates entered as plain dates (no time component) are promoted to
+    23:59:59.999999 on the same day so the window is inclusive of its final
+    day; start dates stay at midnight. Rows with unparseable or inverted
+    dates are skipped. The sheet is optional (returns an empty list).
+    """
     filepath = _coerce_path(filepath)
     if workbook is None:
         _assert_file_exists(filepath)
@@ -657,7 +661,9 @@ def read_distance_windows(
         return []
     _validate_columns(df, _REQUIRED_DISTANCE_COLS, DISTANCE_SHEET)
     df[_SEGMENT_START_COL] = _parse_date_column(df[_SEGMENT_START_COL])
-    df[_SEGMENT_END_COL] = _parse_date_column(df[_SEGMENT_END_COL])
+    df[_SEGMENT_END_COL] = _promote_date_only_end(
+        _parse_date_column(df[_SEGMENT_END_COL])
+    )
     windows: list[tuple[pd.Timestamp, pd.Timestamp, float | None]] = []
     for start_dt, end_dt, threshold in df[
         [_SEGMENT_START_COL, _SEGMENT_END_COL, "Distance Threshold (km)"]
@@ -676,7 +682,6 @@ def read_distance_windows(
 
 __all__ = [
     "ExcelFormatError",
-    "read_segments",
     "read_segment_groups",
     "read_runners",
     "read_distance_windows",
