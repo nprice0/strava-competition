@@ -35,6 +35,11 @@ class RateLimiter:
         self._throttle_until: float = 0.0
         self._jitter_range = jitter_range
         self._near_limit_buffer = RATE_LIMIT_NEAR_LIMIT_BUFFER
+        # Last-seen X-RateLimit usage/limits, for end-of-run diagnostics.
+        self._last_short_used: int | None = None
+        self._last_short_limit: int | None = None
+        self._last_daily_used: int | None = None
+        self._last_daily_limit: int | None = None
 
     def resize(self, new_max: int) -> None:
         """Adjust maximum concurrent requests (soft limit) at runtime."""
@@ -123,6 +128,9 @@ class RateLimiter:
                 read_daily_limit,
             ) = _parse_limits(read_usage, read_limit_header)
 
+        if short_used is not None and short_limit is not None:
+            self._record_last_usage(short_used, short_limit, daily_used, daily_limit)
+
         # Build rate limit info for caller's log messages
         parts: list[str] = []
         if short_used is not None and short_limit is not None:
@@ -178,12 +186,37 @@ class RateLimiter:
 
         return throttle, rate_info
 
-    def snapshot(self) -> dict[str, float | int]:  # pragma: no cover - debug helper
-        """Return current limiter stats (used by tests and diagnostics)."""
+    def _record_last_usage(
+        self,
+        short_used: int,
+        short_limit: int,
+        daily_used: int | None,
+        daily_limit: int | None,
+    ) -> None:
+        """Remember the most recent rate-limit usage headers for diagnostics."""
+
+        with self._lock:
+            self._last_short_used = short_used
+            self._last_short_limit = short_limit
+            if daily_used is not None and daily_limit is not None:
+                self._last_daily_used = daily_used
+                self._last_daily_limit = daily_limit
+
+    def snapshot(self) -> dict[str, float | int | None]:
+        """Return current limiter stats plus last-seen rate-limit usage.
+
+        The ``short_*``/``daily_*`` keys reflect the most recent
+        ``X-RateLimit-Usage``/``X-RateLimit-Limit`` headers observed, or
+        ``None`` when no rate-limit headers were ever seen (fully cached run).
+        """
 
         with self._lock:
             return {
                 "max_allowed": self._max_allowed,
                 "in_flight": self._in_flight,
                 "throttle_until": self._throttle_until,
+                "short_used": self._last_short_used,
+                "short_limit": self._last_short_limit,
+                "daily_used": self._last_daily_used,
+                "daily_limit": self._last_daily_limit,
             }

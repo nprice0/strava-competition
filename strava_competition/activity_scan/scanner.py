@@ -16,7 +16,11 @@ from cachetools import TTLCache
 
 from ..config import ACTIVITY_SCAN_MAX_ACTIVITY_PAGES
 from ..effort_distance import derive_effort_distance_m
-from ..errors import StravaAPIError
+from ..errors import (
+    StravaAPIError,
+    StravaPaymentRequiredError,
+    StravaResourceNotFoundError,
+)
 from ..models import Runner, Segment
 from ..strava_api import get_activities, get_activity_with_efforts
 from ..utils import coerce_float, coerce_int, parse_iso_datetime
@@ -425,6 +429,17 @@ class ActivityEffortScanner:
             detail = get_activity_with_efforts(
                 runner, activity_id, include_all_efforts=True
             )
+        except (StravaResourceNotFoundError, StravaPaymentRequiredError) as exc:
+            # Deleted activity (404) or subscription-gated data (402): skip
+            # this activity and keep scanning the rest. Cached listings never
+            # drop deleted activities, so aborting here would fail every run.
+            self._log.info(
+                "Skipping activity detail runner=%s activity=%s (%s)",
+                runner.name,
+                activity_id,
+                exc.__class__.__name__,
+            )
+            return None
         except StravaAPIError:
             self._log.warning(
                 "StravaAPIError fetching activity detail runner=%s activity=%s",

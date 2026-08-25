@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-from hashlib import sha256
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, TypeAlias
 
 from ..api_capture import (
@@ -16,10 +15,9 @@ from ..config import (
     _cache_mode_saves,
     _cache_mode_reads,
     _cache_mode_offline,
-    STRAVA_CACHE_HASH_IDENTIFIERS,
-    STRAVA_CACHE_ID_SALT,
 )
 from ..errors import StravaAPIError
+from . import telemetry
 
 if TYPE_CHECKING:  # pragma: no cover
     from ..models import Runner
@@ -34,28 +32,10 @@ __all__ = [
 ]
 
 
-def runner_identity(
-    runner: "Runner",
-    *,
-    hash_identifiers: Optional[bool] = None,
-    salt: Optional[str] = None,
-) -> str:
-    """Return a stable, privacy-safe identifier for cache file naming."""
+def runner_identity(runner: "Runner") -> str:
+    """Return a stable identifier for cache file naming."""
 
-    raw_source = runner.strava_id or runner.name or "unknown"
-    raw = str(raw_source)
-    hashed = (
-        STRAVA_CACHE_HASH_IDENTIFIERS if hash_identifiers is None else hash_identifiers
-    )
-    if not hashed:
-        return raw
-    salt_value = STRAVA_CACHE_ID_SALT if salt is None else salt
-    if not salt_value:
-        raise RuntimeError(
-            "STRAVA_CACHE_HASH_IDENTIFIERS requires STRAVA_CACHE_ID_SALT to be set"
-        )
-    digest = sha256(f"{raw}:{salt_value}".encode("utf-8")).hexdigest()
-    return digest
+    return str(runner.strava_id or runner.name or "unknown")
 
 
 def _handle_offline_miss(
@@ -81,8 +61,6 @@ def get_cached_list(
     page: int,
     use_cache: Optional[bool] = None,
     require_cache: Optional[bool] = None,
-    hash_identifiers: Optional[bool] = None,
-    salt: Optional[str] = None,
 ) -> Optional[JSONList]:
     """Return cached list payload when cache reading is active."""
 
@@ -92,11 +70,7 @@ def get_cached_list(
     cached = get_cached_response(
         "GET",
         url,
-        runner_identity(
-            runner,
-            hash_identifiers=hash_identifiers,
-            salt=salt,
-        ),
+        runner_identity(runner),
         params=params,
     )
     if cached is None:
@@ -107,6 +81,7 @@ def get_cached_list(
         )
         return None
     if isinstance(cached, list):
+        telemetry.increment(telemetry.CACHE_HITS)
         logging.debug(
             "Cache hit for %s runner=%s page=%s entries=%s",
             context_label,
@@ -122,6 +97,11 @@ def get_cached_list(
         page,
         type(cached).__name__,
     )
+    _handle_offline_miss(
+        context_label,
+        runner.name,
+        require_cache=require_cache,
+    )
     return None
 
 
@@ -134,8 +114,6 @@ def get_cached_list_with_meta(
     page: int,
     use_cache: Optional[bool] = None,
     require_cache: Optional[bool] = None,
-    hash_identifiers: Optional[bool] = None,
-    salt: Optional[str] = None,
 ) -> Optional[CaptureRecord]:
     """Return cached payload with metadata when reading list endpoints."""
 
@@ -145,11 +123,7 @@ def get_cached_list_with_meta(
     record = get_cached_response_with_meta(
         "GET",
         url,
-        runner_identity(
-            runner,
-            hash_identifiers=hash_identifiers,
-            salt=salt,
-        ),
+        runner_identity(runner),
         params=params,
     )
     if record is None:
@@ -160,6 +134,7 @@ def get_cached_list_with_meta(
         )
         return None
     if isinstance(record.response, list):
+        telemetry.increment(telemetry.CACHE_HITS)
         logging.debug(
             "Cache hit(meta) for %s runner=%s page=%s entries=%s",
             context_label,
@@ -175,6 +150,11 @@ def get_cached_list_with_meta(
         page,
         type(record.response).__name__,
     )
+    _handle_offline_miss(
+        context_label,
+        runner.name,
+        require_cache=require_cache,
+    )
     return None
 
 
@@ -185,8 +165,6 @@ def save_list_to_cache(
     data: JSONList,
     *,
     save_to_cache: Optional[bool] = None,
-    hash_identifiers: Optional[bool] = None,
-    salt: Optional[str] = None,
 ) -> None:
     """Persist successful list responses when cache saving is enabled."""
 
@@ -196,11 +174,7 @@ def save_list_to_cache(
     save_response_to_cache(
         "GET",
         url,
-        runner_identity(
-            runner,
-            hash_identifiers=hash_identifiers,
-            salt=salt,
-        ),
+        runner_identity(runner),
         response=data,
         params=params,
     )

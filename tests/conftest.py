@@ -17,9 +17,6 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-# Ensure cache hashing has a deterministic salt during tests.
-os.environ.setdefault("STRAVA_CACHE_ID_SALT", "pytest-salt")
-
 from strava_competition.models import SegmentResult, Runner  # noqa: E402
 
 
@@ -79,9 +76,11 @@ class FakeResp:
 
 
 def _patch_session(monkeypatch: pytest.MonkeyPatch, mock_session: Any) -> None:
-    """Patch get_default_session in all modules that import it.
+    """Patch get_default_session so client APIs resolve the mocked session.
 
-    Also resets the default client to force re-creation with the mocked session.
+    Client APIs resolve the thread-local default session per call via the
+    session module, so patching it there covers activities/resources too.
+    Also resets the default client to force re-creation.
 
     Args:
         monkeypatch: pytest monkeypatch fixture
@@ -93,7 +92,6 @@ def _patch_session(monkeypatch: pytest.MonkeyPatch, mock_session: Any) -> None:
     )
 
     monkeypatch.setattr(session_module, "get_default_session", lambda: mock_session)
-    monkeypatch.setattr(strava_api, "get_default_session", lambda: mock_session)
     # Reset the module-level cached client so get_default_client creates a fresh one
     monkeypatch.setattr(strava_api, "_default_client", None)
     # Force recreation and update the module-level reference

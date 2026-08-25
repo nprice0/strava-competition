@@ -7,6 +7,7 @@ from typing import Any, List
 import pytest
 import requests
 
+from strava_competition.errors import StravaAPIError, StravaRateLimitError
 from strava_competition.models import Runner
 from strava_competition.strava_client import pagination
 
@@ -129,11 +130,11 @@ def test_fetch_page_with_retries_recovers_from_transient_errors(
     assert sleeps == [1.0, 2.0]
 
 
-def test_fetch_page_with_retries_returns_empty_after_exhausting_errors(
+def test_fetch_page_with_retries_raises_after_exhausting_errors(
     monkeypatch: pytest.MonkeyPatch,
     runner: Runner,
 ) -> None:
-    """Persistent transport errors should gracefully yield an empty page."""
+    """Persistent transport errors must raise, not masquerade as an empty page."""
 
     runner.access_token = "token"
     sequence = [
@@ -150,17 +151,75 @@ def test_fetch_page_with_retries_returns_empty_after_exhausting_errors(
         lambda *_: None,
     )
 
-    result = pagination.fetch_page_with_retries(
-        runner=runner,
-        url="https://example.test/segment_efforts",
-        params={"page": 1},
-        context_label="segment_efforts",
-        page=1,
-        session=session,  # type: ignore[arg-type]
-        limiter=limiter,  # type: ignore[arg-type]
-    )
+    with pytest.raises(StravaAPIError, match="network error"):
+        pagination.fetch_page_with_retries(
+            runner=runner,
+            url="https://example.test/segment_efforts",
+            params={"page": 1},
+            context_label="segment_efforts",
+            page=1,
+            session=session,  # type: ignore[arg-type]
+            limiter=limiter,  # type: ignore[arg-type]
+        )
 
-    assert result == []
     assert session.calls == 2
     assert limiter.before_calls == 2
     assert limiter.after_calls[-1] == (None, None)
+
+
+def test_fetch_page_with_retries_429_budget_uses_config_knobs(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: Runner,
+) -> None:
+    """Persistent 429s use the shared config budget with escalating backoff."""
+
+    runner.access_token = "token"
+    sequence = [FakeResponse(429, []) for _ in range(3)]
+    session = ScriptedSession(sequence)
+    limiter = StubLimiter()
+    sleeps: list[float] = []
+
+    monkeypatch.setattr(pagination, "RATE_LIMIT_429_MAX_RETRIES", 2)
+    monkeypatch.setattr(pagination, "RATE_LIMIT_THROTTLE_SECONDS", 4)
+    monkeypatch.setattr(pagination, "RATE_LIMIT_429_BACKOFF_MAX_SECONDS", 6.0)
+    monkeypatch.setattr(
+        pagination.time,
+        "sleep",
+        lambda value: sleeps.append(value),
+    )
+
+    with pytest.raises(StravaRateLimitError, match="429.*after 2 retries"):
+        pagination.fetch_page_with_retries(
+            runner=runner,
+            url="https://example.test/segment_efforts",
+            params={"page": 1},
+            context_label="segment_efforts",
+            page=1,
+            session=session,  # type: ignore[arg-type]
+            limiter=limiter,  # type: ignore[arg-type]
+        )
+
+    assert session.calls == 3
+    assert sleeps == [4.0, 6.0]
+
+
+def test_fetch_page_with_retries_raises_on_non_list_payload(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: Runner,
+) -> None:
+    """A non-list JSON payload is a terminal failure, not an empty page."""
+
+    runner.access_token = "token"
+    session = ScriptedSession([FakeResponse(200, {"message": "nope"})])  # type: ignore[list-item]
+    limiter = StubLimiter()
+
+    with pytest.raises(StravaAPIError, match="unexpected JSON shape"):
+        pagination.fetch_page_with_retries(
+            runner=runner,
+            url="https://example.test/segment_efforts",
+            params={"page": 1},
+            context_label="segment_efforts",
+            page=1,
+            session=session,  # type: ignore[arg-type]
+            limiter=limiter,  # type: ignore[arg-type]
+        )

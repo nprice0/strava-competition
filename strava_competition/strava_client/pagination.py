@@ -4,23 +4,78 @@ from __future__ import annotations
 
 import logging
 import time
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, TypeAlias, cast
 
 import requests
 
 from ..config import (
+    RATE_LIMIT_429_BACKOFF_MAX_SECONDS,
+    RATE_LIMIT_429_MAX_RETRIES,
     RATE_LIMIT_THROTTLE_SECONDS,
     REQUEST_TIMEOUT,
     STRAVA_BACKOFF_MAX_SECONDS,
     STRAVA_MAX_RETRIES,
 )
+from ..errors import StravaAPIError, StravaRateLimitError
 from ..models import Runner
+from . import telemetry
 from .base import auth_headers
 from .rate_limiter import RateLimiter
 
 JSONList: TypeAlias = List[Dict[str, Any]]
 
 LOGGER = logging.getLogger(__name__)
+
+
+@dataclass
+class _PageRetryState:
+    """Mutable retry bookkeeping for a single paginated fetch."""
+
+    runner_name: str
+    context_label: str
+    page: int
+    segment_id: Optional[int]
+    attempts: int = 0
+    backoff: float = 1.0
+    rate_limit_retries: int = 0
+    rate_limit_backoff: float = 0.0
+
+    def __post_init__(self) -> None:
+        self.rate_limit_backoff = float(RATE_LIMIT_THROTTLE_SECONDS)
+
+    def can_retry(self) -> bool:
+        """Return True while general retry attempts remain."""
+
+        return self.attempts < STRAVA_MAX_RETRIES
+
+    def sleep_and_escalate(self) -> None:
+        """Sleep for the current backoff, then double it (capped)."""
+
+        time.sleep(self.backoff)
+        self.backoff = min(self.backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+
+    def retry_429(self) -> bool:
+        """Consume one 429 retry; return False once the budget is spent."""
+
+        self.rate_limit_retries += 1
+        if self.rate_limit_retries > RATE_LIMIT_429_MAX_RETRIES:
+            return False
+        LOGGER.info(
+            "%s runner=%s page=%s 429 retry %s/%s; backing off %.0fs",
+            self.context_label,
+            self.runner_name,
+            self.page,
+            self.rate_limit_retries,
+            RATE_LIMIT_429_MAX_RETRIES,
+            self.rate_limit_backoff,
+        )
+        time.sleep(self.rate_limit_backoff)
+        self.rate_limit_backoff = min(
+            self.rate_limit_backoff * 2,
+            RATE_LIMIT_429_BACKOFF_MAX_SECONDS,
+        )
+        return True
 
 
 def fetch_page_with_retries(
@@ -35,155 +90,210 @@ def fetch_page_with_retries(
     segment_id: Optional[int] = None,
     timeout: int = REQUEST_TIMEOUT,
 ) -> JSONList:
-    """GET a paginated endpoint with resilient retry/backoff logic."""
+    """GET a paginated endpoint with resilient retry/backoff logic.
 
-    MAX_429_RETRIES = 10
-    attempts = 0
-    rate_limit_retries = 0
-    backoff = 1.0
+    Returns:
+        The JSON list payload for the page. An empty list always means a
+        genuine empty page; terminal failures raise instead.
+
+    Raises:
+        StravaRateLimitError: When the 429 retry budget is exhausted.
+        StravaAPIError: When the page cannot be fetched after exhausting
+            retries (network errors, persistent HTML downtime, non-JSON
+            payloads) or the payload is not a JSON list.
+        requests.HTTPError: For non-retryable HTTP error statuses
+            (e.g. 401/403), so callers can handle token refresh.
+    """
+
+    state = _PageRetryState(runner.name, context_label, page, segment_id)
     while True:
-        attempts += 1
-        limiter.before_request()
-        resp: Optional[requests.Response] = None
-        limiter_released = False
-        try:
-            resp = session.get(
-                url,
-                headers=auth_headers(runner),
-                params=params,
-                timeout=timeout,
-            )
-        except requests.RequestException as exc:
-            limiter.after_response(None, None)
-            limiter_released = True
-            if attempts < STRAVA_MAX_RETRIES:
-                _log_retry(
-                    runner.name,
-                    context_label,
-                    page,
-                    attempts,
-                    backoff,
-                    exc.__class__.__name__,
-                    segment_id,
-                )
-                time.sleep(backoff)
-                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                continue
-            _log_giveup(runner.name, context_label, page, attempts, exc, segment_id)
-            return []
-        else:
-            throttled, rate_info = limiter.after_response(
-                resp.headers, resp.status_code
-            )
-            limiter_released = True
-            if throttled:
-                LOGGER.warning(
-                    "%s runner=%s page=%s rate limited %s; throttling %ss",
-                    context_label,
-                    runner.name,
-                    page,
-                    rate_info,
-                    RATE_LIMIT_THROTTLE_SECONDS,
-                )
-        finally:
-            # Release the limiter slot even if an unexpected exception escapes
-            # before after_response ran, preventing an in-flight count leak.
-            if not limiter_released:
-                limiter.after_response(None, None)
-
-        is_html = "text/html" in (resp.headers.get("Content-Type", "").lower())
-        # Retry 429s up to a cap — rate limits are transient but may persist
-        if resp.status_code == 429:
-            rate_limit_retries += 1
-            if rate_limit_retries > MAX_429_RETRIES:
-                LOGGER.error(
-                    "%s runner=%s page=%s exceeded max 429 retries (%s); giving up",
-                    context_label,
-                    runner.name,
-                    page,
-                    MAX_429_RETRIES,
-                )
-                return []
-            time.sleep(RATE_LIMIT_THROTTLE_SECONDS)
+        state.attempts += 1
+        resp = _request_page(
+            runner=runner,
+            url=url,
+            params=params,
+            session=session,
+            limiter=limiter,
+            timeout=timeout,
+            state=state,
+        )
+        if resp is None:
             continue
-
-        try:
-            resp.raise_for_status()
-        except requests.HTTPError:
-            if attempts < STRAVA_MAX_RETRIES and (
-                500 <= resp.status_code < 600 or is_html
-            ):
-                _log_retry(
-                    runner.name,
-                    context_label,
-                    page,
-                    attempts,
-                    backoff,
-                    f"status={resp.status_code}",
-                    segment_id,
-                )
-                time.sleep(backoff)
-                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
+        if resp.status_code == 429:
+            if state.retry_429():
                 continue
-            raise
-
-        if is_html:
-            if attempts < STRAVA_MAX_RETRIES:
-                LOGGER.warning(
-                    "HTML downtime page for %s runner=%s page=%s attempt=%s; retrying in %.1fs",
-                    context_label,
-                    runner.name,
-                    page,
-                    attempts,
-                    backoff,
-                )
-                time.sleep(backoff)
-                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                continue
-            LOGGER.error(
-                "Giving up on HTML downtime page (%s) runner=%s page=%s after %s attempts",
-                context_label,
-                runner.name,
-                page,
-                attempts,
+            message = (
+                f"{context_label} runner={runner.name} page={page} rate "
+                f"limited (429) after {RATE_LIMIT_429_MAX_RETRIES} retries"
             )
-            return []
+            LOGGER.error(message)
+            raise StravaRateLimitError(message)
+        data = _parse_page_response(resp, state)
+        if data is None:
+            continue
+        return data
 
-        try:
-            data = resp.json()
-        except ValueError:
-            if attempts < STRAVA_MAX_RETRIES:
-                LOGGER.warning(
-                    "Non-JSON response (%s) runner=%s page=%s attempt=%s; retrying in %.1fs",
-                    context_label,
-                    runner.name,
-                    page,
-                    attempts,
-                    backoff,
-                )
-                time.sleep(backoff)
-                backoff = min(backoff * 2, STRAVA_BACKOFF_MAX_SECONDS)
-                continue
-            LOGGER.error(
-                "Non-JSON response (%s) runner=%s page=%s after %s attempts; abandoning page",
-                context_label,
-                runner.name,
-                page,
-                attempts,
+
+def _request_page(
+    *,
+    runner: Runner,
+    url: str,
+    params: Dict[str, Any],
+    session: requests.Session,
+    limiter: RateLimiter,
+    timeout: int,
+    state: _PageRetryState,
+) -> Optional[requests.Response]:
+    """Perform one GET attempt with limiter bookkeeping.
+
+    Returns:
+        The response, or None when a retryable network error was logged and
+        the backoff sleep already applied (caller should retry).
+
+    Raises:
+        StravaAPIError: When network errors persist beyond the retry budget.
+    """
+
+    limiter.before_request()
+    limiter_released = False
+    try:
+        resp = session.get(
+            url,
+            headers=auth_headers(runner),
+            params=params,
+            timeout=timeout,
+        )
+    except requests.RequestException as exc:
+        limiter.after_response(None, None)
+        limiter_released = True
+        if state.can_retry():
+            _log_retry(
+                state.runner_name,
+                state.context_label,
+                state.page,
+                state.attempts,
+                state.backoff,
+                exc.__class__.__name__,
+                state.segment_id,
             )
-            return []
-
-        if not isinstance(data, list):
+            state.sleep_and_escalate()
+            return None
+        _log_giveup(
+            state.runner_name,
+            state.context_label,
+            state.page,
+            state.attempts,
+            exc,
+            state.segment_id,
+        )
+        raise StravaAPIError(
+            f"{state.context_label} network error for runner={state.runner_name} "
+            f"page={state.page} after {state.attempts} attempts: "
+            f"{exc.__class__.__name__}"
+        ) from exc
+    else:
+        telemetry.increment(telemetry.LIVE_CALLS)
+        throttled, rate_info = limiter.after_response(resp.headers, resp.status_code)
+        limiter_released = True
+        if throttled:
             LOGGER.warning(
-                "Unexpected JSON shape (not list) for %s runner=%s page=%s type=%s",
-                context_label,
-                runner.name,
-                page,
-                type(data).__name__,
+                "%s runner=%s page=%s rate limited %s; throttling %ss",
+                state.context_label,
+                state.runner_name,
+                state.page,
+                rate_info,
+                RATE_LIMIT_THROTTLE_SECONDS,
             )
-            return []
+        return resp
+    finally:
+        # Release the limiter slot even if an unexpected exception escapes
+        # before after_response ran, preventing an in-flight count leak.
+        if not limiter_released:
+            limiter.after_response(None, None)
 
-        return cast(JSONList, data)
+
+def _parse_page_response(
+    resp: requests.Response,
+    state: _PageRetryState,
+) -> Optional[JSONList]:
+    """Validate and parse a page response.
+
+    Returns:
+        The parsed JSON list, or None when a retryable condition was logged
+        and the backoff sleep already applied (caller should retry).
+
+    Raises:
+        StravaAPIError: On persistent HTML downtime, non-JSON payloads, or a
+            payload that is not a JSON list.
+        requests.HTTPError: For non-retryable HTTP error statuses.
+    """
+
+    is_html = "text/html" in (resp.headers.get("Content-Type", "").lower())
+    try:
+        resp.raise_for_status()
+    except requests.HTTPError:
+        if state.can_retry() and (500 <= resp.status_code < 600 or is_html):
+            _log_retry(
+                state.runner_name,
+                state.context_label,
+                state.page,
+                state.attempts,
+                state.backoff,
+                f"status={resp.status_code}",
+                state.segment_id,
+            )
+            state.sleep_and_escalate()
+            return None
+        raise
+
+    if is_html:
+        if state.can_retry():
+            LOGGER.warning(
+                "HTML downtime page for %s runner=%s page=%s attempt=%s; retrying in %.1fs",
+                state.context_label,
+                state.runner_name,
+                state.page,
+                state.attempts,
+                state.backoff,
+            )
+            state.sleep_and_escalate()
+            return None
+        raise _giveup_error(state, "persistent HTML downtime page")
+
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        if state.can_retry():
+            LOGGER.warning(
+                "Non-JSON response (%s) runner=%s page=%s attempt=%s; retrying in %.1fs",
+                state.context_label,
+                state.runner_name,
+                state.page,
+                state.attempts,
+                state.backoff,
+            )
+            state.sleep_and_escalate()
+            return None
+        raise _giveup_error(state, "non-JSON response") from exc
+
+    if not isinstance(data, list):
+        raise _giveup_error(
+            state,
+            f"unexpected JSON shape (got {type(data).__name__}, expected list)",
+        )
+
+    return cast(JSONList, data)
+
+
+def _giveup_error(state: _PageRetryState, reason: str) -> StravaAPIError:
+    """Log and build the terminal error for an unfetchable page."""
+
+    message = (
+        f"{state.context_label} runner={state.runner_name} "
+        f"page={state.page} {reason} after {state.attempts} attempts"
+    )
+    LOGGER.error(message)
+    return StravaAPIError(message)
 
 
 def _log_retry(

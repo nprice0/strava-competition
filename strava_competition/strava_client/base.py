@@ -45,6 +45,10 @@ def ensure_runner_token(runner: Runner, *, persist: bool = True) -> None:
             runner._skip_token_logged = True
         return
 
+    # Fast path: token already present, skip lock acquisition entirely.
+    if runner.access_token:
+        return
+
     # Use per-runner locking to prevent race conditions during token rotation
     runner_lock = _get_runner_lock(str(runner.strava_id))
     with runner_lock:
@@ -71,8 +75,10 @@ def _persist_rotated_token(runner: Runner) -> None:
 
         update_single_runner_refresh_token(INPUT_FILE, runner)
     except Exception as exc:  # pragma: no cover - best-effort persistence
-        LOGGER.debug(
-            "Failed to persist refresh token for runner %s: %s",
+        # A rotated refresh token is single-use: losing this write means the
+        # workbook still holds a dead token, so make the failure visible.
+        LOGGER.warning(
+            "Failed to persist rotated refresh token for runner %s: %s",
             runner.name,
             exc,
             exc_info=True,

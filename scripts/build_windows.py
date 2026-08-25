@@ -23,7 +23,6 @@ import importlib
 import logging
 import os
 import re
-import secrets
 import shutil
 import subprocess
 import sys
@@ -363,12 +362,6 @@ def create_minimal_env(source_env: Path) -> str:
     lines.append("# File paths (relative to this folder)\n")
     lines.append("INPUT_FILE=competition_input.xlsx\n")
     lines.append("OUTPUT_FILE=competition_results\n")
-    lines.append("\n")
-
-    # Generate a new unique salt for this distribution
-    new_salt = f"dist-{secrets.token_hex(16)}"
-    lines.append("# Cache identifier salt (auto-generated for this distribution)\n")
-    lines.append(f"STRAVA_CACHE_ID_SALT={new_salt}\n")
 
     return "".join(lines)
 

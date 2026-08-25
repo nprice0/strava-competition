@@ -21,16 +21,17 @@ from ..config import (
     STRAVA_CACHE_OVERWRITE,
     _cache_mode_reads,
     STRAVA_BASE_URL,
-    STRAVA_CACHE_HASH_IDENTIFIERS,
-    STRAVA_CACHE_ID_SALT,
     _cache_mode_offline,
 )
+from ..errors import StravaAPIError
 from ..models import Runner
 from ..replay_tail import (
     chunk_activities,
     clamp_window,
+    dedupe_activities,
     exceeds_lookback,
     merge_activity_lists,
+    parse_activity_timestamp,
     summarize_activities,
 )
 from ..utils import to_utc_aware
@@ -43,7 +44,7 @@ from .cache_helpers import (
 from .pagination import fetch_page_with_retries
 from .response_handling import extract_error
 from .rate_limiter import RateLimiter
-from .session import get_default_session
+from . import session as session_mod
 
 JSONList: TypeAlias = List[Dict[str, Any]]
 
@@ -58,9 +59,16 @@ class CachedPage:
     record: Optional[CaptureRecord]
 
 
+# Tail-refresh suppression is keyed per (runner, window) because cache
+# entries are per (after, before) window; a runner-only key would let one
+# window's refresh suppress another window's for the TTL duration.
+_TailRefreshKey = tuple[str, int, int]
+
 _runner_tail_lock = threading.Lock()
 # Use TTLCache to prevent unbounded growth - entries expire after 1 hour
-_runner_tail_refreshed_until: TTLCache[str, datetime] = TTLCache(maxsize=1000, ttl=3600)
+_runner_tail_refreshed_until: TTLCache[_TailRefreshKey, datetime] = TTLCache(
+    maxsize=1000, ttl=3600
+)
 
 
 def _to_utc(value: datetime) -> datetime:
@@ -69,16 +77,16 @@ def _to_utc(value: datetime) -> datetime:
     return value.astimezone(timezone.utc)
 
 
-def _runner_refresh_deadline(runner_id: str) -> Optional[datetime]:
+def _runner_refresh_deadline(key: _TailRefreshKey) -> Optional[datetime]:
     with _runner_tail_lock:
-        return _runner_tail_refreshed_until.get(runner_id)
+        return _runner_tail_refreshed_until.get(key)
 
 
-def _mark_runner_refreshed(runner_id: str, refresh_until: datetime) -> None:
+def _mark_runner_refreshed(key: _TailRefreshKey, refresh_until: datetime) -> None:
     with _runner_tail_lock:
-        current = _runner_tail_refreshed_until.get(runner_id)
+        current = _runner_tail_refreshed_until.get(key)
         if current is None or refresh_until > current:
-            _runner_tail_refreshed_until[runner_id] = refresh_until
+            _runner_tail_refreshed_until[key] = refresh_until
 
 
 def _flatten_pages(pages: List[JSONList]) -> List[Dict[str, Any]]:
@@ -88,6 +96,16 @@ def _flatten_pages(pages: List[JSONList]) -> List[Dict[str, Any]]:
     return flattened
 
 
+_EPOCH_UTC = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _activity_sort_key(act: Dict[str, Any]) -> datetime:
+    """Chronological sort key; unparseable entries sort first (stable)."""
+
+    ts = parse_activity_timestamp(act)
+    return ts if ts is not None else _EPOCH_UTC
+
+
 class ActivitiesAPI:
     def __init__(
         self,
@@ -95,8 +113,16 @@ class ActivitiesAPI:
         session: requests.Session | None = None,
         limiter: RateLimiter | None = None,
     ) -> None:
-        self._session = session or get_default_session()
+        # An explicitly injected session is honoured as-is (tests); otherwise
+        # the thread-local default session is resolved per call so worker
+        # threads never share one requests.Session instance.
+        self._session = session
         self._limiter = limiter or RateLimiter()
+
+    def _resolve_session(self) -> requests.Session:
+        """Return the injected session or this thread's default session."""
+
+        return self._session or session_mod.get_default_session()
 
     def get_activities(
         self,
@@ -107,166 +133,57 @@ class ActivitiesAPI:
         activity_types: Optional[Iterable[str]] = ("Run",),
         max_pages: Optional[int] = None,
     ) -> Optional[List[Dict[str, Any]]]:
-        """Fetch activities for a runner in [start_date, end_date]."""
+        """Fetch activities for a runner in [start_date, end_date].
+
+        Returns:
+            The filtered activities, or None when the listing could not be
+            fetched (network/API failure). A failed listing page is never
+            persisted to the cache.
+        """
 
         start_utc = _to_utc(start_date)
         end_utc = _to_utc(end_date)
-        after_ts = int(start_utc.timestamp())
-        before_ts = int(end_utc.timestamp())
         url = f"{STRAVA_BASE_URL}/athlete/activities"
         base_params = {
-            "after": after_ts,
-            "before": before_ts,
+            "after": int(start_utc.timestamp()),
+            "before": int(end_utc.timestamp()),
             "per_page": ACTIVITY_PAGE_SIZE,
         }
-
-        raw_pages: List[JSONList] = []
-        cached_pages: List[CachedPage] = []
-        used_cache = False
-        cache_available = _cache_mode_reads
-
-        def fetch_page(page: int) -> JSONList:
-            nonlocal used_cache, cache_available
-            params = dict(base_params)
-            params["page"] = page
-            cache_record: Optional[CaptureRecord] = None
-            if cache_available:
-                cache_record = get_cached_list_with_meta(
-                    runner,
-                    url,
-                    params,
-                    context_label="activities",
-                    page=page,
-                    use_cache=_cache_mode_reads,
-                    require_cache=_cache_mode_offline,
-                    hash_identifiers=STRAVA_CACHE_HASH_IDENTIFIERS,
-                    salt=STRAVA_CACHE_ID_SALT,
-                )
-                if cache_record is not None:
-                    used_cache = True
-                    cached_data = cast(JSONList, cache_record.response)
-                    cached_pages.append(
-                        CachedPage(
-                            params=dict(params),
-                            data=cached_data,
-                            record=cache_record,
-                        )
-                    )
-                    return cached_data
-            result = fetch_page_with_retries(
-                runner=runner,
-                url=url,
-                params=params,
-                context_label="activities",
-                page=page,
-                session=self._session,
-                limiter=self._limiter,
-            )
-            if isinstance(result, list):
-                save_list_to_cache(
-                    runner,
-                    url,
-                    dict(params),
-                    result,
-                    save_to_cache=_cache_mode_saves,
-                    hash_identifiers=STRAVA_CACHE_HASH_IDENTIFIERS,
-                    salt=STRAVA_CACHE_ID_SALT,
-                )
-                return result
-            return []
+        http_session = self._resolve_session()
 
         try:
             ensure_runner_token(runner)
-            normalized_types: Optional[set[str]] = None
-            if activity_types:
-                normalized_types = {
-                    normalized
-                    for normalized in (
-                        normalize_activity_type(value) for value in activity_types
-                    )
-                    if normalized
-                }
-            page = 1
-            attempted_refresh = False
-            while True:
-                try:
-                    data = fetch_page(page)
-                except requests.exceptions.HTTPError as exc:
-                    if (
-                        exc.response is not None
-                        and exc.response.status_code == 401
-                        and not attempted_refresh
-                    ):
-                        LOGGER.info(
-                            "401 for runner %s (activities). Refreshing token and retrying page %s.",
-                            runner.name,
-                            page,
-                        )
-                        runner.access_token = None
-                        ensure_runner_token(runner)
-                        attempted_refresh = True
-                        data = fetch_page(page)
-                    else:
-                        raise
-                raw_pages.append(data)
-                if not data:
-                    break
-                if len(data) < ACTIVITY_PAGE_SIZE:
-                    break
-                if max_pages is not None and page >= max_pages:
-                    break
-                page += 1
-
-            raw_activities = _flatten_pages(raw_pages)
+            normalized_types = _normalize_types(activity_types)
+            raw_pages, cached_pages, used_cache = self._collect_pages(
+                runner, url, base_params, http_session, max_pages
+            )
+            raw_activities = dedupe_activities(_flatten_pages(raw_pages))
             if used_cache and _cache_mode_saves:
-                raw_activities, refreshed = _maybe_refresh_cache_tail(
+                raw_activities, _ = _maybe_refresh_cache_tail(
                     runner,
                     url,
                     base_params,
                     cached_pages,
                     raw_activities,
-                    self._session,
+                    http_session,
                     self._limiter,
                     start_date=start_date,
                     end_date=end_date,
                 )
-                if refreshed:
-                    raw_pages = chunk_activities(
-                        raw_activities,
-                        chunk_size=ACTIVITY_PAGE_SIZE,
-                    )
-
-            filtered: List[Dict[str, Any]] = []
-            for act in raw_activities:
-                if normalized_types and not activity_type_matches(
-                    act, normalized_types
-                ):
-                    continue
-                # Prefer start_date (true UTC).  Strava's start_date_local
-                # carries a misleading "Z" suffix but is actually the
-                # athlete's local time — treating it as UTC shifts the
-                # timestamp by the athlete's timezone offset.  Fall back to
-                # start_date_local only when start_date is absent (e.g.
-                # incomplete cache data) and accept the approximation.
-                raw_start = act.get("start_date") or act.get("start_date_local")
-                if not raw_start:
-                    continue
-                try:
-                    dt = to_utc_aware(
-                        datetime.fromisoformat(raw_start.replace("Z", "+00:00"))
-                    )
-                except ValueError:
-                    continue
-                if start_utc <= dt <= end_utc:
-                    filtered.append(act)
-            return filtered
+            return _filter_activities(
+                raw_activities, normalized_types, start_utc, end_utc
+            )
+        except StravaAPIError:
+            # Terminal listing-page failure: nothing was cached for the
+            # failed page and the caller's failure contract is None.
+            LOGGER.exception("Activities fetch failed runner=%s", runner.name)
+            return None
         except requests.exceptions.HTTPError as exc:  # pragma: no cover
             resp = exc.response
             if resp is None:
-                LOGGER.error(
-                    "HTTPError (activities) no response object for runner %s: %s",
+                LOGGER.exception(
+                    "HTTPError (activities) no response object for runner %s",
                     runner.name,
-                    exc,
                 )
                 return None
             detail = extract_error(resp)
@@ -277,6 +194,162 @@ class ActivitiesAPI:
                 detail,
             )
             return None
+
+    def _collect_pages(
+        self,
+        runner: Runner,
+        url: str,
+        base_params: Dict[str, Any],
+        http_session: requests.Session,
+        max_pages: Optional[int],
+    ) -> tuple[List[JSONList], List[CachedPage], bool]:
+        """Page through the listing endpoint until an incomplete page.
+
+        Returns:
+            Tuple of (raw pages, cache-sourced pages, whether any page came
+            from the cache).
+        """
+
+        raw_pages: List[JSONList] = []
+        cached_pages: List[CachedPage] = []
+        used_cache = False
+        attempted_refresh = False
+        page = 1
+        while True:
+            try:
+                data, from_cache = self._fetch_listing_page(
+                    runner, url, base_params, page, http_session, cached_pages
+                )
+            except requests.exceptions.HTTPError as exc:
+                if not _is_401(exc) or attempted_refresh:
+                    raise
+                LOGGER.info(
+                    "401 for runner %s (activities). Refreshing token and retrying page %s.",
+                    runner.name,
+                    page,
+                )
+                runner.access_token = None
+                ensure_runner_token(runner)
+                attempted_refresh = True
+                data, from_cache = self._fetch_listing_page(
+                    runner, url, base_params, page, http_session, cached_pages
+                )
+            used_cache = used_cache or from_cache
+            raw_pages.append(data)
+            if len(data) < ACTIVITY_PAGE_SIZE:
+                break
+            if max_pages is not None and page >= max_pages:
+                break
+            page += 1
+        return raw_pages, cached_pages, used_cache
+
+    def _fetch_listing_page(
+        self,
+        runner: Runner,
+        url: str,
+        base_params: Dict[str, Any],
+        page: int,
+        http_session: requests.Session,
+        cached_pages: List[CachedPage],
+    ) -> tuple[JSONList, bool]:
+        """Fetch a single listing page, preferring the cache.
+
+        Returns:
+            Tuple of (page data, whether the page was served from cache).
+            A cache hit is appended to ``cached_pages``.
+
+        Raises:
+            StravaAPIError: When the page cannot be fetched (nothing is
+                persisted to the cache in that case).
+        """
+
+        params = dict(base_params)
+        params["page"] = page
+        if _cache_mode_reads:
+            cache_record: Optional[CaptureRecord] = get_cached_list_with_meta(
+                runner,
+                url,
+                params,
+                context_label="activities",
+                page=page,
+                use_cache=_cache_mode_reads,
+                require_cache=_cache_mode_offline,
+            )
+            if cache_record is not None:
+                cached_data = cast(JSONList, cache_record.response)
+                cached_pages.append(
+                    CachedPage(
+                        params=dict(params),
+                        data=cached_data,
+                        record=cache_record,
+                    )
+                )
+                return cached_data, True
+        result = fetch_page_with_retries(
+            runner=runner,
+            url=url,
+            params=params,
+            context_label="activities",
+            page=page,
+            session=http_session,
+            limiter=self._limiter,
+        )
+        save_list_to_cache(
+            runner,
+            url,
+            dict(params),
+            result,
+            save_to_cache=_cache_mode_saves,
+        )
+        return result, False
+
+
+def _is_401(exc: requests.exceptions.HTTPError) -> bool:
+    """Return True when the HTTP error carries a 401 response."""
+
+    return exc.response is not None and exc.response.status_code == 401
+
+
+def _normalize_types(activity_types: Optional[Iterable[str]]) -> Optional[set[str]]:
+    """Normalize the requested activity types into a filter set."""
+
+    if not activity_types:
+        return None
+    return {
+        normalized
+        for normalized in (normalize_activity_type(value) for value in activity_types)
+        if normalized
+    }
+
+
+def _filter_activities(
+    raw_activities: List[Dict[str, Any]],
+    normalized_types: Optional[set[str]],
+    start_utc: datetime,
+    end_utc: datetime,
+) -> List[Dict[str, Any]]:
+    """Filter activities by type and by the [start_utc, end_utc] window."""
+
+    filtered: List[Dict[str, Any]] = []
+    for act in raw_activities:
+        if normalized_types and not activity_type_matches(act, normalized_types):
+            continue
+        # Prefer start_date (true UTC).  Strava's start_date_local
+        # carries a misleading "Z" suffix but is actually the
+        # athlete's local time — treating it as UTC shifts the
+        # timestamp by the athlete's timezone offset.  Fall back to
+        # start_date_local only when start_date is absent (e.g.
+        # incomplete cache data) and accept the approximation.
+        raw_start = act.get("start_date") or act.get("start_date_local")
+        if not raw_start:
+            continue
+        try:
+            dt = to_utc_aware(datetime.fromisoformat(raw_start.replace("Z", "+00:00")))
+        except ValueError:
+            continue
+        if start_utc <= dt <= end_utc:
+            filtered.append(act)
+    return filtered
 
 
 def _maybe_refresh_cache_tail(
@@ -318,32 +391,44 @@ def _maybe_refresh_cache_tail(
             runner.name,
         )
         return raw_activities, False
-    runner_id = runner_identity(
-        runner,
-        hash_identifiers=STRAVA_CACHE_HASH_IDENTIFIERS,
-        salt=STRAVA_CACHE_ID_SALT,
+    runner_id = runner_identity(runner)
+    refresh_key: _TailRefreshKey = (
+        runner_id,
+        int(base_params.get("after", 0)),
+        int(base_params.get("before", 0)),
     )
-    refreshed_until = _runner_refresh_deadline(runner_id)
+    refreshed_until = _runner_refresh_deadline(refresh_key)
     if refreshed_until and refreshed_until >= end_utc:
         return raw_activities, False
-    tail_pages = _fetch_tail_pages(
-        runner,
-        url,
-        base_params,
-        latest_cached,
-        start_utc,
-        end_utc,
-        session,
-        limiter,
-    )
+    try:
+        tail_pages = _fetch_tail_pages(
+            runner,
+            url,
+            base_params,
+            latest_cached,
+            start_utc,
+            end_utc,
+            session,
+            limiter,
+        )
+    except (StravaAPIError, requests.exceptions.HTTPError) as exc:
+        # Degrade gracefully: serve the already-loaded cached listing
+        # rather than discarding it because the tail refresh failed.
+        LOGGER.warning(
+            "Cache tail refresh failed runner=%s; serving cached data: %s",
+            runner.name,
+            exc,
+        )
+        return raw_activities, False
     if not tail_pages:
         return raw_activities, False
     tail_flat = _flatten_pages(tail_pages)
     merged = merge_activity_lists(tail_flat, raw_activities)
+    merged.sort(key=_activity_sort_key)
     paged = chunk_activities(merged, chunk_size=ACTIVITY_PAGE_SIZE)
     persisted = _persist_enriched_pages(runner, url, base_params, paged)
     if persisted:
-        _mark_runner_refreshed(runner_id, end_utc)
+        _mark_runner_refreshed(refresh_key, end_utc)
     LOGGER.info(
         "Cache tail refresh runner=%s cached_latest=%s tail_end=%s live_pages=%s",
         runner.name,
@@ -396,15 +481,9 @@ def _fetch_tail_pages(
         if not data:
             break
         tail_pages.append(data)
-        save_list_to_cache(
-            runner,
-            url,
-            dict(params),
-            data,
-            save_to_cache=_cache_mode_saves,
-            hash_identifiers=STRAVA_CACHE_HASH_IDENTIFIERS,
-            salt=STRAVA_CACHE_ID_SALT,
-        )
+        # No per-page cache write here: these orphan (after, before) cache
+        # signatures are never read back; _persist_enriched_pages persists
+        # the merged result under the caller's window signature.
         if len(data) < per_page:
             break
         page += 1
@@ -428,11 +507,7 @@ def _persist_enriched_pages(
             runner.name,
         )
         return False
-    identity = runner_identity(
-        runner,
-        hash_identifiers=STRAVA_CACHE_HASH_IDENTIFIERS,
-        salt=STRAVA_CACHE_ID_SALT,
-    )
+    identity = runner_identity(runner)
     template = {
         "after": base_params.get("after"),
         "before": base_params.get("before"),

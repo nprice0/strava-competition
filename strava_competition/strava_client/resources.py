@@ -1,4 +1,9 @@
-"""Generic JSON resource fetcher with cache support."""
+"""Generic JSON resource fetcher with cache support.
+
+Telemetry semantics: ``live_calls`` is incremented once per completed HTTP
+round-trip (including retries that reach the server); attempts that fail
+before a response arrives (network errors) are not counted.
+"""
 
 from __future__ import annotations
 
@@ -27,12 +32,13 @@ from ..config import (
 )
 from ..errors import StravaAPIError, StravaRateLimitError
 from ..models import Runner
+from . import telemetry
 from .base import auth_headers, ensure_runner_token
 from .cache_helpers import runner_identity
 from .rate_limiter import RateLimiter
 from ..utils import json_dumps_sorted
 from .response_handling import classify_response_status, extract_error
-from .session import get_default_session
+from . import session as session_mod
 
 LOGGER = logging.getLogger(__name__)
 
@@ -63,9 +69,33 @@ class ResourceAPI:
         limiter: RateLimiter | None = None,
         timeout: int = REQUEST_TIMEOUT,
     ) -> None:
-        self._session = session or get_default_session()
+        # An explicitly injected session is honoured as-is (tests); otherwise
+        # the thread-local default session is resolved per call so worker
+        # threads never share one requests.Session instance.
+        self._session = session
         self._limiter = limiter or RateLimiter()
         self._timeout = timeout
+
+    def _resolve_session(self) -> requests.Session:
+        """Return the injected session or this thread's default session."""
+
+        return self._session or session_mod.get_default_session()
+
+    def _raise_if_offline(self, runner: Runner, context: str) -> None:
+        """Raise when offline mode forbids live HTTP calls.
+
+        Raises:
+            StravaAPIError: When STRAVA_API_CACHE_MODE=offline is enabled.
+        """
+
+        if not _cache_mode_offline:
+            return
+        message = (
+            f"{context} live fetch requested for runner {runner.name} "
+            "while STRAVA_API_CACHE_MODE=offline is enabled"
+        )
+        LOGGER.error(message)
+        raise StravaAPIError(message)
 
     def fetch_json(
         self,
@@ -74,6 +104,15 @@ class ResourceAPI:
         params: Optional[Dict[str, Any]],
         context: str,
     ) -> Any:
+        """Fetch a JSON resource over live HTTP with retry/backoff.
+
+        Raises:
+            StravaAPIError: When offline mode is enabled (live calls are
+                forbidden) or the request ultimately fails.
+            StravaRateLimitError: When the 429 retry budget is exhausted.
+        """
+        self._raise_if_offline(runner, context)
+        http_session = self._resolve_session()
         backoff = 1.0
         attempt = 0
         attempted_refresh = False
@@ -87,7 +126,7 @@ class ResourceAPI:
             response: Optional[requests.Response] = None
             limiter_released = False
             try:
-                response = self._session.get(
+                response = http_session.get(
                     url,
                     headers=auth_headers(runner),
                     params=params,
@@ -112,6 +151,7 @@ class ResourceAPI:
                 LOGGER.error(message)
                 raise StravaAPIError(message) from exc
             else:
+                telemetry.increment(telemetry.LIVE_CALLS)
                 throttled, rate_info = self._limiter.after_response(
                     response.headers, response.status_code
                 )
@@ -249,6 +289,7 @@ class ResourceAPI:
         cached_invalid = False
         if cached is not None:
             if validate is None or validate(cached):
+                telemetry.increment(telemetry.CACHE_HITS)
                 LOGGER.debug(
                     "Cache hit for %s runner=%s type=%s",
                     context,
@@ -321,12 +362,14 @@ class ResourceAPI:
                 params=params_for_capture,
             )
             if cached is not None and (validate is None or validate(cached)):
+                telemetry.increment(telemetry.CACHE_HITS)
                 LOGGER.debug(
                     "Cache healed by concurrent refetch for %s runner=%s",
                     context,
                     runner.name,
                 )
                 return cached
+            telemetry.increment(telemetry.VALIDATION_REFETCHES)
             data = self.fetch_json(runner, url, params, context)
             self._persist_validated(
                 data,

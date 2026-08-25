@@ -12,7 +12,12 @@ import warnings
 
 from strava_competition.activity_scan.scanner import ActivityEffortScanner
 from strava_competition.activity_scan.models import ActivityScanResult
-from strava_competition.errors import StravaAPIError
+from strava_competition.errors import (
+    StravaAPIError,
+    StravaPaymentRequiredError,
+    StravaRateLimitError,
+    StravaResourceNotFoundError,
+)
 from strava_competition.models import Runner, Segment
 from strava_competition.services.segment_service import SegmentService
 
@@ -50,12 +55,10 @@ def capture_replay_env(monkeypatch: pytest.MonkeyPatch) -> None:
     )
     monkeypatch.setattr(config, "_cache_mode_reads", True, raising=False)
     monkeypatch.setattr(config, "_cache_mode_saves", False, raising=False)
-    monkeypatch.setattr(config, "STRAVA_CACHE_HASH_IDENTIFIERS", False, raising=False)
     monkeypatch.setattr(config, "_cache_mode_offline", True, raising=False)
 
     monkeypatch.setenv("STRAVA_CACHE_DIR", str(TEST_CAPTURE_DIR))
     monkeypatch.setenv("STRAVA_API_CACHE_MODE", "offline")
-    monkeypatch.setenv("STRAVA_CACHE_HASH_IDENTIFIERS", "false")
 
     monkeypatch.setattr(
         api_capture, "STRAVA_CACHE_DIR", str(TEST_CAPTURE_DIR), raising=False
@@ -64,9 +67,6 @@ def capture_replay_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(api_capture, "_save_to_cache", False, raising=False)
     monkeypatch.setattr(api_capture, "_CAPTURE", api_capture.APICapture())
     monkeypatch.setattr(strava_api, "_cache_mode_offline", True, raising=False)
-    monkeypatch.setattr(
-        strava_api, "STRAVA_CACHE_HASH_IDENTIFIERS", False, raising=False
-    )
 
     import strava_competition.strava_client.activities as activities_client
     import strava_competition.strava_client.cache_helpers as capture_client
@@ -75,13 +75,7 @@ def capture_replay_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(activities_client, "_cache_mode_offline", True, raising=False)
     monkeypatch.setattr(activities_client, "_cache_mode_reads", True, raising=False)
     monkeypatch.setattr(activities_client, "_cache_mode_saves", False, raising=False)
-    monkeypatch.setattr(
-        activities_client, "STRAVA_CACHE_HASH_IDENTIFIERS", False, raising=False
-    )
     monkeypatch.setattr(capture_client, "_cache_mode_offline", True, raising=False)
-    monkeypatch.setattr(
-        capture_client, "STRAVA_CACHE_HASH_IDENTIFIERS", False, raising=False
-    )
     monkeypatch.setattr(base_client.config, "_cache_mode_offline", True, raising=False)
 
 
@@ -289,6 +283,74 @@ def test_activity_scanner_propagates_strava_api_error(
     )
 
     with pytest.raises(StravaAPIError):
+        scanner.scan_segment(runner, segment)
+
+
+def _detail_with_effort(segment: Segment, effort_id: str) -> dict[str, Any]:
+    return {
+        "segment_efforts": [
+            {
+                "id": effort_id,
+                "segment": {"id": segment.id},
+                "elapsed_time": 320,
+                "moving_time": 315,
+                "start_date_local": "2024-01-02T09:00:00Z",
+            },
+        ]
+    }
+
+
+@pytest.mark.parametrize(
+    "skip_error",
+    [
+        StravaResourceNotFoundError("activity not found"),
+        StravaPaymentRequiredError("subscription required"),
+    ],
+)
+def test_activity_scanner_skips_missing_or_gated_activities(
+    monkeypatch: pytest.MonkeyPatch,
+    runner: Runner,
+    segment: Segment,
+    skip_error: StravaAPIError,
+) -> None:
+    """A 404/402 on one activity detail must not abort the whole scan."""
+
+    activities = [{"id": 111, "name": "Deleted"}, {"id": 222, "name": "Kept"}]
+    scanner = ActivityEffortScanner(activity_provider=lambda *_: activities)
+
+    def _fake_detail(_runner: Any, activity_id: int, **_kwargs: Any) -> Any:
+        if activity_id == 111:
+            raise skip_error
+        return _detail_with_effort(segment, "kept")
+
+    monkeypatch.setattr(
+        "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+        _fake_detail,
+    )
+
+    result = scanner.scan_segment(runner, segment)
+
+    assert result is not None
+    assert result.attempts == 1
+    assert result.fastest_effort_id == "kept"
+    assert result.fastest_activity_id == 222
+
+
+def test_activity_scanner_still_propagates_rate_limit_error(
+    monkeypatch: pytest.MonkeyPatch, runner: Runner, segment: Segment
+) -> None:
+    activities = [{"id": 456, "name": "Evening"}]
+    scanner = ActivityEffortScanner(activity_provider=lambda *_: activities)
+
+    def _raise(*_args: Any, **_kwargs: Any) -> None:
+        raise StravaRateLimitError("429 after retries")
+
+    monkeypatch.setattr(
+        "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+        _raise,
+    )
+
+    with pytest.raises(StravaRateLimitError):
         scanner.scan_segment(runner, segment)
 
 

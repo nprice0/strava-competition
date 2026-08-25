@@ -130,10 +130,6 @@ def _warn_if_missing_credentials() -> None:
 
 _warn_if_missing_credentials()
 
-# Maximum age (days) before a cached activity response is considered stale and
-# automatically refreshed from the live API. Set to 0 to disable the TTL.
-CACHE_TTL_DAYS = _env_int("CACHE_TTL_DAYS", 90)
-
 # When replayed activity windows contain no entries, force a live refetch after
 # this many seconds to avoid missing newly recorded efforts. Set to 0 to disable.
 CACHE_EMPTY_REFRESH_SECONDS = _env_int("CACHE_EMPTY_REFRESH_SECONDS", 1 * 3600)
@@ -155,11 +151,9 @@ STRAVA_CACHE_DIR = os.getenv("STRAVA_CACHE_DIR", "strava_cache")
 # requested otherwise.
 STRAVA_CACHE_OVERWRITE = _env_bool("STRAVA_CACHE_OVERWRITE", False)
 
-# Hash cache identifiers (runner IDs, etc.) before writing file paths.
-STRAVA_CACHE_HASH_IDENTIFIERS = _env_bool("STRAVA_CACHE_HASH_IDENTIFIERS", True)
-STRAVA_CACHE_ID_SALT = os.getenv("STRAVA_CACHE_ID_SALT", "")
-
 # Redact sensitive fields before persisting payloads to disk.
+# Cache identities are stored as raw athlete IDs (or name fallback);
+# redaction applies to payload fields only.
 # Supports dot-notation for nested fields (e.g., "athlete.firstname").
 # Simple field names match at any nesting level.
 # WARNING: never include structurally required response keys here (e.g.

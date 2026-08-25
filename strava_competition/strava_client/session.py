@@ -4,6 +4,11 @@ This module provides thread-safe session management. Each thread receives
 its own `requests.Session` instance via thread-local storage, ensuring
 concurrent API calls do not share mutable state (connection pools, cookies,
 headers) which would otherwise cause race conditions.
+
+Client classes (``ActivitiesAPI``, ``ResourceAPI``) resolve
+``get_default_session()`` per call unless a session was explicitly
+injected, so each worker thread transparently uses its own session even
+when a single client instance is shared across threads.
 """
 
 from __future__ import annotations

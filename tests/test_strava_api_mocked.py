@@ -74,3 +74,28 @@ def test_fetch_segment_geometry_offline_requires_capture(
         strava_api.fetch_segment_geometry(runner, segment_id=111)
 
     assert "cache miss" in str(excinfo.value)
+
+
+def test_fetch_json_offline_never_attempts_live_http(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Offline mode must fail fast in fetch_json instead of a confusing 401."""
+
+    from strava_competition.strava_client.resources import ResourceAPI
+
+    runner = Runner(
+        name="OfflineJson", strava_id="98", refresh_token="rt", segment_team="Solo"
+    )
+
+    monkeypatch.setattr(resource_client, "_cache_mode_offline", True)
+
+    def fail_get(
+        *args: Any, **kwargs: Any
+    ) -> None:  # pragma: no cover - should never run
+        raise AssertionError("HTTP call performed in offline mode")
+
+    mock_session = type("MockSession", (), {"get": staticmethod(fail_get)})()
+
+    api = ResourceAPI(session=mock_session)  # type: ignore[arg-type]
+    with pytest.raises(StravaAPIError, match="offline"):
+        api.fetch_json(runner, "https://example.test/resource", None, "test_ctx")

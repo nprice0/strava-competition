@@ -67,8 +67,8 @@ class APICapture:
         self._use_cache = _cache_mode_reads
         self._overwrite = STRAVA_CACHE_OVERWRITE
         self._lock = threading.Lock()
-        self._apply_retention_policy()
         if self._save_to_cache or self._use_cache:
+            self._apply_retention_policy()
             self._base_dir.mkdir(parents=True, exist_ok=True)
             _LOGGER.info(
                 "API cache initialised dir=%s save=%s read=%s overwrite=%s",
@@ -257,7 +257,24 @@ class APICapture:
             _LOGGER.warning("Capture retention pruning failed: %s", exc)
 
 
-_CAPTURE = APICapture()
+_CAPTURE: APICapture | None = None
+_capture_lock = threading.Lock()
+
+
+def get_capture() -> APICapture:
+    """Return the process-wide capture store, creating it lazily.
+
+    Lazy creation avoids import-time side effects (directory creation and
+    retention pruning) and resolves relative cache paths against the CWD at
+    first use rather than at import. Thread-safe via double-checked locking.
+    """
+
+    global _CAPTURE
+    if _CAPTURE is None:
+        with _capture_lock:
+            if _CAPTURE is None:
+                _CAPTURE = APICapture()
+    return _CAPTURE
 
 
 def _redact_payload(value: Any, path: str = "") -> Any:
@@ -304,7 +321,7 @@ def get_cached_response(
 ) -> Any | None:
     """Return a cached response if cache reading is active."""
 
-    return _CAPTURE.fetch(
+    return get_capture().fetch(
         CaptureKey(method=method, url=url, identity=identity, params=params, body=body)
     )
 
@@ -329,7 +346,7 @@ def get_cached_response_with_meta(
 ) -> CaptureRecord | None:
     """Return cached response and metadata when cache reading is active."""
 
-    return _CAPTURE.fetch_record(
+    return get_capture().fetch_record(
         CaptureKey(method=method, url=url, identity=identity, params=params, body=body)
     )
 
@@ -345,7 +362,7 @@ def save_response_to_cache(
 ) -> None:
     """Persist a JSON serialisable response when cache saving is active."""
 
-    _CAPTURE.store(
+    get_capture().store(
         CaptureKey(method=method, url=url, identity=identity, params=params, body=body),
         _redact_payload(response),
     )
@@ -362,7 +379,7 @@ def save_overlay_to_cache(
 ) -> None:
     """Persist an enriched response that should override the cached payload."""
 
-    _CAPTURE.store_overlay(
+    get_capture().store_overlay(
         CaptureKey(method=method, url=url, identity=identity, params=params, body=body),
         _redact_payload(response),
     )
@@ -371,7 +388,8 @@ def save_overlay_to_cache(
 def cache_modes() -> dict[str, bool]:
     """Expose current cache flags for diagnostics."""
 
+    capture = get_capture()
     return {
-        "save": _CAPTURE.enabled_for_record(),
-        "read": _CAPTURE.enabled_for_replay(),
+        "save": capture.enabled_for_record(),
+        "read": capture.enabled_for_replay(),
     }

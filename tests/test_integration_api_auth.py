@@ -38,13 +38,12 @@ def disable_capture(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _patch_all_sessions(monkeypatch: pytest.MonkeyPatch, mock_session: Any) -> None:
-    """Patch get_default_session in all modules that import it.
+    """Patch get_default_session in all modules that resolve it.
 
     Also resets the default client to force re-creation with the mocked session.
     """
-    # First patch the get_default_session functions
+    # Client APIs resolve the session per call through the session module.
     monkeypatch.setattr(session_module, "get_default_session", lambda: mock_session)
-    monkeypatch.setattr(strava_api, "get_default_session", lambda: mock_session)
     monkeypatch.setattr(auth, "_get_session", lambda: mock_session)
     # Reset the module-level cached client so get_default_client creates a fresh one
     monkeypatch.setattr(strava_api, "_default_client", None)

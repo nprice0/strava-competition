@@ -23,7 +23,6 @@ from .strava_client.activities import ActivitiesAPI
 from .strava_client.base import ensure_runner_token as _ensure_runner_token
 from .strava_client.rate_limiter import RateLimiter
 from .strava_client.resources import ResourceAPI
-from .strava_client.session import get_default_session
 
 LOGGER = logging.getLogger(__name__)
 
@@ -56,7 +55,7 @@ def _get_activities_impl(
     """Delegate activity fetching to ``strava_client.activities.ActivitiesAPI``."""
 
     api = activities_api or ActivitiesAPI(
-        session=session or get_default_session(),
+        session=session,
         limiter=limiter or _limiter,
     )
     return api.get_activities(
@@ -134,7 +133,9 @@ class StravaClient:
         activities_api: Optional[ActivitiesAPI] = None,
         resource_api: Optional[ResourceAPI] = None,
     ) -> None:
-        self._session = session or get_default_session()
+        # None is passed through so the client APIs resolve the thread-local
+        # default session per call; an injected session is used as-is.
+        self._session = session
         self._limiter = limiter or _limiter
         self._activities = activities_api or ActivitiesAPI(
             session=self._session,
@@ -228,8 +229,17 @@ class StravaClient:
             distance_m = float(distance_val) if distance_val is not None else 0.0
         except (TypeError, ValueError):
             distance_m = 0.0
+        try:
+            segment_id_value = int(data.get("id", segment_id))
+        except (TypeError, ValueError) as exc:
+            message = (
+                f"{context} returned malformed segment id "
+                f"{data.get('id')!r} for runner {runner.name}"
+            )
+            LOGGER.error(message)
+            raise StravaAPIError(message) from exc
         return {
-            "segment_id": int(data.get("id", segment_id)),
+            "segment_id": segment_id_value,
             "name": data.get("name"),
             "distance": distance_m,
             "polyline": polyline,
@@ -305,6 +315,11 @@ class StravaClient:
         if max_concurrent is None:
             return
         self._limiter.resize(max_concurrent)
+
+    def rate_limiter_snapshot(self) -> Dict[str, float | int | None]:
+        """Return the client's rate limiter diagnostics snapshot."""
+
+        return self._limiter.snapshot()
 
 
 # Lazy-initialized default client to avoid configuration issues during testing
