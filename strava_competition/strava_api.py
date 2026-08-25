@@ -316,6 +316,16 @@ class StravaClient:
             return
         self._limiter.resize(max_concurrent)
 
+    def set_cancel_event(self, event: Optional[threading.Event]) -> None:
+        """Install (or clear) the cancel event on this client's rate limiter.
+
+        A set event aborts in-progress and future rate-limit window-reset
+        waits promptly; the pending request then proceeds and callers are
+        expected to re-check cancellation themselves.
+        """
+
+        self._limiter.set_cancel_event(event)
+
     def rate_limiter_snapshot(self) -> Dict[str, float | int | None]:
         """Return the client's rate limiter diagnostics snapshot."""
 

@@ -95,6 +95,66 @@ class ResourceAPI:
         time.sleep(backoff)
         return min(backoff * 2, RATE_LIMIT_429_BACKOFF_MAX_SECONDS)
 
+    def _log_throttled(self, context: str, runner: Runner, rate_info: str) -> None:
+        """Warn that the limiter throttled, reporting the real wait duration.
+
+        Distinguishes an active window-reset deadline (actual remaining
+        seconds) from the legacy fixed throttle.
+        """
+
+        deadline = self._limiter.throttle_deadline()
+        if deadline is not None:
+            LOGGER.warning(
+                "%s runner=%s rate limited %s; waiting %.0fs for rate-limit "
+                "window reset",
+                context,
+                runner.name,
+                rate_info,
+                max(0.0, deadline - time.time()),
+            )
+            return
+        LOGGER.warning(
+            "%s runner=%s rate limited %s; throttling %ss",
+            context,
+            runner.name,
+            rate_info,
+            RATE_LIMIT_THROTTLE_SECONDS,
+        )
+
+    def _log_429_retry(
+        self,
+        context: str,
+        runner: Runner,
+        retries: int,
+        backoff: float,
+    ) -> None:
+        """Log one 429 retry, distinguishing boundary waits from backoff.
+
+        While the limiter holds an active window-reset deadline the backoff
+        sleep is skipped, so the log reports the actual boundary wait.
+        """
+
+        deadline = self._limiter.throttle_deadline()
+        if deadline is not None:
+            LOGGER.info(
+                "%s runner=%s 429 retry %s/%s; waiting %.0fs for rate-limit "
+                "window reset",
+                context,
+                runner.name,
+                retries,
+                RATE_LIMIT_429_MAX_RETRIES,
+                max(0.0, deadline - time.time()),
+            )
+            return
+        LOGGER.info(
+            "%s runner=%s 429 retry %s/%s; backing off %.0fs",
+            context,
+            runner.name,
+            retries,
+            RATE_LIMIT_429_MAX_RETRIES,
+            backoff,
+        )
+
     def _raise_if_offline(self, runner: Runner, context: str) -> None:
         """Raise when offline mode forbids live HTTP calls.
 
@@ -171,13 +231,7 @@ class ResourceAPI:
                 )
                 limiter_released = True
                 if throttled:
-                    LOGGER.warning(
-                        "%s runner=%s rate limited %s; throttling %ss",
-                        context,
-                        runner.name,
-                        rate_info,
-                        RATE_LIMIT_THROTTLE_SECONDS,
-                    )
+                    self._log_throttled(context, runner, rate_info)
             finally:
                 # Guard against an unexpected exception escaping before the
                 # limiter slot was released, which would otherwise leak the
@@ -201,13 +255,8 @@ class ResourceAPI:
             if response.status_code == 429:
                 rate_limit_retries += 1
                 if rate_limit_retries <= RATE_LIMIT_429_MAX_RETRIES:
-                    LOGGER.info(
-                        "%s runner=%s 429 retry %s/%s; backing off %.0fs",
-                        context,
-                        runner.name,
-                        rate_limit_retries,
-                        RATE_LIMIT_429_MAX_RETRIES,
-                        rate_limit_backoff,
+                    self._log_429_retry(
+                        context, runner, rate_limit_retries, rate_limit_backoff
                     )
                     rate_limit_backoff = self._sleep_429_backoff(rate_limit_backoff)
                     continue

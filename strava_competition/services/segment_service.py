@@ -26,7 +26,7 @@ from ..config import (
 )
 from ..errors import StravaAPIError, StravaRateLimitError
 from ..models import Segment, Runner, SegmentResult, SegmentGroup, SegmentWindow
-from ..strava_api import get_activities
+from ..strava_api import get_activities, get_default_client
 from ..utils import parse_iso_datetime, to_utc_aware
 
 ResultsMapping = Dict[str, Dict[str, List[SegmentResult]]]
@@ -58,6 +58,16 @@ def _sort_team_results(segment_results: Dict[str, List[SegmentResult]]) -> None:
         team_results.sort(
             key=lambda r: r.fastest_time if r.fastest_time is not None else float("inf")
         )
+
+
+def _install_limiter_cancel_event(cancel_event: threading.Event | None) -> None:
+    """Install the service's cancel event on the shared client's limiter.
+
+    A set event aborts rate-limit window-reset waits promptly; the pending
+    request then proceeds and callers re-check cancellation themselves.
+    """
+    if cancel_event is not None:
+        get_default_client().set_cancel_event(cancel_event)
 
 
 def _activities_in_window(
@@ -122,6 +132,7 @@ class SegmentService:
         Iterates through each segment, scans activities concurrently,
         and aggregates the best effort per runner.
         """
+        _install_limiter_cancel_event(cancel_event)
         results: ResultsMapping = {}
         total_segments = len(segments)
         try:
@@ -166,6 +177,7 @@ class SegmentService:
         across all windows in a group is selected. When disabled, each window
         is processed as a separate segment.
         """
+        _install_limiter_cancel_event(cancel_event)
         results: ResultsMapping = {}
         total_groups = len(segment_groups)
         try:

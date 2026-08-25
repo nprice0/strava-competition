@@ -19,7 +19,7 @@ from typing import Any, Callable, Dict, List, Sequence, Tuple
 
 from ..errors import StravaAPIError
 from ..models import Runner
-from ..strava_api import get_activities
+from ..strava_api import get_activities, get_default_client
 from ..distance_aggregation import build_distance_outputs
 from ..config import CACHE_REFRESH_PARALLELISM
 
@@ -76,6 +76,10 @@ class DistanceService:
         Returns:
             A list of (sheet_name, rows) tuples for each window plus summary.
         """
+        if cancel_event is not None:
+            # A set event aborts limiter window-reset waits promptly; the
+            # pending request proceeds and cancellation is re-checked here.
+            get_default_client().set_cancel_event(cancel_event)
         if not runners or not windows:
             return []
 

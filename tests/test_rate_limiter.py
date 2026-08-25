@@ -205,6 +205,17 @@ DAILY_EXHAUSTED_HEADERS: dict[str, str] = {
     "X-RateLimit-Limit": "300,3000",
 }
 
+FULLY_EXHAUSTED_HEADERS: dict[str, str] = {
+    "X-RateLimit-Usage": "300,3000",
+    "X-RateLimit-Limit": "300,3000",
+}
+
+
+@pytest.fixture
+def _wait_for_reset_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Pin RATE_LIMIT_WAIT_FOR_RESET on so an env var cannot flip results."""
+    monkeypatch.setattr(rl_mod, "RATE_LIMIT_WAIT_FOR_RESET", True)
+
 
 def _quiet_limiter() -> RateLimiter:
     """Return a limiter without jitter for deterministic wait assertions."""
@@ -218,6 +229,7 @@ def _patch_waits(monkeypatch: pytest.MonkeyPatch, limiter: RateLimiter) -> list[
     return waits
 
 
+@pytest.mark.usefixtures("_wait_for_reset_on")
 class TestProactiveResetWait:
     """before_request waits for the window boundary when usage is exhausted."""
 
@@ -257,6 +269,7 @@ class TestProactiveResetWait:
         limiter.after_response(None, 200)
 
 
+@pytest.mark.usefixtures("_wait_for_reset_on")
 class TestReactiveResetThrottle:
     """A 429 sets the shared throttle deadline to the window boundary."""
 
@@ -291,6 +304,7 @@ class TestReactiveResetThrottle:
         limiter.after_response(None, 200)
 
 
+@pytest.mark.usefixtures("_wait_for_reset_on")
 class TestDailyExhaustion:
     """Daily limit exhaustion fails fast instead of waiting until midnight."""
 
@@ -328,14 +342,14 @@ class TestFlagOff:
         monkeypatch.setattr(rl_mod.time, "sleep", sleeps.append)
 
         limiter.before_request()
-        throttled, _ = limiter.after_response(EXHAUSTED_HEADERS, 429)
+        throttled, _ = limiter.after_response(FULLY_EXHAUSTED_HEADERS, 429)
         assert throttled
         assert limiter.throttle_deadline() is None
         throttle_until = limiter.snapshot()["throttle_until"]
         assert isinstance(throttle_until, float)
         assert throttle_until == pytest.approx(time.time() + 7.0, abs=2.0)
 
-        # Exhausted short usage + daily headers seen: neither waits nor raises.
+        # Short AND daily usage exhausted: flag off must neither wait nor raise.
         limiter.before_request()
         assert reset_waits == []
         assert sleeps, "legacy fixed throttle sleep should have happened"
@@ -343,6 +357,94 @@ class TestFlagOff:
         limiter.after_response(None, 200)
 
 
+@pytest.mark.usefixtures("_wait_for_reset_on")
+class TestStaleUsageReadings:
+    """Readings captured before a reset boundary must not gate new requests."""
+
+    def test_daily_exhaustion_before_midnight_does_not_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A pre-midnight daily reading is ignored once the day has reset."""
+        limiter = _quiet_limiter()
+        limiter.before_request()
+        limiter.after_response(DAILY_EXHAUSTED_HEADERS, 200)
+        # Pretend midnight UTC passed after the reading was captured.
+        monkeypatch.setattr(
+            rl_mod, "_midnight_utc_epoch", lambda now=None: time.time() + 1.0
+        )
+        limiter.before_request()  # must not raise
+        limiter.after_response(None, 200)
+
+    def test_short_exhaustion_before_window_boundary_skips_wait(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A stale short-window reading skips the wait and clears usage."""
+        monkeypatch.setattr(rl_mod, "RATE_LIMIT_THROTTLE_SECONDS", 0)
+        limiter = _quiet_limiter()
+        waits = _patch_waits(monkeypatch, limiter)
+        limiter.before_request()
+        limiter.after_response(EXHAUSTED_HEADERS, 200)
+        # Pretend a quarter-hour boundary passed after the reading.
+        monkeypatch.setattr(
+            rl_mod, "_window_start_epoch", lambda now=None: time.time() + 1.0
+        )
+        limiter.before_request()
+        assert waits == [], "the measured window already reset; no wait"
+        assert limiter.snapshot()["short_used"] == 0, "stale usage must be cleared"
+        limiter.after_response(None, 200)
+
+
+@pytest.mark.usefixtures("_wait_for_reset_on")
+class TestConcurrentExhaustion:
+    """Two exhausted workers both wait to the same boundary and proceed."""
+
+    def test_two_threads_wait_to_same_boundary(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Both workers record one reset wait each, then complete normally."""
+        telemetry.reset()
+        monkeypatch.setattr(rl_mod, "RATE_LIMIT_THROTTLE_SECONDS", 0)
+        monkeypatch.setattr(
+            rl_mod, "seconds_until_window_reset", lambda now=None: 300.0
+        )
+        # Keep the exhausted reading fresh regardless of real clock position.
+        monkeypatch.setattr(rl_mod, "_window_start_epoch", lambda now=None: 0.0)
+        limiter = RateLimiter(max_concurrent=2, jitter_range=(0, 0))
+
+        barrier = threading.Barrier(2)
+        waits: list[float] = []
+
+        def fake_sleep(seconds: float) -> None:
+            # Hold each waiter until both have committed to the wait, so the
+            # first thread's usage clear cannot mask the second's check.
+            waits.append(seconds)
+            barrier.wait(timeout=2.0)
+
+        monkeypatch.setattr(limiter, "_interruptible_sleep", fake_sleep)
+        limiter.after_response(EXHAUSTED_HEADERS, 200)
+
+        errors: list[BaseException] = []
+
+        def work() -> None:
+            try:
+                limiter.before_request()
+                limiter.after_response(None, 200)
+            except BaseException as exc:  # surface failures in the main thread
+                errors.append(exc)
+
+        threads = [threading.Thread(target=work) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(timeout=2.0)
+        assert all(not t.is_alive() for t in threads), "workers must proceed"
+        assert errors == []
+        assert waits == [300.0, 300.0], "both must wait to the same boundary"
+        assert telemetry.snapshot()[telemetry.RESET_WAITS] == 2
+        assert limiter.snapshot()["in_flight"] == 0
+
+
+@pytest.mark.usefixtures("_wait_for_reset_on")
 class TestCancelEvent:
     """A set cancel event aborts a reset wait promptly."""
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+import time
 import warnings
 from datetime import datetime, timedelta, timezone
 from types import MethodType
@@ -235,8 +236,10 @@ class TestResourceAPI429Retries:
             "strava_competition.strava_client.resources.ensure_runner_token",
             lambda r: None,
         )
-        # Flag on (default). Use a synthetic boundary far enough away that
-        # throttle_deadline() is reliably active for the retry decision.
+        # Pin the flag on so a shell env var cannot flip this test's result.
+        monkeypatch.setattr(rl_mod, "RATE_LIMIT_WAIT_FOR_RESET", True)
+        # Use a synthetic boundary far enough away that throttle_deadline()
+        # is reliably active for the retry decision.
         monkeypatch.setattr(rl_mod, "seconds_until_window_reset", lambda now=None: 60.0)
 
         limiter = rl_mod.RateLimiter(max_concurrent=1, jitter_range=(0, 0))
@@ -253,6 +256,64 @@ class TestResourceAPI429Retries:
         assert backoff_sleeps == [], "escalating 429 backoff must be skipped"
         assert len(boundary_waits) == 1, "retry must wait once for the boundary"
         assert boundary_waits[0] == pytest.approx(60.0, abs=2.0)
+
+    def test_repeat_429_after_boundary_wait_terminates(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Repeat 429s after boundary waits set fresh deadlines yet still
+        exhaust the bounded retry budget instead of looping forever."""
+        from strava_competition.strava_client.resources import ResourceAPI
+        from strava_competition.strava_client import rate_limiter as rl_mod
+        from strava_competition.strava_client import resources as res_mod
+
+        HEADERS_429: dict[str, str] = {
+            "X-RateLimit-Usage": "300,500",
+            "X-RateLimit-Limit": "300,3000",
+        }
+
+        call_count = 0
+
+        class FakeResp:
+            def __init__(self) -> None:
+                self.status_code = 429
+                self.headers = HEADERS_429
+
+            def json(self) -> Any:
+                return {"message": "Rate Limit Exceeded"}
+
+        class FakeSession:
+            def get(self, *_a: Any, **_kw: Any) -> FakeResp:
+                nonlocal call_count
+                call_count += 1
+                return FakeResp()
+
+        runner = _runner("Test", 1)
+        runner.access_token = "valid"
+        monkeypatch.setattr(
+            "strava_competition.strava_client.resources.ensure_runner_token",
+            lambda r: None,
+        )
+        monkeypatch.setattr(rl_mod, "RATE_LIMIT_WAIT_FOR_RESET", True)
+        monkeypatch.setattr(rl_mod, "seconds_until_window_reset", lambda now=None: 60.0)
+        monkeypatch.setattr(res_mod, "RATE_LIMIT_429_MAX_RETRIES", 2)
+
+        limiter = rl_mod.RateLimiter(max_concurrent=1, jitter_range=(0, 0))
+        boundary_waits: list[float] = []
+        monkeypatch.setattr(limiter, "_interruptible_sleep", boundary_waits.append)
+        backoff_sleeps: list[float] = []
+        monkeypatch.setattr(res_mod.time, "sleep", backoff_sleeps.append)
+
+        api = ResourceAPI(session=FakeSession(), limiter=limiter, timeout=5)  # type: ignore[arg-type]
+        before = time.time()
+        with pytest.raises(StravaRateLimitError, match="after 2 retries"):
+            api.fetch_json(runner, "https://example.com/api", None, "test_ctx")
+
+        assert call_count == 3, "initial attempt plus the bounded retries"
+        assert backoff_sleeps == [], "escalating 429 backoff must be skipped"
+        assert len(boundary_waits) == 2, "each retry waits for the boundary once"
+        deadline = limiter.throttle_deadline()
+        assert deadline is not None, "the final 429 must set a fresh deadline"
+        assert deadline == pytest.approx(before + 60.0, abs=2.0)
 
 
 class TestResourceAPILimiterLeak:
@@ -508,3 +569,78 @@ class TestSegmentServiceRateLimitRetry:
 
         # Bob: rate-limited → excluded entirely, no result
         assert "Bob" not in result_map
+
+
+# ---------------------------------------------------------------------------
+# Cancel-event wiring through the services
+# ---------------------------------------------------------------------------
+
+
+class TestServiceCancelEventWiring:
+    """Services install their cancel_event on the shared client's limiter."""
+
+    @staticmethod
+    def _fresh_default_client(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> "Any":
+        """Install a fresh default client/limiter pair and return the limiter."""
+        from strava_competition import strava_api
+        from strava_competition.strava_client import rate_limiter as rl_mod
+
+        limiter = rl_mod.RateLimiter(max_concurrent=1, jitter_range=(0, 0))
+        client = strava_api.StravaClient(limiter=limiter)
+        monkeypatch.setattr(strava_api, "_default_client", client)
+        return limiter
+
+    def test_distance_service_cancel_aborts_boundary_wait(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """After DistanceService.process, setting the service's cancel_event
+        aborts a limiter boundary wait promptly instead of blocking ~15 min."""
+        from strava_competition.strava_client import rate_limiter as rl_mod
+        from strava_competition.services.distance_service import (
+            DistanceService,
+            DistanceServiceConfig,
+        )
+
+        monkeypatch.setattr(rl_mod, "RATE_LIMIT_WAIT_FOR_RESET", True)
+        monkeypatch.setattr(rl_mod, "RATE_LIMIT_THROTTLE_SECONDS", 0)
+        monkeypatch.setattr(rl_mod, "seconds_until_window_reset", lambda now=None: 30.0)
+        limiter = self._fresh_default_client(monkeypatch)
+
+        cancel = threading.Event()
+        runner = _runner("Dist", 1)
+        runner.distance_team = "T"
+        service = DistanceService(DistanceServiceConfig(fetcher=lambda r, s, e: []))
+        now = datetime.now(timezone.utc)
+        service.process([runner], [(now - timedelta(days=1), now, None)], cancel)
+
+        # Wiring guard: fail fast rather than hang in the wait below.
+        assert limiter._cancel_event is cancel
+
+        limiter.after_response(
+            {"X-RateLimit-Usage": "300,500", "X-RateLimit-Limit": "300,3000"}, 200
+        )
+        timer = threading.Timer(0.02, cancel.set)
+        timer.start()
+        start = time.monotonic()
+        limiter.before_request()
+        elapsed = time.monotonic() - start
+        timer.cancel()
+        assert elapsed < 1.0, f"boundary wait did not abort promptly ({elapsed:.2f}s)"
+        limiter.after_response(None, 200)
+
+    def test_segment_service_installs_cancel_event(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """process and process_groups both install the event on the limiter."""
+        limiter = self._fresh_default_client(monkeypatch)
+
+        cancel = threading.Event()
+        service = SegmentService(max_workers=1)
+        service.process([], [], cancel_event=cancel)
+        assert limiter._cancel_event is cancel
+
+        limiter.set_cancel_event(None)
+        service.process_groups([], [], cancel_event=cancel)
+        assert limiter._cancel_event is cancel
