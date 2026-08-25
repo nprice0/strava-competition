@@ -313,6 +313,69 @@ class TestReadSegmentGroups:
             groups = excel_reader.read_segment_groups(path)
             assert groups[0].windows[0].birthday_bonus_seconds == 0.0
 
+    def test_invalid_default_time_raises_error(self) -> None:
+        """A non-blank unparseable Default Time raises ExcelFormatError."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": "abc",
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                    }
+                ],
+            )
+            with pytest.raises(ExcelFormatError, match="invalid Default Time"):
+                excel_reader.read_segment_groups(path)
+
+    def test_blank_segment_id_raises_error(self) -> None:
+        """A blank Segment ID raises ExcelFormatError naming the row."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": None,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                    }
+                ],
+            )
+            with pytest.raises(ExcelFormatError, match=r"row 2.*missing a Segment ID"):
+                excel_reader.read_segment_groups(path)
+
+    def test_text_segment_id_raises_error(self) -> None:
+        """A non-numeric Segment ID raises ExcelFormatError naming the row."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": "not-a-number",
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                    }
+                ],
+            )
+            with pytest.raises(ExcelFormatError, match=r"row 2.*invalid Segment ID"):
+                excel_reader.read_segment_groups(path)
+
 
 # ---------------------------------------------------------------------------
 # SegmentService.process_groups() Tests
@@ -1096,3 +1159,183 @@ class TestTimeBonusApplication:
 
             alice_result = results["Hill Climb"]["Red"][0]
             assert alice_result.diagnostics.get("time_bonus_applied") is True
+
+
+# ---------------------------------------------------------------------------
+# Split/non-split parity and union-fetch tests
+# ---------------------------------------------------------------------------
+
+
+class TestSplitModeParity:
+    """Both split-window modes must score the same workbook identically."""
+
+    @staticmethod
+    def _write_time_bonus_workbook(path: str) -> None:
+        _make_segment_workbook(
+            path,
+            [
+                {
+                    "Segment ID": 101,
+                    "Segment Name": "Hill Climb",
+                    "Start Date": datetime(2024, 1, 1),
+                    "End Date": datetime(2024, 1, 31),
+                    "Default Time": None,
+                    "Minimum Distance (m)": 0,
+                    "Birthday Bonus (secs)": 0,
+                    "Time Bonus (secs)": 30,
+                }
+            ],
+        )
+
+    @staticmethod
+    def _patch_scan_data(monkeypatch: pytest.MonkeyPatch) -> None:
+        import strava_competition.services.segment_service as mod
+
+        monkeypatch.setattr(mod, "get_activities", lambda *a, **k: [{"id": 9001}])
+        monkeypatch.setattr(
+            "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+            lambda runner, activity_id, **kw: {
+                "id": activity_id,
+                "segment_efforts": [
+                    {
+                        "segment": {"id": 101},
+                        "elapsed_time": 100,
+                        "start_date_local": "2024-01-15T10:00:00Z",
+                    }
+                ],
+            },
+        )
+
+    def _run_with_mode(self, enabled: bool, monkeypatch: pytest.MonkeyPatch) -> Any:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            self._write_time_bonus_workbook(path)
+            groups = excel_reader.read_segment_groups(path)
+            runners = excel_reader.read_runners(path)
+
+            import strava_competition.services.segment_service as mod
+
+            self._patch_scan_data(monkeypatch)
+            monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", enabled)
+
+            service = SegmentService(max_workers=1)
+            return service.process_groups(groups, runners)
+
+    def test_time_bonus_applied_identically_in_both_modes(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A nonzero time bonus must adjust the time in split AND non-split mode."""
+        enabled_results = self._run_with_mode(True, monkeypatch)
+        disabled_results = self._run_with_mode(False, monkeypatch)
+
+        enabled_alice = enabled_results["Hill Climb"]["Red"][0]
+        disabled_alice = disabled_results["Hill Climb"]["Red"][0]
+
+        # 100s elapsed - 30s bonus = 70s in both modes.
+        assert enabled_alice.fastest_time == 70.0
+        assert disabled_alice.fastest_time == 70.0
+        assert enabled_alice.time_bonus_applied is True
+        assert disabled_alice.time_bonus_applied is True
+
+
+class TestUnionWindowFetch:
+    """Group processing fetches each runner's activities once for the union."""
+
+    def test_single_fetch_per_runner_across_windows(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = os.path.join(tmpdir, "input.xlsx")
+            _make_segment_workbook(
+                path,
+                [
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 1),
+                        "End Date": datetime(2024, 1, 15),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Window Label": "Week 1",
+                    },
+                    {
+                        "Segment ID": 101,
+                        "Segment Name": "Hill Climb",
+                        "Start Date": datetime(2024, 1, 16),
+                        "End Date": datetime(2024, 1, 31),
+                        "Default Time": None,
+                        "Minimum Distance (m)": 0,
+                        "Birthday Bonus (secs)": 0,
+                        "Window Label": "Week 2",
+                    },
+                ],
+            )
+            groups = excel_reader.read_segment_groups(path)
+            runners = excel_reader.read_runners(path)
+
+            fetch_calls: list[tuple[Any, Any]] = []
+
+            def fake_get_activities(
+                runner: Any, start_date: Any, end_date: Any, **kwargs: Any
+            ) -> Any:
+                fetch_calls.append((start_date, end_date))
+                return [
+                    {
+                        "id": 9001,
+                        "start_date": "2024-01-10T09:00:00Z",
+                    },
+                    {
+                        "id": 9002,
+                        "start_date": "2024-01-20T09:00:00Z",
+                    },
+                ]
+
+            inspected: list[tuple[Any, int]] = []
+
+            def fake_get_detail(runner: Any, activity_id: Any, **kwargs: Any) -> Any:
+                inspected.append((runner.name, activity_id))
+                efforts = {
+                    9001: [
+                        {
+                            "segment": {"id": 101},
+                            "elapsed_time": 120,
+                            "start_date_local": "2024-01-10T09:00:00Z",
+                        }
+                    ],
+                    9002: [
+                        {
+                            "segment": {"id": 101},
+                            "elapsed_time": 100,
+                            "start_date_local": "2024-01-20T09:00:00Z",
+                        }
+                    ],
+                }
+                return {
+                    "id": activity_id,
+                    "segment_efforts": efforts.get(activity_id, []),
+                }
+
+            import strava_competition.services.segment_service as mod
+
+            monkeypatch.setattr(mod, "get_activities", fake_get_activities)
+            monkeypatch.setattr(
+                "strava_competition.activity_scan.scanner.get_activity_with_efforts",
+                fake_get_detail,
+            )
+            monkeypatch.setattr(mod, "SEGMENT_SPLIT_WINDOWS_ENABLED", True)
+
+            service = SegmentService(max_workers=1)
+            results = service.process_groups(groups, runners)
+
+            # One listing fetch per runner, covering the union window.
+            assert len(fetch_calls) == 1
+            start_arg, end_arg = fetch_calls[0]
+            assert start_arg == groups[0].windows[0].start_date
+            assert end_arg == groups[0].windows[-1].end_date
+
+            # Best-time selection across windows still works on the
+            # in-memory-filtered activity lists.
+            alice_result = results["Hill Climb"]["Red"][0]
+            assert alice_result.fastest_time == 100.0
+            assert alice_result.attempts == 2

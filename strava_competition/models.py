@@ -21,6 +21,9 @@ class Segment:
     default_time_seconds: float | None = None
     min_distance_meters: float | None = None
     birthday_bonus_seconds: float | None = None
+    # Per-window bonus (positive=subtract, negative=add), mirroring
+    # SegmentWindow.time_bonus_seconds so both processing paths apply it.
+    time_bonus_seconds: float = 0.0
 
 
 @dataclass

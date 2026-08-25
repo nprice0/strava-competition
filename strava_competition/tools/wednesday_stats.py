@@ -91,6 +91,16 @@ def _parse_date(value: str) -> datetime:
     return datetime.strptime(value, "%Y-%m-%d")
 
 
+def _parse_end_date(value: str) -> datetime:
+    """Parse a YYYY-MM-DD end date, clamped to the end of that day.
+
+    The activity fetch filter is ``start <= t <= end``, so a midnight end
+    would exclude the final day's activities even though attendance and
+    streak calculations treat the end date as a full target day.
+    """
+    return _parse_date(value).replace(hour=23, minute=59, second=59, microsecond=999999)
+
+
 def _parse_time(value: str) -> dt_time:
     """Parse an HH:MM time string into a ``datetime.time``."""
     return datetime.strptime(value, "%H:%M").time()
@@ -982,7 +992,7 @@ def main() -> None:
 
     input_path = args.input
     start_date = _parse_date(args.start)
-    end_date = _parse_date(args.end)
+    end_date = _parse_end_date(args.end)
     if start_date >= end_date:
         parser.error("--start must be before --end")
     weekday = _parse_day(args.day)

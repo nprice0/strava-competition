@@ -150,7 +150,7 @@ Helper scripts live under `strava_competition/tools/`:
 | `fetch_segment_gpx`            | Export a Strava segment as a GPX route file                    |
 | `clip_activity_segment`        | Slice track points from a GPX file for a segment effort        |
 | `deviation_map`                | Build an interactive map showing gate crossings and deviations |
-| `capture_gc`                   | Delete cache responses older than a retention window           |
+| `capture_gc`                   | Delete cache responses older than a retention window (dry-run by default; pass `--delete`) |
 | `purge_cache`                  | Purge cached API responses matching date/URL filters            |
 | `wednesday_stats`              | Club run statistics — day/time filters, attendance, records    |
 
@@ -426,6 +426,14 @@ This opens Strava's authorisation screen. Once the runner approves, copy the ref
 | 402 Payment Required     | The athlete needs a paid Strava subscription for segment data   |
 | 429 Too Many Requests    | Wait for the rate-limit window; the app backs off automatically |
 | Port 5000 in use (OAuth) | Change `OAUTH_PORT` in `oauth.py` or free the port              |
+
+At the end of every run the app logs a single `API usage` summary line, e.g.
+`API usage: live=143 cached=892 validation_refetches=3 | rate limit: 143/200 (15min), 143/2000 (daily)`.
+`live` counts completed HTTP round-trips to Strava (including retries), `cached`
+counts responses served from the disk cache, and `validation_refetches` counts
+live refetches triggered by cached payloads failing validation. The rate-limit
+figures are the last usage/limit headers Strava returned; a fully cached run
+shows `rate limit: n/a`.
 
 ---
 

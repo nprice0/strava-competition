@@ -15,12 +15,16 @@ Environment requirements:
   ``.env``) so the refresh flow can succeed.
 - ``requests`` is already declared in ``requirements.txt`` for the project.
 
-Usage example (defaults baked in for runner 829675 and 2005-11-16):
+Usage example:
 
     python -m strava_competition.tools.fetch_runner_segment_efforts \
-        --refresh-token 331ef40838b2e09a39ffd884585ad5ebe3700107
+        --runner-id <ATHLETE_ID> \
+        --refresh-token <REFRESH_TOKEN> \
+        --day 2026-01-15
 
-You can override the runner, date, paging window, and verbosity via CLI flags.
+Prefer the ``STRAVA_REFRESH_TOKEN`` environment variable over the CLI flag so
+the token does not leak into shell history or process listings. You can
+override the date, paging window, and verbosity via CLI flags.
 """
 
 from __future__ import annotations
@@ -181,12 +185,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--runner-id",
-        default="829675",
-        help="Runner Strava athlete ID (default: 829675)",
+        required=True,
+        help="Runner Strava athlete ID (e.g. <ATHLETE_ID>)",
     )
     parser.add_argument(
         "--runner-name",
-        default="Runner 829675",
+        default="Unknown Runner",
         help="Label used only for logging",
     )
     parser.add_argument(
@@ -200,7 +204,7 @@ def _build_parser() -> argparse.ArgumentParser:
         "--day",
         default="2005-11-16",
         type=_parse_day,
-        help="Day to inspect (YYYY-MM-DD, default 2005-11-16)",
+        help="Day to inspect (YYYY-MM-DD)",
     )
     parser.add_argument(
         "--start",

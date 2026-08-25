@@ -20,7 +20,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, cast
-from defusedxml import ElementTree as ET
+
+# Stdlib ElementTree is used only to BUILD and serialise GPX documents from
+# our own data (safe); parsing of untrusted input goes through defusedxml.
+import xml.etree.ElementTree as ET  # nosec B405
+from defusedxml.ElementTree import parse as parse_untrusted_xml
 
 from strava_competition.auth import get_access_token
 from strava_competition.config import STRAVA_BASE_URL
@@ -281,7 +285,7 @@ def parse_iso8601(value: str) -> datetime:
 
 
 def load_trackpoints(path: Path) -> list[ET.Element]:
-    tree = ET.parse(path)
+    tree = parse_untrusted_xml(path)
     root = tree.getroot()
     trkseg = root.find(".//g:trkseg", GPX_NS)
     if trkseg is None:
@@ -381,7 +385,7 @@ def build_output_tree(
     start_idx: int,
     end_idx: int,
 ) -> ET.ElementTree[ET.Element]:
-    tree: ET.ElementTree[ET.Element] = ET.parse(source)
+    tree: ET.ElementTree[ET.Element] = parse_untrusted_xml(source)
     root = tree.getroot()
     trkseg = root.find(".//g:trkseg", GPX_NS)
     if trkseg is None:

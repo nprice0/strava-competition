@@ -44,6 +44,8 @@ from typing import Any
 from strava_competition.auth import get_access_token
 from strava_competition.config import STRAVA_BASE_URL
 from strava_competition.tools._http import http_get as _http_get
+from strava_competition.tools.gpx import escape_xml as _escape_xml
+from strava_competition.tools.gpx import format_point_attrs
 
 # Default output directory for GPX files
 DEFAULT_OUTPUT_DIR = (
@@ -172,8 +174,7 @@ def streams_to_gpx(
         ele = altitude[i] if i < len(altitude) else None
         time_offset = time_offsets[i] if i < len(time_offsets) else None
 
-        trkpt_attrs = f'lat="{lat}" lon="{lng}"'
-        gpx_lines.append(f"      <trkpt {trkpt_attrs}>")
+        gpx_lines.append(f"      <trkpt {format_point_attrs(lat, lng)}>")
 
         if ele is not None:
             gpx_lines.append(f"        <ele>{ele}</ele>")
@@ -194,17 +195,6 @@ def streams_to_gpx(
     )
 
     return "\n".join(gpx_lines)
-
-
-def _escape_xml(text: str) -> str:
-    """Escape special XML characters."""
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&apos;")
-    )
 
 
 def _build_parser() -> argparse.ArgumentParser:

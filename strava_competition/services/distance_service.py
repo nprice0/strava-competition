@@ -17,6 +17,7 @@ import threading
 import time
 from typing import Any, Callable, Dict, List, Sequence, Tuple
 
+from ..errors import StravaAPIError
 from ..models import Runner
 from ..strava_api import get_activities
 from ..distance_aggregation import build_distance_outputs
@@ -62,10 +63,18 @@ class DistanceService:
         self,
         runners: Sequence[Runner],
         windows: Sequence[DistanceWindow],
+        cancel_event: threading.Event | None = None,
     ) -> List[Tuple[str, SheetRows]]:
         """Fetch activities for all runners and build distance output sheets.
 
-        Returns a list of (sheet_name, rows) tuples for each window plus summary.
+        Args:
+            runners: All runners; only those with a distance team are used.
+            windows: Distance windows to aggregate over.
+            cancel_event: Optional event checked between fetch batches to
+                abort processing early.
+
+        Returns:
+            A list of (sheet_name, rows) tuples for each window plus summary.
         """
         if not runners or not windows:
             return []
@@ -83,9 +92,14 @@ class DistanceService:
         )
 
         cache, failed_runners = self._fetch_all_activities(
-            distance_runners, earliest, latest
+            distance_runners, earliest, latest, cancel_event
         )
-        outputs = build_distance_outputs(distance_runners, list(windows), cache)
+        outputs = build_distance_outputs(
+            distance_runners,
+            list(windows),
+            cache,
+            failed_runner_names=failed_runners,
+        )
         if failed_runners:
             runner_list = ", ".join(sorted(failed_runners)) or "unknown"
             self._log.warning(
@@ -109,6 +123,7 @@ class DistanceService:
         runners: Sequence[Runner],
         earliest: datetime,
         latest: datetime,
+        cancel_event: threading.Event | None = None,
     ) -> Tuple[ActivityCache, set[str]]:
         """Fetch activities for all runners in parallel batches.
 
@@ -126,13 +141,27 @@ class DistanceService:
                 failed_runners.add(name)
 
         for batch_index in range(0, len(runners), batch_size):
+            if cancel_event is not None and cancel_event.is_set():
+                self._log.info(
+                    "Cancellation requested; aborting distance fetch after %d runners.",
+                    batch_index,
+                )
+                break
             batch = runners[batch_index : batch_index + batch_size]
             self._fetch_batch(
                 batch, earliest, latest, cache, record_failure, batch_index, batch_size
             )
             if batch_index + batch_size < len(runners):
                 # Bandit B311 false positive: randomness introduces pacing jitter only.
-                time.sleep(random.uniform(_BATCH_JITTER_MIN, _BATCH_JITTER_MAX))  # nosec B311
+                jitter = random.uniform(_BATCH_JITTER_MIN, _BATCH_JITTER_MAX)  # nosec B311
+                if cancel_event is not None:
+                    if cancel_event.wait(jitter):
+                        self._log.info(
+                            "Cancellation requested; aborting distance fetch."
+                        )
+                        break
+                else:
+                    time.sleep(jitter)
 
         return cache, failed_runners
 
@@ -158,7 +187,7 @@ class DistanceService:
                 runner = future_map[future]
                 try:
                     acts = future.result()
-                except Exception as exc:  # pragma: no cover - defensive
+                except Exception as exc:
                     record_failure(runner.name)
                     self._log.error(
                         "Runner %s distance fetch failed: %s",
@@ -185,9 +214,20 @@ class DistanceService:
     ) -> ActivityList:
         """Fetch activities for a single runner.
 
-        Raises on auth or API errors so the caller can record the failure.
+        A ``None`` result from the fetcher signals a fetch failure (the
+        ``get_activities`` failure contract) and must not be mistaken for
+        "no activities", so it is converted into an exception here.
+
+        Raises:
+            StravaAPIError: If the fetcher returned ``None`` (fetch failure).
         """
-        return self.config.fetcher(runner, earliest, latest) or []
+        activities = self.config.fetcher(runner, earliest, latest)
+        if activities is None:
+            raise StravaAPIError(
+                f"Activity fetch failed for runner {runner.name} "
+                f"({earliest} -> {latest})"
+            )
+        return activities
 
 
 __all__ = ["DistanceService", "DistanceServiceConfig"]

@@ -39,6 +39,8 @@ from polyline import decode as polyline_decode
 from strava_competition.auth import get_access_token
 from strava_competition.config import STRAVA_BASE_URL
 from strava_competition.tools._http import http_get as _http_get
+from strava_competition.tools.gpx import escape_xml as _escape_xml
+from strava_competition.tools.gpx import coerce_coordinates, format_point_attrs
 
 # Default output directory for GPX files
 DEFAULT_OUTPUT_DIR = (
@@ -85,7 +87,7 @@ def fetch_segment(token: str, segment_id: int) -> dict[str, Any]:
         "average_grade": data.get("average_grade"),
         "start_latlng": data.get("start_latlng"),
         "end_latlng": data.get("end_latlng"),
-        "points": [(float(lat), float(lon)) for lat, lon in points],
+        "points": [coerce_coordinates(lat, lon) for lat, lon in points],
         "polyline": encoded_polyline,
     }
 
@@ -144,7 +146,7 @@ def segment_to_gpx(segment: dict[str, Any]) -> str:
 
     # Add route points
     for lat, lon in points:
-        gpx_lines.append(f'    <rtept lat="{lat}" lon="{lon}"/>')
+        gpx_lines.append(f"    <rtept {format_point_attrs(lat, lon)}/>")
 
     gpx_lines.extend(
         [
@@ -154,17 +156,6 @@ def segment_to_gpx(segment: dict[str, Any]) -> str:
     )
 
     return "\n".join(gpx_lines)
-
-
-def _escape_xml(text: str) -> str:
-    """Escape special XML characters."""
-    return (
-        text.replace("&", "&amp;")
-        .replace("<", "&lt;")
-        .replace(">", "&gt;")
-        .replace('"', "&quot;")
-        .replace("'", "&apos;")
-    )
 
 
 def _build_parser() -> argparse.ArgumentParser:

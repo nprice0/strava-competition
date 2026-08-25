@@ -1,4 +1,10 @@
-"""Utility for pruning stale cache payloads."""
+"""Utility for pruning stale cache payloads.
+
+Only files whose names match the capture-cache shape (64-hex signature with
+optional ``.overlay`` suffix) are eligible for deletion, guarding against
+destroying arbitrary JSON when ``--path`` points at a non-cache directory.
+The CLI is a dry run by default; pass ``--delete`` to remove files.
+"""
 
 from __future__ import annotations
 
@@ -9,6 +15,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from ..config import STRAVA_CACHE_DIR
+from .purge_cache import _CACHE_NAME_PATTERN
 
 LOGGER = logging.getLogger(__name__)
 
@@ -34,15 +41,33 @@ def prune_directory(
     max_age_days: int = 30,
     dry_run: bool = False,
 ) -> dict[str, int]:
+    """Delete capture-cache files older than the retention window.
+
+    Only files whose names match the capture-cache shape are considered;
+    other files are counted as ``ignored`` and never touched.
+
+    Args:
+        base: Cache directory; defaults to ``STRAVA_CACHE_DIR``.
+        max_age: Explicit retention window (overrides ``max_age_days``).
+        max_age_days: Retention window in days when ``max_age`` is unset.
+        dry_run: When True, log deletions without removing files.
+
+    Returns:
+        Counts of deleted, skipped, and ignored files.
+    """
     resolved = _resolve_base(base)
     if not resolved.exists():
         LOGGER.info("Capture directory %s does not exist; nothing to prune.", resolved)
-        return {"deleted": 0, "skipped": 0}
+        return {"deleted": 0, "skipped": 0, "ignored": 0}
 
     window = max_age if max_age is not None else timedelta(days=max(0, max_age_days))
     cutoff = datetime.now(timezone.utc) - window
-    deleted = skipped = 0
+    deleted = skipped = ignored = 0
     for file_path in _iter_capture_files(resolved):
+        if not _CACHE_NAME_PATTERN.match(file_path.name):
+            ignored += 1
+            LOGGER.debug("Ignoring non-cache file name %s", file_path)
+            continue
         try:
             modified = datetime.fromtimestamp(
                 file_path.stat().st_mtime, tz=timezone.utc
@@ -63,13 +88,14 @@ def prune_directory(
             LOGGER.warning("Failed to delete %s: %s", file_path, exc)
             skipped += 1
     LOGGER.info(
-        "Cache GC complete base=%s deleted=%s skipped=%s cutoff=%s",
+        "Cache GC complete base=%s deleted=%s skipped=%s ignored=%s cutoff=%s",
         resolved,
         deleted,
         skipped,
+        ignored,
         cutoff,
     )
-    return {"deleted": deleted, "skipped": skipped}
+    return {"deleted": deleted, "skipped": skipped, "ignored": ignored}
 
 
 def _parse_duration(spec: str) -> timedelta:
@@ -97,7 +123,12 @@ def _parse_duration(spec: str) -> timedelta:
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Delete stale Strava cache payloads")
+    parser = argparse.ArgumentParser(
+        description=(
+            "Delete stale Strava cache payloads (dry run by default; "
+            "pass --delete to remove files)"
+        )
+    )
     parser.add_argument("--path", help="Cache directory (defaults to STRAVA_CACHE_DIR)")
     parser.add_argument(
         "--max-age",
@@ -110,11 +141,19 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Delete files older than this many days (default: 30)",
     )
     parser.add_argument(
+        "--delete",
+        action="store_true",
+        help="Actually delete matching files (default is a dry run)",
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Log deletions without removing files",
+        help="Deprecated: dry run is now the default; kept for compatibility",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.delete and args.dry_run:
+        parser.error("--delete and --dry-run are mutually exclusive")
+    return args
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -134,7 +173,7 @@ def main(argv: list[str] | None = None) -> None:
         base=args.path,
         max_age=window,
         max_age_days=args.max_age_days,
-        dry_run=args.dry_run,
+        dry_run=not args.delete,
     )
 
 

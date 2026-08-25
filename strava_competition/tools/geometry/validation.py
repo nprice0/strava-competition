@@ -9,6 +9,10 @@ from numpy.typing import NDArray
 
 MetricArray = NDArray[np.float64]
 
+# Points projected per broadcast batch; caps the (chunk, V, 2) intermediate
+# arrays so full-resolution activities don't cause multi-hundred-MB spikes.
+_PROJECTION_CHUNK_SIZE = 2048
+
 
 @dataclass(slots=True)
 class DirectionCheckResult:
@@ -107,7 +111,15 @@ def compute_coverage(
     activity_points: MetricArray,
     segment_points: MetricArray,
 ) -> CoverageResult:
-    """Project activity points onto the segment and measure covered ratio."""
+    """Project activity points onto the segment and measure the projected span.
+
+    ``coverage_ratio`` is the projected SPAN — ``(max - min)`` projected
+    distance along the segment divided by the segment length — **not**
+    occupancy. An activity that touches only the segment's start and end
+    points scores 1.0 even if it never traverses the middle. Use it as a
+    geometric sanity metric (did the activity reach both ends of the
+    segment?), not as validation that the full segment was covered.
+    """
 
     if len(activity_points) == 0 or len(segment_points) < 2:
         return CoverageResult(0.0, None, None, None, None)
@@ -145,8 +157,10 @@ def _project_onto_polyline(
 ) -> tuple[MetricArray, MetricArray]:
     """Project each point onto the polyline, returning distances and offsets.
 
-    Uses vectorised NumPy broadcasting so the cost is O(N + M) memory with a
-    single pass over an (N, M) matrix instead of a Python double loop.
+    Uses vectorised NumPy broadcasting, processing points in chunks of
+    ``_PROJECTION_CHUNK_SIZE`` so the (N, V, 2) intermediate arrays stay
+    bounded for full-resolution activity tracks. Results are identical to
+    a single-pass computation.
 
     Args:
         points: Array of shape (N, 2) – points to project.
@@ -177,6 +191,35 @@ def _project_onto_polyline(
     v_starts = polyline[:-1][valid]  # (V, 2)
     v_cumulative = cumulative[:-1][valid]  # (V,)
 
+    projections = np.empty(len(points), dtype=float)
+    offsets = np.empty(len(points), dtype=float)
+    for chunk_start in range(0, len(points), _PROJECTION_CHUNK_SIZE):
+        chunk_slice = slice(chunk_start, chunk_start + _PROJECTION_CHUNK_SIZE)
+        chunk_proj, chunk_off = _project_chunk(
+            points[chunk_slice],
+            polyline,
+            cumulative,
+            v_starts,
+            v_segments,
+            v_lengths,
+            v_cumulative,
+        )
+        projections[chunk_slice] = chunk_proj
+        offsets[chunk_slice] = chunk_off
+
+    return projections, offsets
+
+
+def _project_chunk(
+    points: MetricArray,
+    polyline: MetricArray,
+    cumulative: MetricArray,
+    v_starts: MetricArray,
+    v_segments: MetricArray,
+    v_lengths: MetricArray,
+    v_cumulative: MetricArray,
+) -> tuple[MetricArray, MetricArray]:
+    """Project one chunk of points onto pre-computed valid polyline segments."""
     # Broadcasting: vecs has shape (N, V, 2).
     vecs = points[:, np.newaxis, :] - v_starts[np.newaxis, :, :]
 
